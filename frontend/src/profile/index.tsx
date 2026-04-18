@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import {
   Bot,
   Database,
@@ -42,8 +43,14 @@ const SECTIONS: Section[] = [
 ]
 
 export function Profile() {
-  const [active, setActive] = useState<SectionId>('basic')
+  const location = useLocation()
+  const incoming = (location.state as { section?: SectionId } | null)?.section
+  const [active, setActive] = useState<SectionId>(incoming ?? 'basic')
   const section = SECTIONS.find((s) => s.id === active)!
+
+  useEffect(() => {
+    if (incoming) setActive(incoming)
+  }, [location.key, incoming])
 
   return (
     <div className="ambient flex h-full">

@@ -1,5 +1,8 @@
-import { NavLink, Link } from 'react-router-dom'
-import { ChevronLeft, Hammer, Home as HomeIcon, User } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Link, NavLink } from 'react-router-dom'
+import { ChevronLeft, Home as HomeIcon, User } from 'lucide-react'
+import { GetAppInfo } from '../../wailsjs/go/main/App'
+import type { main } from '../../wailsjs/go/models'
 import { useLayoutStore } from '@/stores/layout'
 import {
   CATEGORY_LABELS,
@@ -29,6 +32,17 @@ export function Sidebar() {
   const order = useToolsStore((s) => s.order)
   const nickname = useProfileStore((s) => s.nickname)
   const grouped = getVisibleToolsByCategory(visibility, order)
+  const [info, setInfo] = useState<main.AppInfo | null>(null)
+
+  useEffect(() => {
+    GetAppInfo().then(setInfo)
+  }, [])
+
+  // TODO: 接入 GitHub release API 后，根据实际更新状态切换颜色
+  const updateStatus: 'latest' | 'available' = 'latest'
+  const isLatest = updateStatus === 'latest'
+  const dotColor = isLatest ? 'bg-emerald-500' : 'bg-amber-500'
+  const pillTitle = isLatest ? '当前已是最新版本' : '有新版本可用，点击查看'
 
   return (
     <aside
@@ -37,19 +51,30 @@ export function Sidebar() {
         collapsed ? 'w-14' : 'w-56'
       )}
     >
-      <div className="flex h-14 items-center justify-between px-3 border-b border-border">
-        <Link
-          to="/"
-          title="回到首页"
-          className="flex items-center gap-2 overflow-hidden rounded-md transition-opacity hover:opacity-80"
-        >
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
-            <Hammer className="h-4 w-4" />
-          </div>
-          {!collapsed && (
-            <span className="truncate font-semibold text-sm">Tool Forge</span>
-          )}
-        </Link>
+      <div
+        className={cn(
+          'flex h-10 items-center border-b border-border px-2',
+          collapsed ? 'justify-center' : 'justify-between'
+        )}
+      >
+        {!collapsed && (
+          <Link
+            to="/profile"
+            state={{ section: 'about' }}
+            title={pillTitle}
+            className="group/pill inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+          >
+            <span className="relative flex h-2 w-2 shrink-0 items-center justify-center">
+              {!isLatest && (
+                <span className={cn('absolute inline-flex h-full w-full animate-ping rounded-full opacity-70', dotColor)} />
+              )}
+              <span className={cn('relative h-1.5 w-1.5 rounded-full', dotColor)} />
+            </span>
+            <span className="font-mono tracking-tight tabular-nums">
+              v{info?.version ?? '…'}
+            </span>
+          </Link>
+        )}
         <button
           onClick={toggleSidebar}
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent"

@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { Outlet } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
+import { TitleBar } from './TitleBar'
 import { applyAppearance, useLayoutStore } from '@/stores/layout'
 
 export function MainLayout() {
@@ -17,11 +18,14 @@ export function MainLayout() {
   }, [theme, styleId])
 
   return (
-    <div className="flex h-full w-full overflow-hidden bg-background text-foreground">
-      <Sidebar />
-      <main className="flex-1 overflow-auto">
-        <Outlet />
-      </main>
+    <div className="flex h-full w-full flex-col overflow-hidden bg-background text-foreground">
+      <TitleBar />
+      <div className="flex flex-1 overflow-hidden">
+        <Sidebar />
+        <main className="flex-1 overflow-auto">
+          <Outlet />
+        </main>
+      </div>
     </div>
   )
 }
