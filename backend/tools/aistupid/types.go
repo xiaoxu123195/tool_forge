@@ -116,3 +116,44 @@ type DriftBatchResponse struct {
 	// FetchedAt 本地抓取时间（RFC3339），给前端展示"最后更新"
 	FetchedAt string `json:"fetchedAt"`
 }
+
+// ============= Leaderboard (/dashboard/cached) =============
+
+// LeaderboardModel 排行榜单行数据
+type LeaderboardModel struct {
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	Provider        string  `json:"provider"`
+	Vendor          string  `json:"vendor"`
+	CurrentScore    float64 `json:"currentScore"`
+	Score           float64 `json:"score"`
+	Trend           string  `json:"trend"`       // up / down / stable
+	LastUpdated     string  `json:"lastUpdated"` // ISO8601
+	Status          string  `json:"status"`      // warning / critical / stable ...
+	IsNew           bool    `json:"isNew"`
+	IsStale         bool    `json:"isStale"`
+	ConfidenceLower float64 `json:"confidenceLower"`
+	ConfidenceUpper float64 `json:"confidenceUpper"`
+	StandardError   float64 `json:"standardError"`
+}
+
+// HistoryPoint 7 日走势单点；舍弃 axes 明细（suite 不同、字段不同）。
+type HistoryPoint struct {
+	Timestamp string  `json:"timestamp"`
+	Score     float64 `json:"score"`
+	Suite     string  `json:"suite"` // hourly / tooling / reasoning ...
+}
+
+// LeaderboardData data 字段内部
+type LeaderboardData struct {
+	ModelScores []LeaderboardModel        `json:"modelScores"`
+	HistoryMap  map[string][]HistoryPoint `json:"historyMap"`
+}
+
+// LeaderboardResponse /dashboard/cached 的完整响应
+type LeaderboardResponse struct {
+	Success   bool            `json:"success"`
+	Cached    bool            `json:"cached"`
+	Data      LeaderboardData `json:"data"`
+	FetchedAt string          `json:"fetchedAt"`
+}

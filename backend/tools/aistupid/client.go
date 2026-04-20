@@ -14,8 +14,12 @@ import (
 )
 
 const (
-	endpoint = "https://aistupidlevel.info/api/drift/batch"
-	referer  = "https://aistupidlevel.info/?mode=drift&period=latest&sortBy=combined"
+	driftEndpoint = "https://aistupidlevel.info/api/drift/batch"
+	driftReferer  = "https://aistupidlevel.info/?mode=drift&period=latest&sortBy=combined"
+
+	leaderboardEndpoint = "https://aistupidlevel.info/dashboard/cached?period=latest&sortBy=combined&analyticsPeriod=latest"
+	leaderboardReferer  = "https://aistupidlevel.info/?mode=leaderboard&period=latest&sortBy=combined"
+
 	// 浏览器 UA；站方会基于 header 组合做软性校验，保持和已验证的 batch.go 一致。
 	userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
 		"(KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
@@ -40,12 +44,12 @@ var httpClient = &http.Client{
 	},
 }
 
-// FetchDrift 拉取最新的漂移批量数据。遇到网络错误或非 2xx 状态码会返回 error。
-func FetchDrift(ctx context.Context) (*DriftBatchResponse, error) {
+// doGet 统一 GET 入口：复用代理、头与错误处理，返回 body 字节。
+func doGet(ctx context.Context, url, referer string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -77,8 +81,30 @@ func FetchDrift(ctx context.Context) (*DriftBatchResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("读取响应失败: %w", err)
 	}
+	return body, nil
+}
 
+// FetchDrift 拉取最新的漂移批量数据。遇到网络错误或非 2xx 状态码会返回 error。
+func FetchDrift(ctx context.Context) (*DriftBatchResponse, error) {
+	body, err := doGet(ctx, driftEndpoint, driftReferer)
+	if err != nil {
+		return nil, err
+	}
 	var out DriftBatchResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("解析响应失败: %w", err)
+	}
+	out.FetchedAt = time.Now().UTC().Format(time.RFC3339)
+	return &out, nil
+}
+
+// FetchLeaderboard 拉取排行榜（含 7 日历史）。
+func FetchLeaderboard(ctx context.Context) (*LeaderboardResponse, error) {
+	body, err := doGet(ctx, leaderboardEndpoint, leaderboardReferer)
+	if err != nil {
+		return nil, err
+	}
+	var out LeaderboardResponse
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, fmt.Errorf("解析响应失败: %w", err)
 	}

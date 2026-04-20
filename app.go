@@ -21,7 +21,7 @@ import (
 )
 
 // AppVersion 应用版本号，随 wails.json 同步维护
-const AppVersion = "0.1.5"
+const AppVersion = "0.1.6"
 
 // AppInfo 应用元信息
 type AppInfo struct {
@@ -141,6 +141,11 @@ func (a *App) ScanEnvironments() envscan.ScanReport {
 // 前端进入工具时调用一次，点击刷新再次调用。
 func (a *App) FetchAIStupidDrift() (*aistupid.DriftBatchResponse, error) {
 	return aistupid.FetchDrift(a.ctx)
+}
+
+// FetchAIStupidLeaderboard 拉取 aistupidlevel.info 的排行榜（含 7 日历史走势）。
+func (a *App) FetchAIStupidLeaderboard() (*aistupid.LeaderboardResponse, error) {
+	return aistupid.FetchLeaderboard(a.ctx)
 }
 
 // ================ Claude Insight ================
