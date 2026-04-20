@@ -73,6 +73,9 @@ import { meta as claudeInsightMeta } from './claude-insight/meta'
 import CodexInsight from './codex-insight'
 import { meta as codexInsightMeta } from './codex-insight/meta'
 
+import AIStupid from './ai-stupid'
+import { meta as aiStupidMeta } from './ai-stupid/meta'
+
 export interface ToolEntry {
   meta: ToolMeta
   Component: ComponentType
@@ -103,6 +106,7 @@ export const tools: ToolEntry[] = [
   { meta: envScanMeta, Component: EnvScan },
   { meta: claudeInsightMeta, Component: ClaudeInsight },
   { meta: codexInsightMeta, Component: CodexInsight },
+  { meta: aiStupidMeta, Component: AIStupid },
 ]
 
 export const toolRegistry: ToolMeta[] = tools.map((t) => t.meta)

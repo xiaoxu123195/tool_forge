@@ -3,6 +3,7 @@ module tool_forge
 go 1.22.0
 
 require (
+	github.com/mattn/go-ieproxy v0.0.12
 	github.com/wailsapp/wails/v2 v2.11.0
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/sys v0.30.0

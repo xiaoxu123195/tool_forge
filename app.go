@@ -11,6 +11,7 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"tool_forge/backend/system"
+	"tool_forge/backend/tools/aistupid"
 	"tool_forge/backend/tools/charles"
 	"tool_forge/backend/tools/claudeinsight"
 	"tool_forge/backend/tools/codexinsight"
@@ -20,7 +21,7 @@ import (
 )
 
 // AppVersion 应用版本号，随 wails.json 同步维护
-const AppVersion = "0.1.4"
+const AppVersion = "0.1.5"
 
 // AppInfo 应用元信息
 type AppInfo struct {
@@ -132,6 +133,14 @@ func (a *App) DeletePassword(key string) error {
 // ScanEnvironments 扫描本机开发者工具；未安装的条目不返回。
 func (a *App) ScanEnvironments() envscan.ScanReport {
 	return envscan.Scan(a.ctx)
+}
+
+// ================ AI Stupid Level (Drift Monitor) ================
+
+// FetchAIStupidDrift 拉取 aistupidlevel.info 的最新模型漂移数据（CUSUM 检测）。
+// 前端进入工具时调用一次，点击刷新再次调用。
+func (a *App) FetchAIStupidDrift() (*aistupid.DriftBatchResponse, error) {
+	return aistupid.FetchDrift(a.ctx)
 }
 
 // ================ Claude Insight ================
