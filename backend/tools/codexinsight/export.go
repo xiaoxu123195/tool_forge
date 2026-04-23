@@ -28,8 +28,8 @@ type manifest struct {
 type manifestSession struct {
 	SessionID string `json:"session_id"`
 	Project   string `json:"project"`
-	File      string `json:"file"`       // zip 内文件名
-	DateDir   string `json:"date_dir"`   // "YYYY/MM/DD"
+	File      string `json:"file"`     // zip 内文件名
+	DateDir   string `json:"date_dir"` // "YYYY/MM/DD"
 	Size      int64  `json:"size"`
 	Messages  int    `json:"messages"`
 }
@@ -270,6 +270,28 @@ func ImportSessions(codexDir, zipPath string) (*ImportResult, error) {
 		res.Dirs = append(res.Dirs, k)
 	}
 	return res, nil
+}
+
+// DeleteSession 删除一个 Codex 会话 rollout .jsonl。必须位于 codexDir/sessions 下。
+func DeleteSession(codexDir, filePath string) error {
+	if strings.TrimSpace(filePath) == "" {
+		return errors.New("文件路径不能为空")
+	}
+	dir, err := resolveCodexDir(codexDir)
+	if err != nil {
+		return err
+	}
+	sessionsDir := filepath.Join(dir, "sessions")
+	if err := ensureUnder(sessionsDir, filePath); err != nil {
+		return err
+	}
+	if !strings.HasSuffix(strings.ToLower(filePath), ".jsonl") {
+		return errors.New("只能删除 .jsonl 会话文件")
+	}
+	if err := os.Remove(filePath); err != nil {
+		return fmt.Errorf("删除失败: %w", err)
+	}
+	return nil
 }
 
 // ensureUnder 防止路径越权;target 必须位于 base 下。

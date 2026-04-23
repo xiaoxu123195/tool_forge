@@ -240,6 +240,11 @@ func (a *App) ImportClaudeSessions(zipPath string) (*claudeinsight.ImportResult,
 	return claudeinsight.ImportSessions("", zipPath)
 }
 
+// DeleteClaudeSession 删除单个 Claude 会话文件。
+func (a *App) DeleteClaudeSession(filePath string) error {
+	return claudeinsight.DeleteSession("", filePath)
+}
+
 // ListClaudeSkills 列出 ~/.claude/skills 下所有 skill。
 func (a *App) ListClaudeSkills() (*claudeinsight.SkillList, error) {
 	return claudeinsight.ListSkills("")
@@ -332,6 +337,11 @@ func (a *App) ExportCodexSessions(filePaths []string, destZip string) (*codexins
 
 func (a *App) ImportCodexSessions(zipPath string) (*codexinsight.ImportResult, error) {
 	return codexinsight.ImportSessions("", zipPath)
+}
+
+// DeleteCodexSession 删除单个 Codex 会话文件。
+func (a *App) DeleteCodexSession(filePath string) error {
+	return codexinsight.DeleteSession("", filePath)
 }
 
 // ---- Codex Memories ----

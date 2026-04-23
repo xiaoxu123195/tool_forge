@@ -1,8 +1,15 @@
 import { useMemo, useRef, useState } from 'react'
-import { AlertCircle, CheckCircle2, Copy, Download, Upload } from 'lucide-react'
-import { json } from '@codemirror/lang-json'
+import {
+  AlertCircle,
+  CheckCircle2,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  Copy,
+  Download,
+  Upload,
+} from 'lucide-react'
 import { ToolShell } from '@/components/tool/ToolShell'
-import { CodeEditor } from '@/components/tool/CodeEditor'
+import { CodeEditor, type CodeEditorHandle } from '@/components/tool/CodeEditor'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { downloadText } from '@/lib/download'
@@ -22,7 +29,19 @@ export default function JsonEditor() {
   const [input, setInput] = useState('')
   const [opError, setOpError] = useState('')
   const [notice, setNotice] = useState('')
+  const [folded, setFolded] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const editorRef = useRef<CodeEditorHandle>(null)
+
+  const toggleFold = () => {
+    if (folded) {
+      editorRef.current?.unfoldAll()
+      setFolded(false)
+    } else {
+      editorRef.current?.foldAll()
+      setFolded(true)
+    }
+  }
 
   const status = useMemo(() => validate(input), [input])
 
@@ -126,6 +145,20 @@ export default function JsonEditor() {
             反转义
           </Button>
           <Button
+            variant="outline"
+            size="sm"
+            onClick={toggleFold}
+            disabled={!input}
+            title={folded ? '把全部节点展开' : '把全部节点折叠'}
+          >
+            {folded ? (
+              <ChevronsUpDown className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronsDownUp className="h-3.5 w-3.5" />
+            )}
+            {folded ? '展开' : '折叠'}
+          </Button>
+          <Button
             variant="ghost"
             size="sm"
             onClick={() => navigator.clipboard.writeText(input)}
@@ -163,9 +196,14 @@ export default function JsonEditor() {
           </div>
         </div>
         <CodeEditor
+          ref={editorRef}
           value={input}
-          onChange={setInput}
-          extensions={[json()]}
+          onChange={(v) => {
+            setInput(v)
+            // 用户手动改动后默认恢复展开态,按钮显示也回到"折叠"
+            if (folded) setFolded(false)
+          }}
+          language="json"
           placeholder="粘贴 JSON，或将 .json 文件拖到此处…"
           className="flex-1 overflow-hidden rounded-lg border border-border"
           minHeight="100%"

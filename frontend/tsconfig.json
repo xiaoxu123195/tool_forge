@@ -14,6 +14,8 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
+    "incremental": true,
+    "tsBuildInfoFile": "./node_modules/.cache/tsc.tsbuildinfo",
     "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {

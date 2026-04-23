@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertCircle, FileText, Loader2, Save, Settings } from 'lucide-react'
-import { markdown } from '@codemirror/lang-markdown'
-import { json } from '@codemirror/lang-json'
+import { AlertCircle, Eye, FileText, Loader2, Pencil, Save, Settings } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { CodeEditor } from '@/components/tool/CodeEditor'
+import { CodeEditor, type EditorLanguage } from '@/components/tool/CodeEditor'
+import { MarkdownPreview } from '@/components/tool/MarkdownPreview'
 import { cn } from '@/lib/utils'
 import {
   ReadClaudeConfigFile,
@@ -118,10 +117,17 @@ function FileEditor({ fileName }: { fileName: FileKey }) {
     }
   }
 
-  const extensions = useMemo(() => {
-    if (fileName === 'settings.json') return [json()]
-    if (fileName === 'CLAUDE.md') return [markdown()]
-    return []
+  const language: EditorLanguage = useMemo(() => {
+    if (fileName === 'settings.json') return 'json'
+    if (fileName === 'CLAUDE.md') return 'markdown'
+    return 'plaintext'
+  }, [fileName])
+
+  const isMarkdown = language === 'markdown'
+  const [preview, setPreview] = useState(false)
+  // 切文件时自动退出预览
+  useEffect(() => {
+    setPreview(false)
   }, [fileName])
 
   return (
@@ -143,6 +149,17 @@ function FileEditor({ fileName }: { fileName: FileKey }) {
             {formatDateTime(meta.updated_at)}
           </span>
         )}
+        {isMarkdown && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setPreview((v) => !v)}
+            title={preview ? '切回编辑模式' : '预览渲染效果'}
+          >
+            {preview ? <Pencil className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+            {preview ? '编辑' : '预览'}
+          </Button>
+        )}
         <Button variant="default" size="sm" onClick={save} disabled={!dirty || saving}>
           <Save className="h-3.5 w-3.5" />
           {saving ? '保存中...' : toast || '保存'}
@@ -156,11 +173,16 @@ function FileEditor({ fileName }: { fileName: FileKey }) {
           <AlertCircle className="h-8 w-8 text-red-500" />
           <div className="max-w-md text-sm text-muted-foreground">{error}</div>
         </div>
+      ) : isMarkdown && preview ? (
+        <MarkdownPreview
+          value={content}
+          className="flex-1 min-h-0 overflow-auto rounded-md border border-border bg-card px-5 py-4"
+        />
       ) : (
         <CodeEditor
           value={content}
           onChange={setContent}
-          extensions={extensions}
+          language={language}
           minHeight="100%"
           placeholder={meta?.exists ? '' : `${fileName} 不存在，保存后将创建。`}
           className="flex-1 overflow-hidden rounded-md border border-border"

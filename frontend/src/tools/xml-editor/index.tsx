@@ -1,6 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
 import { AlertCircle, CheckCircle2, Copy, Download, Upload } from 'lucide-react'
-import { xml } from '@codemirror/lang-xml'
 import { ToolShell } from '@/components/tool/ToolShell'
 import { CodeEditor } from '@/components/tool/CodeEditor'
 import { Button } from '@/components/ui/button'
@@ -143,7 +142,7 @@ export default function XmlEditor() {
         <CodeEditor
           value={input}
           onChange={setInput}
-          extensions={[xml()]}
+          language="xml"
           placeholder="粘贴 XML，或将 .xml 文件拖到此处…"
           className="flex-1 overflow-hidden rounded-lg border border-border"
           minHeight="100%"

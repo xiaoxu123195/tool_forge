@@ -44,7 +44,7 @@ export function ToolShell({
           )}
         </div>
       </header>
-      <div className="flex-1 overflow-auto p-5">{children}</div>
+      <div className="flex-1 overflow-auto p-5" data-tool-scroll="true">{children}</div>
     </div>
   )
 }

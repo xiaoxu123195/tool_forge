@@ -1,7 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
 import { AlertCircle, CheckCircle2, Copy, Upload } from 'lucide-react'
-import { json as langJson } from '@codemirror/lang-json'
-import { xml as langXml } from '@codemirror/lang-xml'
 import { ToolShell } from '@/components/tool/ToolShell'
 import { CodeEditor } from '@/components/tool/CodeEditor'
 import { Button } from '@/components/ui/button'
@@ -78,7 +76,7 @@ export default function PlistTool() {
     }
   }, [state, view])
 
-  const editorExtensions = view === 'xml' ? [langXml()] : [langJson()]
+  const editorLanguage = view === 'xml' ? 'xml' : 'json'
   const editorReadOnly = view !== 'xml'
 
   const handleXmlTextChange = (txt: string) => {
@@ -284,7 +282,7 @@ export default function PlistTool() {
           value={displayText}
           onChange={editorReadOnly ? undefined : handleXmlTextChange}
           readOnly={editorReadOnly}
-          extensions={editorExtensions}
+          language={editorLanguage}
           placeholder="粘贴 XML plist，或将 .plist / .bplist 文件拖到此处…"
           className="flex-1 overflow-hidden rounded-lg border border-border"
           minHeight="100%"

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   Bot,
@@ -7,11 +7,17 @@ import {
   Loader2,
   MessageSquare,
   Search,
+  Trash2,
   Upload,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import {
+  ScrollToTopButton,
+  findToolScroller,
+} from '@/components/tool/ScrollToTopButton'
 import { cn } from '@/lib/utils'
 import {
+  DeleteCodexSession,
   ExportCodexSessions,
   ImportCodexSessions,
   ListCodexSessions,
@@ -37,6 +43,10 @@ export function Sessions({ reloadToken }: Props) {
   const [opened, setOpened] = useState<Item | null>(null)
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState<Item | null>(null)
+
+  const rootRef = useRef<HTMLDivElement>(null)
+  const savedScrollRef = useRef<number>(0)
 
   useEffect(() => {
     let cancelled = false
@@ -59,6 +69,23 @@ export function Sessions({ reloadToken }: Props) {
     }
   }, [reloadToken])
 
+  const openDetail = useCallback((it: Item) => {
+    const sc = findToolScroller(rootRef.current)
+    savedScrollRef.current = sc?.scrollTop ?? 0
+    setOpened(it)
+    requestAnimationFrame(() => {
+      if (sc) sc.scrollTop = 0
+    })
+  }, [])
+
+  const closeDetail = useCallback(() => {
+    setOpened(null)
+    requestAnimationFrame(() => {
+      const sc = findToolScroller(rootRef.current)
+      if (sc) sc.scrollTop = savedScrollRef.current
+    })
+  }, [])
+
   const exportOne = async (it: Item, ev: React.MouseEvent) => {
     ev.stopPropagation()
     try {
@@ -73,6 +100,21 @@ export function Sessions({ reloadToken }: Props) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
+    }
+  }
+
+  const doDelete = async (it: Item) => {
+    try {
+      setBusy(true)
+      await DeleteCodexSession(it.file_path)
+      setItems((prev) => (prev ? prev.filter((x) => x.file_path !== it.file_path) : prev))
+      setToast(`已删除 1 个会话`)
+      setTimeout(() => setToast(''), 3000)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+      setConfirmDelete(null)
     }
   }
 
@@ -125,16 +167,6 @@ export function Sessions({ reloadToken }: Props) {
     )
   }
 
-  if (opened) {
-    return (
-      <SessionDetail
-        filePath={opened.file_path}
-        project={opened.project}
-        onBack={() => setOpened(null)}
-      />
-    )
-  }
-
   if (!items || items.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
@@ -151,34 +183,59 @@ export function Sessions({ reloadToken }: Props) {
   }
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-3">
-      <Toolbar
-        items={items}
-        filtered={filtered}
-        query={query}
-        onQuery={setQuery}
-        onImport={importZip}
-        busy={busy}
-      />
-      {toast && (
-        <div className="rounded-md border border-emerald-500/40 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300">
-          {toast}
-        </div>
+    <div ref={rootRef}>
+      <div className={cn('mx-auto flex max-w-5xl flex-col gap-3', opened && 'hidden')}>
+        <Toolbar
+          items={items}
+          filtered={filtered}
+          query={query}
+          onQuery={setQuery}
+          onImport={importZip}
+          busy={busy}
+        />
+        {toast && (
+          <div className="rounded-md border border-emerald-500/40 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300">
+            {toast}
+          </div>
+        )}
+        {filtered.length === 0 ? (
+          <EmptyFilter />
+        ) : (
+          <ul className="space-y-2">
+            {filtered.map((it) => (
+              <SessionRow
+                key={it.id || it.file_path}
+                item={it}
+                onOpen={() => openDetail(it)}
+                onExport={(ev) => exportOne(it, ev)}
+                onDelete={(ev) => {
+                  ev.stopPropagation()
+                  setConfirmDelete(it)
+                }}
+              />
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {opened && (
+        <SessionDetail
+          filePath={opened.file_path}
+          project={opened.project}
+          onBack={closeDetail}
+        />
       )}
-      {filtered.length === 0 ? (
-        <EmptyFilter />
-      ) : (
-        <ul className="space-y-2">
-          {filtered.map((it) => (
-            <SessionRow
-              key={it.id || it.file_path}
-              item={it}
-              onOpen={() => setOpened(it)}
-              onExport={(ev) => exportOne(it, ev)}
-            />
-          ))}
-        </ul>
+
+      {confirmDelete && (
+        <DeleteConfirm
+          item={confirmDelete}
+          busy={busy}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={() => doDelete(confirmDelete)}
+        />
       )}
+
+      {!opened && <ScrollToTopButton />}
     </div>
   )
 }
@@ -232,10 +289,12 @@ function SessionRow({
   item,
   onOpen,
   onExport,
+  onDelete,
 }: {
   item: Item
   onOpen: () => void
   onExport: (ev: React.MouseEvent) => void
+  onDelete: (ev: React.MouseEvent) => void
 }) {
   const started = new Date(item.started_at)
   const ended = new Date(item.ended_at)
@@ -248,7 +307,7 @@ function SessionRow({
     <li className="group relative">
       <button
         onClick={onOpen}
-        className="flex w-full flex-col gap-1.5 rounded-lg border border-border bg-card p-3 pr-10 text-left transition-colors hover:border-indigo-500/40 hover:bg-indigo-500/5"
+        className="flex w-full flex-col gap-1.5 rounded-lg border border-border bg-card p-3 pr-20 text-left transition-colors hover:border-indigo-500/40 hover:bg-indigo-500/5"
       >
         <div className="flex items-center gap-2 text-xs">
           <Folder className="h-3.5 w-3.5 shrink-0 text-indigo-500" />
@@ -279,13 +338,66 @@ function SessionRow({
           {item.cli && <span className="font-mono">CLI {item.cli}</span>}
         </div>
       </button>
-      <button
-        onClick={onExport}
-        title="导出为 ZIP"
-        className="absolute right-2 top-2 hidden h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-indigo-500/15 hover:text-indigo-600 dark:hover:text-indigo-300 group-hover:inline-flex"
-      >
-        <Download className="h-3.5 w-3.5" />
-      </button>
+      <div className="absolute right-2 top-2 hidden items-center gap-1 group-hover:inline-flex">
+        <button
+          onClick={onExport}
+          title="导出为 ZIP"
+          className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-indigo-500/15 hover:text-indigo-600 dark:hover:text-indigo-300"
+        >
+          <Download className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={onDelete}
+          title="删除此会话"
+          className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-red-500/15 hover:text-red-600 dark:hover:text-red-300"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
     </li>
+  )
+}
+
+function DeleteConfirm({
+  item,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  item: Item
+  busy: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+      <div className="w-[420px] max-w-[90vw] rounded-lg border border-border bg-card p-5 shadow-xl">
+        <h3 className="mb-1.5 text-base font-semibold">删除会话</h3>
+        <p className="mb-3 text-sm text-muted-foreground">
+          这个 Codex 会话文件将被从磁盘永久删除,无法恢复。
+        </p>
+        <div className="mb-4 space-y-1 rounded-md border border-border bg-secondary/40 p-2 text-[11px]">
+          <div className="truncate font-mono text-muted-foreground" title={item.project}>
+            {item.project || '—'}
+          </div>
+          <div className="truncate font-mono text-foreground/90" title={item.file_path}>
+            {item.file_path}
+          </div>
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={onCancel} disabled={busy}>
+            取消
+          </Button>
+          <Button
+            size="sm"
+            onClick={onConfirm}
+            disabled={busy}
+            className="bg-red-600 text-white hover:bg-red-700"
+          >
+            {busy ? '删除中...' : '确认删除'}
+          </Button>
+        </div>
+      </div>
+    </div>
   )
 }

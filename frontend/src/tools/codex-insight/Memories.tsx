@@ -3,18 +3,18 @@ import {
   AlertCircle,
   ArrowLeft,
   Brain,
+  Eye,
   File,
   FilePlus,
   Folder,
   Loader2,
+  Pencil,
   Save,
   Trash2,
 } from 'lucide-react'
-import { markdown } from '@codemirror/lang-markdown'
-import { javascript } from '@codemirror/lang-javascript'
-import { json } from '@codemirror/lang-json'
 import { Button } from '@/components/ui/button'
-import { CodeEditor } from '@/components/tool/CodeEditor'
+import { CodeEditor, type EditorLanguage } from '@/components/tool/CodeEditor'
+import { MarkdownPreview } from '@/components/tool/MarkdownPreview'
 import { cn } from '@/lib/utils'
 import {
   DeleteCodexMemory,
@@ -281,14 +281,22 @@ function FileEditor({ path, onBack }: { path: string; onBack: () => void }) {
     onBack()
   }
 
-  const extensions = useMemo(() => {
+  const language: EditorLanguage = useMemo(() => {
     const ext = path.toLowerCase().split('.').pop() ?? ''
-    if (ext === 'md' || ext === 'markdown') return [markdown()]
-    if (ext === 'js' || ext === 'mjs' || ext === 'ts' || ext === 'tsx' || ext === 'jsx') {
-      return [javascript({ typescript: ext === 'ts' || ext === 'tsx', jsx: ext === 'jsx' || ext === 'tsx' })]
-    }
-    if (ext === 'json') return [json()]
-    return []
+    if (ext === 'md' || ext === 'markdown') return 'markdown'
+    if (ext === 'ts' || ext === 'tsx') return 'typescript'
+    if (ext === 'js' || ext === 'mjs' || ext === 'jsx') return 'javascript'
+    if (ext === 'json') return 'json'
+    if (ext === 'xml') return 'xml'
+    if (ext === 'yaml' || ext === 'yml') return 'yaml'
+    if (ext === 'ini' || ext === 'toml') return 'ini'
+    return 'plaintext'
+  }, [path])
+
+  const isMarkdown = language === 'markdown'
+  const [preview, setPreview] = useState(false)
+  useEffect(() => {
+    setPreview(false)
   }, [path])
 
   return (
@@ -308,6 +316,17 @@ function FileEditor({ path, onBack }: { path: string; onBack: () => void }) {
             {formatDateTime(meta.updated_at)}
           </span>
         )}
+        {isMarkdown && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setPreview((v) => !v)}
+            title={preview ? '切回编辑模式' : '预览渲染效果'}
+          >
+            {preview ? <Pencil className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+            {preview ? '编辑' : '预览'}
+          </Button>
+        )}
         <Button variant="default" size="sm" onClick={save} disabled={!dirty || saving}>
           <Save className="h-3.5 w-3.5" />
           {saving ? '保存中...' : toast || '保存'}
@@ -320,11 +339,16 @@ function FileEditor({ path, onBack }: { path: string; onBack: () => void }) {
           <AlertCircle className="h-8 w-8 text-red-500" />
           <div className="max-w-md text-sm text-muted-foreground">{error}</div>
         </div>
+      ) : isMarkdown && preview ? (
+        <MarkdownPreview
+          value={content}
+          className="flex-1 min-h-0 overflow-auto rounded-md border border-border bg-card px-5 py-4"
+        />
       ) : (
         <CodeEditor
           value={content}
           onChange={setContent}
-          extensions={extensions}
+          language={language}
           minHeight="100%"
           className="flex-1 overflow-hidden rounded-md border border-border"
         />

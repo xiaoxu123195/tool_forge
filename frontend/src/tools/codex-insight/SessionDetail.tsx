@@ -13,11 +13,9 @@ import {
   Wrench,
   X,
 } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import rehypeHighlight from 'rehype-highlight'
-import 'highlight.js/styles/github-dark.css'
 import { Button } from '@/components/ui/button'
+import { ScrollToTopButton } from '@/components/tool/ScrollToTopButton'
+import { MarkdownPreview } from '@/components/tool/MarkdownPreview'
 import { cn } from '@/lib/utils'
 import { LoadCodexSession } from '../../../wailsjs/go/main/App'
 import type { codexinsight } from '../../../wailsjs/go/models'
@@ -107,6 +105,7 @@ export function SessionDetail({ filePath, project, onBack, focusUUID }: Props) {
       {findOpen && bodyRef.current && (
         <FindBar container={bodyRef.current} onClose={() => setFindOpen(false)} />
       )}
+      <ScrollToTopButton />
     </div>
   )
 }
@@ -311,76 +310,7 @@ function BlockView({ block }: { block: Block }) {
 }
 
 function TextBlock({ text }: { text: string }) {
-  return (
-    <div className="break-words text-sm leading-relaxed">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
-        components={{
-          h1: ({ children }) => <h1 className="mb-2 mt-3 text-base font-semibold">{children}</h1>,
-          h2: ({ children }) => <h2 className="mb-2 mt-3 text-sm font-semibold">{children}</h2>,
-          h3: ({ children }) => <h3 className="mb-1.5 mt-2.5 text-sm font-semibold">{children}</h3>,
-          p: ({ children }) => <p className="my-2 whitespace-pre-wrap">{children}</p>,
-          ul: ({ children }) => <ul className="my-2 ml-5 list-disc space-y-1">{children}</ul>,
-          ol: ({ children }) => <ol className="my-2 ml-5 list-decimal space-y-1">{children}</ol>,
-          li: ({ children }) => <li className="pl-1">{children}</li>,
-          blockquote: ({ children }) => (
-            <blockquote className="my-2 border-l-2 border-border pl-3 text-muted-foreground">
-              {children}
-            </blockquote>
-          ),
-          code: ({ inline, className, children, ...props }: any) => {
-            if (inline) {
-              return (
-                <code className="rounded bg-secondary px-1 py-0.5 font-mono text-[12.5px]" {...props}>
-                  {children}
-                </code>
-              )
-            }
-            const hasHljs = typeof className === 'string' && className.includes('hljs')
-            return (
-              <code
-                className={cn(
-                  hasHljs ? className : 'block rounded-md bg-secondary/60 p-3',
-                  !hasHljs && 'p-3'
-                )}
-                {...props}
-              >
-                {children}
-              </code>
-            )
-          },
-          pre: ({ children }) => (
-            <pre className="my-2 overflow-x-auto rounded-md font-mono text-[12px]">
-              {children}
-            </pre>
-          ),
-          a: ({ children, ...props }) => (
-            <a {...props} target="_blank" rel="noreferrer" className="text-indigo-500 underline underline-offset-2">
-              {children}
-            </a>
-          ),
-          table: ({ children }) => (
-            <div className="my-2 overflow-x-auto">
-              <table className="w-full border-collapse text-xs">{children}</table>
-            </div>
-          ),
-          th: ({ children }) => (
-            <th className="border border-border bg-secondary/50 px-2 py-1 text-left font-medium">
-              {children}
-            </th>
-          ),
-          td: ({ children }) => (
-            <td className="border border-border px-2 py-1 align-top">{children}</td>
-          ),
-          hr: () => <hr className="my-3 border-border" />,
-          strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-        }}
-      >
-        {text}
-      </ReactMarkdown>
-    </div>
-  )
+  return <MarkdownPreview value={text} />
 }
 
 function ReasoningBlock({ text }: { text: string }) {

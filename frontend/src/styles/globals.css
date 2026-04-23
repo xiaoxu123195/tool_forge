@@ -225,3 +225,116 @@
     background: transparent;
   }
 }
+
+/* Monaco placeholder: Monaco 本身没 placeholder, 我们用 decoration after-content 注入 */
+.monaco-editor .monaco-placeholder {
+  color: hsl(var(--muted-foreground));
+  font-style: italic;
+  pointer-events: none;
+  user-select: none;
+}
+/* 包裹 Monaco 的容器,确保它在 flex 布局下能撑满高度 */
+.monaco-host {
+  position: relative;
+  min-height: 0;
+}
+
+/* ============= Markdown 预览 ============= */
+.markdown-preview {
+  /* 长路径 / 长 URL 时允许在任意位置换行,避免撑宽父容器 */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+/* 干掉 @tailwindcss/typography 默认给行内 <code> 加的反引号伪元素 */
+.markdown-preview :where(code):not(:where(pre *))::before,
+.markdown-preview :where(code):not(:where(pre *))::after {
+  content: none !important;
+}
+
+/* ---- 行内 code:不在 <pre> 里的 <code> ---- */
+/* 用 !important + :not(pre) > code 精准覆盖 highlight.js github-dark 主题里的
+   .hljs { background:#0d1117; color:#e6edf3 } —— 以防 rehype-highlight 错把
+   行内 code 也挂了 hljs class,那样整段正文会变成黑色代码块。 */
+.markdown-preview :not(pre) > code {
+  background: hsl(var(--secondary)) !important;
+  color: hsl(var(--foreground)) !important;
+  padding: 0.12em 0.4em !important;
+  border-radius: 0.3em;
+  font-size: 0.875em;
+  font-weight: 500;
+  /* 让行内 code token 之间可以正常换行 */
+  word-break: break-word;
+}
+/* 让 hljs 注入的 span 色在行内时变回默认色,只保留块级才有代码语法色 */
+.markdown-preview :not(pre) > code [class*='hljs-'] {
+  color: inherit !important;
+  background: transparent !important;
+  font-weight: inherit !important;
+}
+
+/* ---- 块级 code:<pre><code>…</code></pre> ---- */
+.markdown-preview pre {
+  background: #0d1117;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  margin: 1em 0;
+  overflow-x: auto;
+}
+.markdown-preview pre > code {
+  display: block;
+  background: transparent;
+  color: #e6edf3;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  border-radius: 0;
+}
+
+/* ---- 其他元素主题化 ---- */
+.markdown-preview a {
+  color: hsl(224, 71%, 56%);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.dark .markdown-preview a {
+  color: hsl(224, 85%, 72%);
+}
+.markdown-preview blockquote {
+  border-left-color: hsl(224, 71%, 56% / 0.45);
+  background: hsl(224, 71%, 56% / 0.07);
+  font-style: normal;
+  color: hsl(var(--foreground) / 0.85);
+  padding: 0.5em 1em;
+  border-radius: 0.375rem;
+}
+.markdown-preview th,
+.markdown-preview td {
+  border: 1px solid hsl(var(--border));
+  padding: 0.4em 0.75em;
+}
+.markdown-preview th {
+  background: hsl(var(--secondary) / 0.5);
+  font-weight: 600;
+}
+.markdown-preview hr {
+  border-color: hsl(var(--border));
+  margin: 1.5em 0;
+}
+/* 收紧 prose-sm 里的段落/列表间距 */
+.markdown-preview p {
+  margin-top: 0.6em;
+  margin-bottom: 0.6em;
+}
+.markdown-preview ul,
+.markdown-preview ol {
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+.markdown-preview li {
+  margin-top: 0.15em;
+  margin-bottom: 0.15em;
+}
+.markdown-preview li > p {
+  margin-top: 0.25em;
+  margin-bottom: 0.25em;
+}

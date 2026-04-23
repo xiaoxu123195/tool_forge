@@ -21,15 +21,15 @@ var sessionFileNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*\.js
 
 // manifest ZIP 的自描述清单,便于跨机器/版本导入。
 type manifest struct {
-	Version    int                `json:"version"`
-	ExportedAt string             `json:"exported_at"`
-	Sessions   []manifestSession  `json:"sessions"`
+	Version    int               `json:"version"`
+	ExportedAt string            `json:"exported_at"`
+	Sessions   []manifestSession `json:"sessions"`
 }
 
 type manifestSession struct {
 	SessionID string `json:"session_id"`
-	Project   string `json:"project"`    // 原 cwd 路径,用于导入时还原目录
-	File      string `json:"file"`       // 在 ZIP 内的文件名 (xxx.jsonl)
+	Project   string `json:"project"` // 原 cwd 路径,用于导入时还原目录
+	File      string `json:"file"`    // 在 ZIP 内的文件名 (xxx.jsonl)
 	Size      int64  `json:"size"`
 	Messages  int    `json:"messages"`
 }
@@ -43,9 +43,9 @@ type ExportResult struct {
 
 // ImportResult 导入完成后的结果
 type ImportResult struct {
-	Imported  int      `json:"imported"`   // 成功写入的 session 数
-	Skipped   int      `json:"skipped"`    // 已存在跳过的数量
-	Projects  []string `json:"projects"`   // 涉及的 projects 目录(去重)
+	Imported  int      `json:"imported"` // 成功写入的 session 数
+	Skipped   int      `json:"skipped"`  // 已存在跳过的数量
+	Projects  []string `json:"projects"` // 涉及的 projects 目录(去重)
 	ClaudeDir string   `json:"claude_dir"`
 }
 
@@ -278,6 +278,28 @@ func ImportSessions(claudeDir, zipPath string) (*ImportResult, error) {
 		res.Projects = append(res.Projects, p)
 	}
 	return res, nil
+}
+
+// DeleteSession 删除一个会话 .jsonl。必须位于 claudeDir/projects 下，防越权。
+func DeleteSession(claudeDir, filePath string) error {
+	if strings.TrimSpace(filePath) == "" {
+		return errors.New("文件路径不能为空")
+	}
+	dir, err := resolveClaudeDir(claudeDir)
+	if err != nil {
+		return err
+	}
+	projectsDir := filepath.Join(dir, "projects")
+	if err := ensureUnder(projectsDir, filePath); err != nil {
+		return err
+	}
+	if !strings.HasSuffix(strings.ToLower(filePath), ".jsonl") {
+		return errors.New("只能删除 .jsonl 会话文件")
+	}
+	if err := os.Remove(filePath); err != nil {
+		return fmt.Errorf("删除失败: %w", err)
+	}
+	return nil
 }
 
 // claudeProjectDirName 把 cwd 路径转为 Claude Code 风格的目录名:
