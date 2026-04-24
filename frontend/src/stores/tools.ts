@@ -14,6 +14,7 @@ export type ToolCategory =
   | 'network'
   | 'gen'
   | 'dev'
+  | 'system'
 
 export interface ToolMeta {
   id: string
@@ -37,6 +38,7 @@ export const CATEGORY_LABELS: Record<ToolCategory, string> = {
   network: '网络',
   gen: '生成',
   dev: '开发辅助',
+  system: '系统',
 }
 
 interface ToolsState {

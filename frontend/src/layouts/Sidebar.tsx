@@ -25,6 +25,7 @@ const CATEGORY_ORDER: ToolCategory[] = [
   'network',
   'gen',
   'dev',
+  'system',
 ]
 
 interface SidebarProps {

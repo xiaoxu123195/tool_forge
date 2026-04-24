@@ -338,3 +338,36 @@
   margin-top: 0.25em;
   margin-bottom: 0.25em;
 }
+
+/* TitleBar 剪贴板图标:监听到新条目时的脉冲动效 */
+@keyframes tf-clipboard-pulse {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgb(99 102 241 / 0.6);
+    color: rgb(99 102 241);
+  }
+  50% {
+    transform: scale(1.18);
+    box-shadow: 0 0 0 6px rgb(99 102 241 / 0);
+    color: rgb(129 140 248);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgb(99 102 241 / 0);
+  }
+}
+.tf-clipboard-pulse {
+  animation: tf-clipboard-pulse 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 自定义 Confirm 弹窗入场动效 */
+@keyframes tf-confirm-pop {
+  0% {
+    transform: translateY(8px) scale(0.96);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}

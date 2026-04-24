@@ -91,6 +91,9 @@ import { meta as cryptoLabMeta } from './crypto-lab/meta'
 import Protobuf from './protobuf'
 import { meta as protobufMeta } from './protobuf/meta'
 
+import Clipboard from './clipboard'
+import { meta as clipboardMeta } from './clipboard/meta'
+
 export interface ToolEntry {
   meta: ToolMeta
   Component: ComponentType
@@ -123,6 +126,7 @@ export const tools: ToolEntry[] = [
   { meta: charlesKeyMeta, Component: CharlesKey },
   { meta: hexEditorMeta, Component: HexEditor },
   { meta: mmkvMeta, Component: Mmkv },
+  { meta: clipboardMeta, Component: Clipboard },
   { meta: envScanMeta, Component: EnvScan },
   { meta: claudeInsightMeta, Component: ClaudeInsight },
   { meta: codexInsightMeta, Component: CodexInsight },

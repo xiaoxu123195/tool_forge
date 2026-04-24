@@ -9,12 +9,14 @@ import (
 	"time"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.design/x/hotkey"
 
 	"tool_forge/backend/system"
 	"tool_forge/backend/tools/aistupid"
 	"tool_forge/backend/tools/appsearch"
 	"tool_forge/backend/tools/charles"
 	"tool_forge/backend/tools/claudeinsight"
+	"tool_forge/backend/tools/clipboard"
 	"tool_forge/backend/tools/codexinsight"
 	"tool_forge/backend/tools/envscan"
 	"tool_forge/backend/tools/forensic"
@@ -38,13 +40,20 @@ type App struct {
 	ctx       context.Context
 	forensic  *forensic.Service
 	appsearch *appsearch.Service
+	clipboard *clipboard.Service
 }
 
 // NewApp creates a new App application struct
 func NewApp() *App {
+	clip, err := clipboard.New()
+	if err != nil {
+		// 数据目录创建失败时降级:服务为 nil,前端 RPC 会得到默认错误
+		clip = nil
+	}
 	return &App{
 		forensic:  forensic.New(),
 		appsearch: appsearch.New(),
+		clipboard: clip,
 	}
 }
 
@@ -53,6 +62,26 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.forensic.SetContext(ctx)
+	if a.clipboard != nil {
+		a.clipboard.Start(ctx)
+		a.clipboard.LogStartup()
+	}
+	// 注册全局热键 Ctrl+Shift+V → 唤起主窗 + 前端跳转剪贴板页
+	system.RegisterGlobalHotkeys(ctx, []system.HotkeySpec{
+		{
+			Mods:  []hotkey.Modifier{hotkey.ModCtrl, hotkey.ModShift},
+			Key:   hotkey.KeyV,
+			Event: "nav:goto-clipboard",
+			Label: "Ctrl+Shift+V (Clipboard)",
+		},
+	})
+}
+
+// shutdown 在 Wails 关闭前调用,释放剪贴板监听等
+func (a *App) shutdown(ctx context.Context) {
+	if a.clipboard != nil {
+		a.clipboard.Stop()
+	}
 }
 
 // GetAppInfo 返回应用与运行环境信息
@@ -376,6 +405,88 @@ func (a *App) WriteCodexConfigFile(name, content string) error {
 
 func (a *App) ListCodexHistory(query string) (*codexinsight.HistoryResult, error) {
 	return codexinsight.ListHistory("", query)
+}
+
+// ================ Clipboard ================
+
+// ListClipboard 返回剪贴板历史 + 配置（启用状态/上限）
+func (a *App) ListClipboard() clipboard.ListResult {
+	if a.clipboard == nil {
+		return clipboard.ListResult{Enabled: false, Limit: clipboard.DefaultConfig().Limit}
+	}
+	return a.clipboard.List()
+}
+
+// DeleteClipboardItem 删除单条
+func (a *App) DeleteClipboardItem(id string) error {
+	if a.clipboard == nil {
+		return nil
+	}
+	return a.clipboard.Delete(id)
+}
+
+// ToggleClipboardPin 切换某条的置顶状态
+func (a *App) ToggleClipboardPin(id string) error {
+	if a.clipboard == nil {
+		return nil
+	}
+	return a.clipboard.TogglePin(id)
+}
+
+// ClearClipboardHistory 清空非置顶历史
+func (a *App) ClearClipboardHistory() error {
+	if a.clipboard == nil {
+		return nil
+	}
+	return a.clipboard.Clear()
+}
+
+// ClearClipboardAll 清空所有历史（含置顶）
+func (a *App) ClearClipboardAll() error {
+	if a.clipboard == nil {
+		return nil
+	}
+	return a.clipboard.ClearAll()
+}
+
+// SetClipboardEnabled 启停剪贴板监听
+func (a *App) SetClipboardEnabled(enabled bool) error {
+	if a.clipboard == nil {
+		return nil
+	}
+	return a.clipboard.SetEnabled(enabled)
+}
+
+// SetClipboardLimit 设置历史上限（同时按新上限裁剪）
+func (a *App) SetClipboardLimit(limit int) error {
+	if a.clipboard == nil {
+		return nil
+	}
+	return a.clipboard.SetLimit(limit)
+}
+
+// SetClipboardMaxImageBytes 设置单张图片大小上限（字节）
+func (a *App) SetClipboardMaxImageBytes(n int) error {
+	if a.clipboard == nil {
+		return nil
+	}
+	return a.clipboard.SetMaxImageBytes(n)
+}
+
+// CopyClipboardItem 把某条历史写回系统剪贴板
+func (a *App) CopyClipboardItem(id string) error {
+	if a.clipboard == nil {
+		return nil
+	}
+	return a.clipboard.CopyItem(id)
+}
+
+// GetClipboardImage 读取某图片项的原图 dataURL（用于查看大图）
+func (a *App) GetClipboardImage(id string) (string, error) {
+	if a.clipboard == nil {
+		return "", nil
+	}
+	return a.clipboard.GetImage(id)
 }
 
 // ================ Updater ================

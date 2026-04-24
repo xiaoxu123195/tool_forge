@@ -15,6 +15,7 @@ export const NEBULA_CATEGORY_COLORS: Record<ToolCategory, string> = {
   network: 'bg-teal-500/15 text-teal-600 dark:bg-teal-500/20 dark:text-teal-300',
   gen: 'bg-emerald-500/15 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-300',
   dev: 'bg-orange-500/15 text-orange-600 dark:bg-orange-500/20 dark:text-orange-300',
+  system: 'bg-slate-500/15 text-slate-600 dark:bg-slate-500/20 dark:text-slate-300',
 }
 
 export const MINIMAL_ICON_CLASS = 'bg-secondary text-foreground'

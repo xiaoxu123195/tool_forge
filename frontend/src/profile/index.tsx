@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import {
   Bot,
+  ClipboardList,
   Database,
   Info,
   Palette,
@@ -13,12 +14,14 @@ import {
 import { cn } from '@/lib/utils'
 import { AboutSection } from './sections/About'
 import { BasicSection } from './sections/Basic'
+import { ClipboardSection } from './sections/Clipboard'
 import { ExternalSection } from './sections/External'
 import { PlaceholderSection } from './sections/Placeholder'
 
 type SectionId =
   | 'basic'
   | 'external'
+  | 'clipboard'
   | 'ai'
   | 'usage'
   | 'preferences'
@@ -35,6 +38,7 @@ interface Section {
 const SECTIONS: Section[] = [
   { id: 'basic', label: '基础信息', icon: User },
   { id: 'external', label: '外部工具', icon: Plug },
+  { id: 'clipboard', label: '剪贴板', icon: ClipboardList },
   { id: 'ai', label: 'AI 配置', icon: Bot, comingSoon: true },
   { id: 'usage', label: 'AI 用量', icon: SlidersHorizontal, comingSoon: true },
   { id: 'preferences', label: '工具偏好', icon: Palette, comingSoon: true },
@@ -89,6 +93,8 @@ export function Profile() {
           <BasicSection />
         ) : active === 'external' ? (
           <ExternalSection />
+        ) : active === 'clipboard' ? (
+          <ClipboardSection />
         ) : active === 'about' ? (
           <AboutSection />
         ) : (

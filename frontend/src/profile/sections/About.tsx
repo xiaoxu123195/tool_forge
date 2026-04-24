@@ -32,6 +32,7 @@ const CATEGORY_ACCENT: Record<ToolCategory, string> = {
   network: 'bg-cyan-500',
   gen: 'bg-fuchsia-500',
   dev: 'bg-slate-500',
+  system: 'bg-zinc-500',
 }
 
 const FEEDBACK_EMAIL = 'cherrytump@gmail.com'
