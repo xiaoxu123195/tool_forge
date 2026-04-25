@@ -94,6 +94,9 @@ import { meta as protobufMeta } from './protobuf/meta'
 import Clipboard from './clipboard'
 import { meta as clipboardMeta } from './clipboard/meta'
 
+import HttpTest from './http-test'
+import { meta as httpTestMeta } from './http-test/meta'
+
 export interface ToolEntry {
   meta: ToolMeta
   Component: ComponentType
@@ -131,6 +134,7 @@ export const tools: ToolEntry[] = [
   { meta: claudeInsightMeta, Component: ClaudeInsight },
   { meta: codexInsightMeta, Component: CodexInsight },
   { meta: aiStupidMeta, Component: AIStupid },
+  { meta: httpTestMeta, Component: HttpTest },
 ]
 
 export const toolRegistry: ToolMeta[] = tools.map((t) => t.meta)

@@ -19,6 +19,7 @@ import (
 	"tool_forge/backend/tools/codexinsight"
 	"tool_forge/backend/tools/envscan"
 	"tool_forge/backend/tools/forensic"
+	"tool_forge/backend/tools/httptest"
 	"tool_forge/backend/updater"
 )
 
@@ -41,6 +42,7 @@ type App struct {
 	appsearch *appsearch.Service
 	clipboard *clipboard.Service
 	hotkey    *system.Manager
+	httptest  *httptest.Service
 }
 
 // NewApp creates a new App application struct
@@ -63,11 +65,13 @@ func NewApp() *App {
 			DefaultSpec: "Ctrl+Shift+V",
 		},
 	}, hkConfig)
+	htt, _ := httptest.New()
 	return &App{
 		forensic:  forensic.New(),
 		appsearch: appsearch.New(),
 		clipboard: clip,
 		hotkey:    hkManager,
+		httptest:  htt,
 	}
 }
 
@@ -166,6 +170,40 @@ func (a *App) ImportData() (string, string) {
 		return "", err.Error()
 	}
 	return ls, ""
+}
+
+// ================ HTTP 请求测试器 ================
+
+// SendHTTPRequest 发送一次 HTTP 请求并返回响应
+func (a *App) SendHTTPRequest(req httptest.Request) httptest.Response {
+	if a.httptest == nil {
+		return httptest.Response{Error: "HTTP 服务未初始化"}
+	}
+	return a.httptest.Send(req)
+}
+
+// ListHTTPHistory 返回历史记录
+func (a *App) ListHTTPHistory() []httptest.HistoryItem {
+	if a.httptest == nil {
+		return nil
+	}
+	return a.httptest.History()
+}
+
+// DeleteHTTPHistory 删除单条历史
+func (a *App) DeleteHTTPHistory(id string) {
+	if a.httptest == nil {
+		return
+	}
+	a.httptest.DeleteHistory(id)
+}
+
+// ClearHTTPHistory 清空所有历史
+func (a *App) ClearHTTPHistory() {
+	if a.httptest == nil {
+		return
+	}
+	a.httptest.ClearHistory()
 }
 
 // ResetAllData 清空整个 ~/.toolforge 目录,前端在调用前应清自家 localStorage,
