@@ -9,16 +9,19 @@ import { applyAppearance, useLayoutStore } from '@/stores/layout'
 export function MainLayout() {
   const theme = useLayoutStore((s) => s.theme)
   const styleId = useLayoutStore((s) => s.styleId)
+  const glassWallpaperLight = useLayoutStore((s) => s.glassWallpaperLight)
+  const glassWallpaperDark = useLayoutStore((s) => s.glassWallpaperDark)
   const [paletteOpen, setPaletteOpen] = useState(false)
 
   useEffect(() => {
-    applyAppearance(theme, styleId)
+    applyAppearance(theme, styleId, glassWallpaperLight, glassWallpaperDark)
     if (theme !== 'system') return
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    const onChange = () => applyAppearance('system', styleId)
+    const onChange = () =>
+      applyAppearance('system', styleId, glassWallpaperLight, glassWallpaperDark)
     mq.addEventListener('change', onChange)
     return () => mq.removeEventListener('change', onChange)
-  }, [theme, styleId])
+  }, [theme, styleId, glassWallpaperLight, glassWallpaperDark])
 
   // 全局快捷键：Ctrl+K / Cmd+K 打开命令面板
   useEffect(() => {

@@ -41,7 +41,7 @@ function TabButton({ label, active, onClick }: { label: string; active: boolean;
       className={cn(
         'inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-medium transition-colors',
         active
-          ? 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300'
+          ? 'bg-info/15 text-info'
           : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
       )}
     >

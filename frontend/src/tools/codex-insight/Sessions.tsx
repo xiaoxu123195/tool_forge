@@ -171,7 +171,7 @@ export function Sessions({ reloadToken }: Props) {
   if (!items || items.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
-        <Bot className="h-10 w-10 text-indigo-500" />
+        <Bot className="h-10 w-10 text-info" />
         <div className="space-y-1">
           <h2 className="text-base font-medium">暂无会话</h2>
           <p className="max-w-md text-sm text-muted-foreground">
@@ -308,10 +308,10 @@ function SessionRow({
     <li className="group relative">
       <button
         onClick={onOpen}
-        className="flex w-full flex-col gap-1.5 rounded-lg border border-border bg-card p-3 pr-20 text-left transition-colors hover:border-indigo-500/40 hover:bg-indigo-500/5"
+        className="flex w-full flex-col gap-1.5 rounded-lg border border-border bg-card p-3 pr-20 text-left transition-colors hover:border-info/40 hover:bg-info/5"
       >
         <div className="flex items-center gap-2 text-xs">
-          <Folder className="h-3.5 w-3.5 shrink-0 text-indigo-500" />
+          <Folder className="h-3.5 w-3.5 shrink-0 text-info" />
           <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground" title={item.project}>
             {item.project || '—'}
           </span>
@@ -322,7 +322,7 @@ function SessionRow({
           )}
           {item.total_tokens > 0 && (
             <span
-              className="shrink-0 inline-flex items-center gap-1 rounded bg-indigo-500/10 px-1.5 py-0.5 font-mono text-[11px] text-indigo-600 dark:text-indigo-300"
+              className="shrink-0 inline-flex items-center gap-1 rounded bg-info/10 px-1.5 py-0.5 font-mono text-[11px] text-info"
               title={
                 `输入　${item.input_tokens.toLocaleString()}\n` +
                 `输出　${item.output_tokens.toLocaleString()}\n` +
@@ -358,7 +358,7 @@ function SessionRow({
         <button
           onClick={onExport}
           title="导出为 ZIP"
-          className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-indigo-500/15 hover:text-indigo-600 dark:hover:text-indigo-300"
+          className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-info/15 hover:text-info"
         >
           <Download className="h-3.5 w-3.5" />
         </button>

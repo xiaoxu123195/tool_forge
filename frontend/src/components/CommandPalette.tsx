@@ -351,13 +351,13 @@ function Row({
       onClick={() => onSelect(index)}
       className={cn(
         'mx-1 flex cursor-pointer items-center gap-3 rounded-md px-2.5 py-2 transition-colors',
-        active ? 'bg-indigo-500/15 text-foreground' : 'text-foreground/85 hover:bg-secondary/60',
+        active ? 'bg-info/15 text-foreground' : 'text-foreground/85 hover:bg-secondary/60',
       )}
     >
       <Icon
         className={cn(
           'h-4 w-4 shrink-0',
-          active ? 'text-indigo-600 dark:text-indigo-300' : 'text-muted-foreground',
+          active ? 'text-info' : 'text-muted-foreground',
         )}
       />
       <div className="min-w-0 flex-1">
@@ -393,7 +393,7 @@ function Highlighted({
         {Array.from(text).map((ch, i) => (
           <span
             key={i}
-            className={cn(set.has(i) && 'font-semibold text-indigo-600 dark:text-indigo-300')}
+            className={cn(set.has(i) && 'font-semibold text-info')}
           >
             {ch}
           </span>
@@ -409,7 +409,7 @@ function Highlighted({
   return (
     <>
       {text.slice(0, idx)}
-      <span className="font-semibold text-indigo-600 dark:text-indigo-300">
+      <span className="font-semibold text-info">
         {text.slice(idx, idx + q.length)}
       </span>
       {text.slice(idx + q.length)}

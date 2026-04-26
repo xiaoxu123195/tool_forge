@@ -215,7 +215,7 @@ function SkillsList({
 function EmptySkills({ onCreate }: { onCreate: () => void }) {
   return (
     <div className="flex h-64 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border bg-card text-center">
-      <Sparkles className="h-8 w-8 text-indigo-500" />
+      <Sparkles className="h-8 w-8 text-info" />
       <div className="space-y-1">
         <h2 className="text-sm font-medium">还没有 skill</h2>
         <p className="max-w-md text-xs text-muted-foreground">
@@ -240,10 +240,10 @@ function SkillCard({
   onDelete: () => void
 }) {
   return (
-    <li className="group relative rounded-lg border border-border bg-card transition-colors hover:border-indigo-500/40 hover:bg-indigo-500/5">
+    <li className="group relative rounded-lg border border-border bg-card transition-colors hover:border-info/40 hover:bg-info/5">
       <button onClick={onOpen} className="flex w-full flex-col items-start gap-1.5 p-3 text-left">
         <div className="flex w-full items-center gap-2">
-          <Sparkles className="h-3.5 w-3.5 shrink-0 text-indigo-500" />
+          <Sparkles className="h-3.5 w-3.5 shrink-0 text-info" />
           <span className="min-w-0 flex-1 truncate text-sm font-medium">{item.name}</span>
           <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
             {item.file_count} 个文件
@@ -368,7 +368,7 @@ function SkillDetail({
           返回列表
         </Button>
         <div className="flex min-w-0 flex-1 items-center gap-2 text-xs">
-          <Sparkles className="h-3.5 w-3.5 shrink-0 text-indigo-500" />
+          <Sparkles className="h-3.5 w-3.5 shrink-0 text-info" />
           <span className="truncate font-mono text-muted-foreground">{skill}</span>
         </div>
         <Button variant="default" size="sm" onClick={() => setShowCreate(true)} disabled={busy}>
@@ -426,7 +426,7 @@ function FileRow({
   onDelete: () => void
 }) {
   return (
-    <li className="group flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 transition-colors hover:border-indigo-500/40 hover:bg-indigo-500/5">
+    <li className="group flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 transition-colors hover:border-info/40 hover:bg-info/5">
       <button
         onClick={onOpen}
         disabled={file.is_dir}
@@ -435,7 +435,7 @@ function FileRow({
         {file.is_dir ? (
           <FolderPlus className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         ) : (
-          <File className="h-3.5 w-3.5 shrink-0 text-indigo-500" />
+          <File className="h-3.5 w-3.5 shrink-0 text-info" />
         )}
         <span className="min-w-0 flex-1 truncate font-mono text-xs">{file.path}</span>
         <span className="shrink-0 font-mono text-[10px] text-muted-foreground">

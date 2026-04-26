@@ -22,17 +22,17 @@ import { useUpdaterStore } from '@/stores/updater'
 import logoUrl from '@/assets/logo.png'
 
 const CATEGORY_ACCENT: Record<ToolCategory, string> = {
-  forensic: 'bg-rose-500',
+  forensic: 'bg-red-500',
   data: 'bg-blue-500',
-  ai: 'bg-indigo-500',
-  codec: 'bg-violet-500',
-  crypto: 'bg-amber-500',
-  time: 'bg-sky-500',
-  text: 'bg-emerald-500',
-  network: 'bg-cyan-500',
-  gen: 'bg-fuchsia-500',
-  dev: 'bg-slate-500',
-  system: 'bg-zinc-500',
+  ai: 'bg-cyan-500',
+  codec: 'bg-sky-500',
+  crypto: 'bg-rose-500',
+  time: 'bg-amber-500',
+  text: 'bg-pink-500',
+  network: 'bg-teal-500',
+  gen: 'bg-emerald-500',
+  dev: 'bg-orange-500',
+  system: 'bg-slate-500',
 }
 
 const FEEDBACK_EMAIL = 'cherrytump@gmail.com'
@@ -67,7 +67,7 @@ export function AboutSection() {
       {/* 头图 */}
       <div className="group flex flex-col items-center gap-3 rounded-lg border border-border bg-card p-6 text-center transition-all duration-300 hover:-translate-y-0.5 hover:shadow-lg">
         <div className="relative">
-          <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-violet-500/40 to-fuchsia-500/40 opacity-40 blur-xl transition-opacity duration-500 group-hover:opacity-80" />
+          <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-info/40 to-cyan-500/40 opacity-40 blur-xl transition-opacity duration-500 group-hover:opacity-80" />
           <img
             src={logoUrl}
             alt="Tool Forge"

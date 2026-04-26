@@ -109,7 +109,7 @@ export function Home() {
               items={displayedTools.map((t) => t.id)}
               strategy={rectSortingStrategy}
             >
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid auto-rows-fr grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {displayedTools.map((tool) => (
                   <SortableCard
                     key={tool.id}
@@ -182,7 +182,7 @@ function SortableCard({
       {...attributes}
       {...listeners}
       className={cn(
-        'group relative rounded-lg border bg-card p-4 transition-all duration-200 touch-none',
+        'group relative flex h-full flex-col rounded-lg border bg-card p-4 transition-all duration-200 touch-none',
         themed ? 'border-border/60 card-soft' : 'border-border',
         !managing &&
           'cursor-pointer hover:-translate-y-0.5 hover:border-foreground/30 hover:shadow-lg hover:shadow-foreground/5',

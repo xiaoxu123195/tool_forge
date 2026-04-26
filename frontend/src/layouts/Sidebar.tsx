@@ -190,7 +190,7 @@ export function Sidebar({ onOpenCommandPalette }: SidebarProps = {}) {
                         cn(
                           'relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-all',
                           isActive
-                            ? 'bg-indigo-500 text-white shadow-sm shadow-indigo-500/30'
+                            ? 'bg-info text-info-foreground shadow-sm shadow-info/30'
                             : 'text-muted-foreground hover:scale-110 hover:bg-background hover:text-foreground hover:shadow-sm'
                         )
                       }
@@ -243,7 +243,7 @@ export function Sidebar({ onOpenCommandPalette }: SidebarProps = {}) {
                             <span className="truncate">{tool.title}</span>
                             {pinned && (
                               <Pin
-                                className="ml-auto h-3 w-3 shrink-0 fill-indigo-500/60 text-indigo-500/60"
+                                className="ml-auto h-3 w-3 shrink-0 fill-info/60 text-info/60"
                                 aria-label="已收藏"
                               />
                             )}

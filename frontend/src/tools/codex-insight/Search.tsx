@@ -115,7 +115,7 @@ function SearchBar({
 function EmptyHint() {
   return (
     <div className="flex h-64 flex-col items-center justify-center gap-2 text-center">
-      <SearchIcon className="h-10 w-10 text-indigo-500/60" />
+      <SearchIcon className="h-10 w-10 text-info/60" />
       <p className="max-w-md text-sm text-muted-foreground">
         输入关键词搜索所有 Codex 会话中的消息内容。大小写无关,按时间倒序展示命中片段。
       </p>
@@ -179,11 +179,11 @@ function HitRow({
     <li>
       <button
         onClick={onOpen}
-        className="flex w-full flex-col gap-1.5 rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-indigo-500/40 hover:bg-indigo-500/5"
+        className="flex w-full flex-col gap-1.5 rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-info/40 hover:bg-info/5"
       >
         <div className="flex items-center gap-2 text-xs">
           {hit.role === 'user' ? (
-            <User className="h-3.5 w-3.5 shrink-0 text-indigo-500" />
+            <User className="h-3.5 w-3.5 shrink-0 text-info" />
           ) : (
             <MessageSquare className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
           )}
@@ -191,7 +191,7 @@ function HitRow({
             className={cn(
               'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium',
               hit.role === 'user'
-                ? 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300'
+                ? 'bg-info/15 text-info'
                 : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300'
             )}
           >
@@ -224,7 +224,7 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
   while ((m = pattern.exec(text)) !== null) {
     if (m.index > lastIndex) parts.push(text.slice(lastIndex, m.index))
     parts.push(
-      <mark key={i++} className="rounded bg-indigo-500/30 px-0.5 text-foreground">
+      <mark key={i++} className="rounded bg-info/30 px-0.5 text-foreground">
         {m[0]}
       </mark>
     )

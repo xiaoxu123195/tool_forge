@@ -159,7 +159,7 @@ function DetailHeader({
         返回列表
       </Button>
       <div className="flex min-w-0 flex-1 items-center gap-2 text-xs text-muted-foreground">
-        <Folder className="h-3.5 w-3.5 shrink-0 text-indigo-500" />
+        <Folder className="h-3.5 w-3.5 shrink-0 text-info" />
         <span className="truncate font-mono" title={project}>
           {project || '—'}
         </span>
@@ -271,12 +271,12 @@ function UserCard({ message, highlightUUID }: { message: Message; highlightUUID:
     <div
       id={message.uuid ? `msg-${message.uuid}` : undefined}
       className={cn(
-        'rounded-lg border border-indigo-500/30 bg-indigo-500/5 transition-shadow',
-        isHighlighted && 'ring-2 ring-indigo-500/70 ring-offset-2 ring-offset-background'
+        'rounded-lg border border-info/30 bg-info/5 transition-shadow',
+        isHighlighted && 'ring-2 ring-info/70 ring-offset-2 ring-offset-background'
       )}
     >
       <div className="flex items-center gap-2 border-b border-border/60 px-4 py-2 text-xs text-muted-foreground">
-        <User className="h-3.5 w-3.5 text-indigo-500" />
+        <User className="h-3.5 w-3.5 text-info" />
         <span className="font-medium">你</span>
         <span className="ml-auto">{formatDateTime(message.timestamp)}</span>
       </div>
@@ -324,7 +324,7 @@ function AssistantTurn({
     <div
       className={cn(
         'rounded-lg border border-border bg-card transition-shadow',
-        turnHighlighted && 'ring-2 ring-indigo-500/70 ring-offset-2 ring-offset-background'
+        turnHighlighted && 'ring-2 ring-info/70 ring-offset-2 ring-offset-background'
       )}
     >
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border/60 px-4 py-2 text-xs text-muted-foreground">
@@ -356,7 +356,7 @@ function AssistantTurn({
               className={cn(
                 'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] transition-colors',
                 replyOnly
-                  ? 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300'
+                  ? 'bg-info/15 text-info'
                   : 'hover:bg-secondary'
               )}
               title={replyOnly ? '显示全部（思考 + 工具调用）' : `只看回复（隐藏 ${noisyCount} 个思考/工具块）`}

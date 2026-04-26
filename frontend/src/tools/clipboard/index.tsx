@@ -237,7 +237,7 @@ export default function ClipboardTool() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="搜索文本内容..."
-              className="h-8 w-full rounded-md border border-border bg-background pl-8 pr-3 text-sm outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30"
+              className="h-8 w-full rounded-md border border-border bg-background pl-8 pr-3 text-sm outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-info/60 focus:ring-1 focus:ring-info/30"
             />
           </div>
           <KindFilterTabs value={kind} onChange={setKind} />
@@ -252,7 +252,7 @@ export default function ClipboardTool() {
                 <Section
                   label="已置顶"
                   count={groups.pinned.length}
-                  accent="indigo"
+                  accent="info"
                   items={groups.pinned}
                   copiedId={copiedId}
                   onCopy={handleCopy}
@@ -358,7 +358,7 @@ function Section({
 }: {
   label: string
   count: number
-  accent?: 'indigo'
+  accent?: 'info'
   items: cb.Item[]
   copiedId: string | null
   onCopy: (id: string) => void
@@ -372,7 +372,7 @@ function Section({
         <h3
           className={cn(
             'text-[11px] font-semibold uppercase tracking-wider',
-            accent === 'indigo' ? 'text-indigo-600 dark:text-indigo-300' : 'text-muted-foreground',
+            accent === 'info' ? 'text-info' : 'text-muted-foreground',
           )}
         >
           {label}
@@ -425,7 +425,7 @@ function ItemCard({
       className={cn(
         'group/card relative overflow-hidden rounded-lg border bg-card transition-all',
         copied
-          ? 'border-indigo-500/70 ring-2 ring-indigo-500/30'
+          ? 'border-info/70 ring-2 ring-info/30'
           : 'border-border hover:border-border hover:bg-card/80 hover:shadow-sm',
       )}
     >
@@ -470,7 +470,7 @@ function ItemCard({
               {link && (
                 <a
                   href={item.text}
-                  className="inline-flex w-fit items-center gap-1 text-[11px] font-medium text-indigo-600 hover:underline dark:text-indigo-300"
+                  className="inline-flex w-fit items-center gap-1 text-[11px] font-medium text-info hover:underline"
                   target="_blank"
                   rel="noreferrer"
                 >
@@ -496,7 +496,7 @@ function ItemCard({
                       e.stopPropagation()
                       setExpanded((v) => !v)
                     }}
-                    className="ml-auto inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] font-medium text-indigo-600 transition-colors hover:bg-indigo-500/10 dark:text-indigo-300"
+                    className="ml-auto inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] font-medium text-info transition-colors hover:bg-info/10"
                   >
                     {expanded ? (
                       <>
@@ -538,7 +538,7 @@ function ItemCard({
       </div>
 
       {item.pinned && (
-        <span className="pointer-events-none absolute left-0 top-0 h-full w-0.5 bg-indigo-500/80" />
+        <span className="pointer-events-none absolute left-0 top-0 h-full w-0.5 bg-info/80" />
       )}
     </li>
   )
@@ -547,7 +547,7 @@ function ItemCard({
 function KindBadge({ kind, link }: { kind: 'text'; link: string }) {
   if (link) {
     return (
-      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-indigo-500/10 text-indigo-600 dark:text-indigo-300">
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-info/10 text-info">
         <LinkIcon className="h-4 w-4" />
       </div>
     )
@@ -582,7 +582,7 @@ function IconBtn({
         variant === 'danger'
           ? 'hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400'
           : 'hover:bg-accent hover:text-foreground',
-        highlight && 'text-indigo-600 dark:text-indigo-300',
+        highlight && 'text-info',
       )}
     >
       {children}

@@ -26,6 +26,15 @@
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 0 0% 98%;
 
+    /* 语义色（替代硬编码 indigo/violet/emerald/amber） */
+    /* Minimal 主题:info 走柔和中灰(比 primary 的纯黑更轻),success/warning 用低饱和度 */
+    --info: 240 5% 30%;
+    --info-foreground: 0 0% 98%;
+    --success: 142 50% 38%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 80% 48%;
+    --warning-foreground: 0 0% 10%;
+
     --border: 240 5.9% 90%;
     --input: 240 5.9% 90%;
     --ring: 240 5.9% 10%;
@@ -63,6 +72,13 @@
     --destructive: 0 62.8% 30.6%;
     --destructive-foreground: 0 0% 98%;
 
+    --info: 240 5% 70%;
+    --info-foreground: 240 10% 3.9%;
+    --success: 142 50% 55%;
+    --success-foreground: 240 10% 3.9%;
+    --warning: 38 80% 60%;
+    --warning-foreground: 240 10% 3.9%;
+
     --border: 240 3.7% 15.9%;
     --input: 240 3.7% 15.9%;
     --ring: 240 4.9% 83.9%;
@@ -89,6 +105,13 @@
 
     --accent: 260 30% 95%;
     --accent-foreground: 240 15% 8%;
+
+    --info: 258 85% 62%;
+    --info-foreground: 0 0% 100%;
+    --success: 165 70% 42%;
+    --success-foreground: 0 0% 100%;
+    --warning: 35 95% 55%;
+    --warning-foreground: 240 15% 8%;
 
     --border: 260 25% 90%;
     --input: 260 25% 90%;
@@ -132,6 +155,13 @@
     --accent: 200 50% 94%;
     --accent-foreground: 215 40% 12%;
 
+    --info: 200 95% 45%;
+    --info-foreground: 0 0% 100%;
+    --success: 175 75% 38%;
+    --success-foreground: 0 0% 100%;
+    --warning: 32 95% 50%;
+    --warning-foreground: 215 40% 12%;
+
     --border: 200 30% 88%;
     --input: 200 30% 88%;
     --ring: 195 90% 42%;
@@ -173,6 +203,13 @@
 
     --accent: 215 22% 17%;
     --accent-foreground: 0 0% 98%;
+
+    --info: 195 95% 65%;
+    --info-foreground: 215 35% 6%;
+    --success: 175 80% 55%;
+    --success-foreground: 215 35% 6%;
+    --warning: 32 95% 65%;
+    --warning-foreground: 215 35% 6%;
 
     --border: 215 22% 18%;
     --input: 215 22% 18%;
@@ -219,6 +256,13 @@
     --accent: 140 30% 93%;
     --accent-foreground: 155 35% 10%;
 
+    --info: 158 70% 35%;
+    --info-foreground: 0 0% 100%;
+    --success: 142 71% 38%;
+    --success-foreground: 0 0% 100%;
+    --warning: 35 92% 48%;
+    --warning-foreground: 155 35% 10%;
+
     --border: 140 22% 87%;
     --input: 140 22% 87%;
     --ring: 158 70% 35%;
@@ -260,6 +304,13 @@
 
     --accent: 160 16% 17%;
     --accent-foreground: 0 0% 98%;
+
+    --info: 158 80% 55%;
+    --info-foreground: 160 30% 5%;
+    --success: 142 70% 50%;
+    --success-foreground: 160 30% 5%;
+    --warning: 35 92% 60%;
+    --warning-foreground: 160 30% 5%;
 
     --border: 160 15% 18%;
     --input: 160 15% 18%;
@@ -306,6 +357,13 @@
     --accent: 240 12% 16%;
     --accent-foreground: 0 0% 98%;
 
+    --info: 258 90% 75%;
+    --info-foreground: 240 20% 5%;
+    --success: 165 80% 60%;
+    --success-foreground: 240 20% 5%;
+    --warning: 35 95% 65%;
+    --warning-foreground: 240 20% 5%;
+
     --border: 240 10% 17%;
     --input: 240 10% 17%;
     --ring: 258 90% 72%;
@@ -330,6 +388,275 @@
     --card-shadow-soft: 0 1px 2px 0 hsl(240 30% 2% / 0.6),
       0 12px 28px -12px hsl(258 80% 30% / 0.5);
   }
+
+  /* ================== Glass - Light (Win11 Mica/Acrylic) ================== */
+  :root[data-style='glass'] {
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+
+    --primary: 240 5.9% 10%;
+    --primary-foreground: 0 0% 98%;
+
+    --secondary: 240 5% 95%;
+    --secondary-foreground: 240 10% 10%;
+
+    --muted: 240 5% 95%;
+    --muted-foreground: 240 5% 38%;
+
+    --accent: 240 5% 92%;
+    --accent-foreground: 240 10% 10%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+
+    --info: 240 5% 30%;
+    --info-foreground: 0 0% 98%;
+    --success: 142 50% 38%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 80% 48%;
+    --warning-foreground: 0 0% 10%;
+
+    --border: 240 6% 86%;
+    --input: 240 6% 86%;
+    --ring: 240 5% 35%;
+
+    --sidebar: 0 0% 100%;
+    --radius: 0.5rem;
+
+    --ambient-gradient: none;
+    --ambient-pattern: none;
+    --card-shadow-soft: 0 1px 3px 0 hsl(0 0% 0% / 0.04),
+      0 8px 20px -8px hsl(0 0% 0% / 0.08);
+
+    /* glass-only: 表面透明度 */
+    --glass-card-alpha: 0.6;
+    --glass-sidebar-alpha: 0.45;
+  }
+
+  /* ================== Glass - Dark ================== */
+  .dark[data-style='glass'] {
+    --background: 240 10% 8%;
+    --foreground: 0 0% 98%;
+
+    --card: 240 8% 14%;
+    --card-foreground: 0 0% 98%;
+
+    --primary: 0 0% 98%;
+    --primary-foreground: 240 5.9% 10%;
+
+    --secondary: 240 6% 18%;
+    --secondary-foreground: 0 0% 98%;
+
+    --muted: 240 6% 18%;
+    --muted-foreground: 240 5% 70%;
+
+    --accent: 240 6% 20%;
+    --accent-foreground: 0 0% 98%;
+
+    --destructive: 0 62.8% 50%;
+    --destructive-foreground: 0 0% 98%;
+
+    --info: 240 5% 70%;
+    --info-foreground: 240 10% 3.9%;
+    --success: 142 50% 55%;
+    --success-foreground: 240 10% 3.9%;
+    --warning: 38 80% 60%;
+    --warning-foreground: 240 10% 3.9%;
+
+    --border: 240 6% 22%;
+    --input: 240 6% 22%;
+    --ring: 240 5% 70%;
+
+    --sidebar: 240 8% 12%;
+
+    --glass-card-alpha: 0.55;
+    --glass-sidebar-alpha: 0.4;
+  }
+
+  /* ================== Glass:模仿 cherry-studio 的毛玻璃 ==================
+     核心:body 必须有"足够丰富的内容"让 backdrop-filter 真的能 blur 出料
+     1) body 用 多层高饱和 conic + radial 合成"假壁纸",覆盖整屏
+     2) 所有面板低 alpha + backdrop-blur,壁纸透过来被模糊 → 真玻璃感
+     3) bg-background 透明,bg-card / bg-sidebar / bg-secondary 全部走玻璃
+  */
+
+  /* === 壁纸 ===
+     默认走 cherry-studio 用的 jsDelivr 二次元壁纸;
+     用户在设置里上传/粘贴的壁纸通过 --glass-wallpaper-light/dark CSS 变量覆盖。
+     首次加载需联网拉默认图,缓存后离线可用 */
+  :root[data-style='glass'] body {
+    background-color: hsl(220 30% 92%);
+    background-image: var(
+      --glass-wallpaper-light,
+      url('https://cdn.jsdelivr.net/gh/buwant888/ck/test/%E3%80%90%E5%93%B2%E9%A3%8E%E5%A3%81%E7%BA%B8%E3%80%91eva-%E5%8A%A8%E6%BC%AB%E5%A3%81%E7%BA%B8.png')
+    );
+    background-size: cover;
+    background-position: center center;
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+  }
+  .dark[data-style='glass'] body {
+    background-color: hsl(240 30% 6%);
+    background-image: var(
+      --glass-wallpaper-dark,
+      url('https://cdn.jsdelivr.net/gh/buwant888/ck/test/%E3%80%90%E5%93%B2%E9%A3%8E%E5%A3%81%E7%BA%B8%E3%80%91%E5%8A%A8%E6%BC%AB-%E9%BB%91%E8%89%B2.png')
+    );
+    background-size: cover;
+    background-position: center center;
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+  }
+
+  /* 让 .bg-background 透明,壁纸透到所有页面 */
+  :root[data-style='glass'] .bg-background,
+  .dark[data-style='glass'] .bg-background {
+    background-color: transparent;
+  }
+
+  /* === Glass 玻璃面板 === */
+  :root[data-style='glass'] .bg-card {
+    background-color: hsl(0 0% 100% / 0.55) !important;
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border-color: hsl(0 0% 100% / 0.6);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.85),
+      inset 0 0 0 0.5px hsl(0 0% 100% / 0.3),
+      0 8px 24px -4px hsl(240 30% 20% / 0.18),
+      0 2px 8px -2px hsl(240 30% 20% / 0.1);
+  }
+  .dark[data-style='glass'] .bg-card {
+    background-color: hsl(240 10% 14% / 0.55) !important;
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border-color: hsl(0 0% 100% / 0.12);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.1),
+      inset 0 0 0 0.5px hsl(0 0% 100% / 0.05),
+      0 8px 24px -4px hsl(0 0% 0% / 0.5),
+      0 2px 8px -2px hsl(0 0% 0% / 0.3);
+  }
+
+  /* 侧边栏:更深玻璃 */
+  :root[data-style='glass'] .bg-sidebar {
+    background-color: hsl(0 0% 100% / 0.45) !important;
+    backdrop-filter: blur(32px) saturate(180%);
+    -webkit-backdrop-filter: blur(32px) saturate(180%);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.6),
+      inset -1px 0 0 hsl(220 20% 60% / 0.12);
+  }
+  .dark[data-style='glass'] .bg-sidebar {
+    background-color: hsl(240 12% 8% / 0.55) !important;
+    backdrop-filter: blur(32px) saturate(180%);
+    -webkit-backdrop-filter: blur(32px) saturate(180%);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.06),
+      inset -1px 0 0 hsl(0 0% 0% / 0.3);
+  }
+
+  /* 次级面板 */
+  :root[data-style='glass'] .bg-secondary {
+    background-color: hsl(0 0% 100% / 0.35) !important;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+  .dark[data-style='glass'] .bg-secondary {
+    background-color: hsl(0 0% 100% / 0.06) !important;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+
+  /* === Glass:玻璃按钮(更圆润 + 顶部反光 + 立体阴影) ===
+     只动 <button>,不影响 div/badge/sidebar Item 等用了 bg-* 的容器 */
+  :root[data-style='glass'] button.bg-primary,
+  :root[data-style='glass'] button.bg-secondary,
+  :root[data-style='glass'] button.bg-destructive,
+  :root[data-style='glass'] button.bg-info,
+  :root[data-style='glass'] button.bg-success,
+  :root[data-style='glass'] button.bg-warning {
+    border-radius: 0.65rem;
+    background-image:
+      linear-gradient(180deg, hsl(0 0% 100% / 0.22) 0%, hsl(0 0% 100% / 0) 50%, hsl(0 0% 0% / 0.05) 100%);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.4),
+      inset 0 -1px 0 hsl(0 0% 0% / 0.1),
+      inset 0 0 0 0.5px hsl(0 0% 100% / 0.25),
+      0 4px 14px -2px hsl(0 0% 0% / 0.18),
+      0 1px 4px -1px hsl(0 0% 0% / 0.1);
+    transition: background-image 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+  }
+  :root[data-style='glass'] button.bg-primary:hover,
+  :root[data-style='glass'] button.bg-secondary:hover,
+  :root[data-style='glass'] button.bg-destructive:hover,
+  :root[data-style='glass'] button.bg-info:hover,
+  :root[data-style='glass'] button.bg-success:hover,
+  :root[data-style='glass'] button.bg-warning:hover {
+    background-image:
+      linear-gradient(180deg, hsl(0 0% 100% / 0.32) 0%, hsl(0 0% 100% / 0.04) 50%, hsl(0 0% 0% / 0.05) 100%);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.5),
+      inset 0 -1px 0 hsl(0 0% 0% / 0.12),
+      inset 0 0 0 0.5px hsl(0 0% 100% / 0.35),
+      0 6px 20px -2px hsl(0 0% 0% / 0.25),
+      0 2px 6px -1px hsl(0 0% 0% / 0.15);
+    transform: translateY(-0.5px);
+  }
+  :root[data-style='glass'] button.bg-primary:active,
+  :root[data-style='glass'] button.bg-secondary:active,
+  :root[data-style='glass'] button.bg-destructive:active,
+  :root[data-style='glass'] button.bg-info:active,
+  :root[data-style='glass'] button.bg-success:active,
+  :root[data-style='glass'] button.bg-warning:active {
+    transform: translateY(0);
+    box-shadow:
+      inset 0 1px 2px hsl(0 0% 0% / 0.18),
+      inset 0 0 0 0.5px hsl(0 0% 100% / 0.2),
+      0 1px 3px hsl(0 0% 0% / 0.1);
+  }
+
+  /* outline / ghost 按钮:微玻璃感(透明底 + 模糊 + 边缘高光) */
+  :root[data-style='glass'] button.border-input.bg-background,
+  :root[data-style='glass'] button.bg-card {
+    background-color: hsl(0 0% 100% / 0.45) !important;
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+    border-radius: 0.65rem;
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.5),
+      inset 0 0 0 0.5px hsl(0 0% 100% / 0.2),
+      0 2px 8px hsl(0 0% 0% / 0.08);
+    transition: background-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+  }
+  .dark[data-style='glass'] button.border-input.bg-background,
+  .dark[data-style='glass'] button.bg-card {
+    background-color: hsl(240 10% 14% / 0.5) !important;
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.08),
+      inset 0 0 0 0.5px hsl(0 0% 100% / 0.06),
+      0 2px 8px hsl(0 0% 0% / 0.3);
+  }
+  :root[data-style='glass'] button.border-input.bg-background:hover,
+  :root[data-style='glass'] button.bg-card:hover {
+    background-color: hsl(0 0% 100% / 0.6) !important;
+    transform: translateY(-0.5px);
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.65),
+      inset 0 0 0 0.5px hsl(0 0% 100% / 0.3),
+      0 4px 14px hsl(0 0% 0% / 0.15);
+  }
+  .dark[data-style='glass'] button.border-input.bg-background:hover,
+  .dark[data-style='glass'] button.bg-card:hover {
+    background-color: hsl(240 10% 18% / 0.6) !important;
+    box-shadow:
+      inset 0 1px 0 hsl(0 0% 100% / 0.12),
+      inset 0 0 0 0.5px hsl(0 0% 100% / 0.1),
+      0 4px 14px hsl(0 0% 0% / 0.4);
+  }
+
 
   * {
     @apply border-border;

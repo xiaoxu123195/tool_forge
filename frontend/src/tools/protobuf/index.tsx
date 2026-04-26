@@ -146,7 +146,7 @@ export default function ProtobufTool() {
                 className={cn(
                   'inline-flex items-center gap-1 rounded-sm px-2.5 py-1 text-[11px] font-medium',
                   source === 'proto'
-                    ? 'bg-indigo-500 text-white'
+                    ? 'bg-info text-white'
                     : 'text-muted-foreground hover:text-foreground',
                 )}
               >
@@ -158,7 +158,7 @@ export default function ProtobufTool() {
                 className={cn(
                   'inline-flex items-center gap-1 rounded-sm px-2.5 py-1 text-[11px] font-medium',
                   source === 'descriptor'
-                    ? 'bg-indigo-500 text-white'
+                    ? 'bg-info text-white'
                     : 'text-muted-foreground hover:text-foreground',
                 )}
               >
@@ -275,7 +275,7 @@ export default function ProtobufTool() {
                     className={cn(
                       'rounded-sm px-2 py-0.5 text-[10px] font-medium',
                       bytesEnc === e
-                        ? 'bg-indigo-500 text-white'
+                        ? 'bg-info text-white'
                         : 'text-muted-foreground hover:text-foreground',
                     )}
                   >
@@ -344,7 +344,7 @@ function DirectionToggle({
         className={cn(
           'rounded-sm px-3 py-1 text-xs font-medium',
           direction === 'encode'
-            ? 'bg-indigo-500 text-white'
+            ? 'bg-info text-white'
             : 'text-muted-foreground hover:text-foreground',
         )}
       >
@@ -355,7 +355,7 @@ function DirectionToggle({
         className={cn(
           'rounded-sm px-3 py-1 text-xs font-medium',
           direction === 'decode'
-            ? 'bg-indigo-500 text-white'
+            ? 'bg-info text-white'
             : 'text-muted-foreground hover:text-foreground',
         )}
       >
@@ -437,7 +437,7 @@ function DescriptorDrop({
       {bytes ? (
         <div className="rounded-md border border-border bg-card p-3">
           <div className="flex items-center gap-2">
-            <FileUp className="h-4 w-4 text-indigo-500" />
+            <FileUp className="h-4 w-4 text-info" />
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-medium">{fileName}</div>
               <div className="text-[10px] text-muted-foreground">
@@ -475,7 +475,7 @@ function DescriptorDrop({
         onDrop={onDrop}
         className={cn(
           'flex flex-1 min-h-[160px] flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed bg-secondary/30 px-4 py-6 text-center transition-colors',
-          dragOver ? 'border-indigo-500 bg-indigo-500/10' : 'border-border hover:border-indigo-500/50',
+          dragOver ? 'border-info bg-info/10' : 'border-border hover:border-info/50',
         )}
       >
         <Upload className="h-6 w-6 text-muted-foreground" />

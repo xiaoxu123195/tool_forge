@@ -98,7 +98,7 @@ export function History() {
 function EmptyState({ hasQuery }: { hasQuery: boolean }) {
   return (
     <div className="flex h-40 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-card text-center text-sm text-muted-foreground">
-      <HistoryIcon className="h-8 w-8 text-indigo-500/60" />
+      <HistoryIcon className="h-8 w-8 text-info/60" />
       {hasQuery ? '没有匹配的提问' : 'history.jsonl 为空或不存在'}
     </div>
   )
@@ -107,7 +107,7 @@ function EmptyState({ hasQuery }: { hasQuery: boolean }) {
 function HistoryRow({ item, query }: { item: Item; query: string }) {
   return (
     <li className="flex items-start gap-2 rounded-md border border-border bg-card px-3 py-2">
-      <User className="mt-0.5 h-3.5 w-3.5 shrink-0 text-indigo-500" />
+      <User className="mt-0.5 h-3.5 w-3.5 shrink-0 text-info" />
       <div className="min-w-0 flex-1 space-y-1">
         <div className="line-clamp-3 text-sm text-foreground/90">
           <HighlightedText text={item.text} query={query} />
@@ -134,7 +134,7 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
   while ((m = pattern.exec(text)) !== null) {
     if (m.index > lastIndex) parts.push(text.slice(lastIndex, m.index))
     parts.push(
-      <mark key={i++} className="rounded bg-indigo-500/30 px-0.5 text-foreground">
+      <mark key={i++} className="rounded bg-info/30 px-0.5 text-foreground">
         {m[0]}
       </mark>
     )

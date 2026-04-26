@@ -360,7 +360,7 @@ function methodColor(m: string): string {
     case 'PUT':
       return 'text-sky-600 dark:text-sky-400'
     case 'PATCH':
-      return 'text-violet-600 dark:text-violet-400'
+      return 'text-cyan-600 dark:text-cyan-400'
     case 'DELETE':
       return 'text-rose-600 dark:text-rose-400'
     default:
@@ -462,7 +462,7 @@ function KVEditor({
               checked={!row.disabled && hasContent}
               disabled={!hasContent}
               onChange={(e) => update(i, { disabled: !e.target.checked })}
-              className="h-3.5 w-3.5 shrink-0 cursor-pointer accent-indigo-500"
+              className="h-3.5 w-3.5 shrink-0 cursor-pointer accent-info"
               title={row.disabled ? '已禁用,点击启用' : '点击禁用此项'}
             />
             <input

@@ -34,7 +34,7 @@ export function ScrollToTopButton({ threshold = 240 }: { threshold?: number }) {
         title="回到顶部"
         className={cn(
           'fixed bottom-6 right-6 z-30 inline-flex h-10 w-10 items-center justify-center rounded-full border border-border bg-card text-foreground shadow-md transition-all',
-          'hover:bg-indigo-500/10 hover:text-indigo-600 dark:hover:text-indigo-300',
+          'hover:bg-info/10 hover:text-info',
           visible ? 'opacity-100' : 'pointer-events-none opacity-0 translate-y-2'
         )}
       >

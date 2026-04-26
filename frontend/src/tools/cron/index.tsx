@@ -103,11 +103,11 @@ export default function CronTool() {
           </div>
         ) : (
           humanReadable && (
-            <div className="rounded-md border border-border bg-indigo-500/5 px-3 py-2 text-sm">
+            <div className="rounded-md border border-border bg-info/5 px-3 py-2 text-sm">
               <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
                 含义
               </span>
-              <div className="mt-0.5 text-indigo-700 dark:text-indigo-300">
+              <div className="mt-0.5 text-info">
                 {humanReadable}
               </div>
             </div>
@@ -151,7 +151,7 @@ function PresetsPanel({
               onClick={() => onPick(p.expr)}
               className={cn(
                 'flex w-full flex-col gap-0.5 border-b border-border/60 px-2 py-1.5 text-left text-xs hover:bg-accent',
-                current === p.expr && 'bg-indigo-500/10',
+                current === p.expr && 'bg-info/10',
               )}
             >
               <span className="font-medium">{p.name}</span>
@@ -213,7 +213,7 @@ function FireTimesPanel({
         <ul className="flex-1 divide-y divide-border overflow-auto text-xs">
           {fires.map((d, i) => (
             <li key={i} className="flex items-center gap-2 px-2 py-1.5">
-              <span className="shrink-0 rounded bg-indigo-500/15 px-1.5 py-0.5 font-mono text-[10px] text-indigo-700 dark:text-indigo-300">
+              <span className="shrink-0 rounded bg-info/15 px-1.5 py-0.5 font-mono text-[10px] text-info">
                 #{i + 1}
               </span>
               <code className="min-w-0 flex-1 truncate font-mono">
@@ -281,8 +281,8 @@ function TimelinePanel({ fires, now }: { fires: Date[]; now: Date }) {
               style={{ top: `calc(${offset * 95}% + 0.5rem)` }}
               title={formatDateTime(d)}
             >
-              <span className="h-2 w-2 rounded-full bg-indigo-500 ring-2 ring-indigo-500/30" />
-              <span className="ml-2 rounded bg-indigo-500/15 px-1 py-0.5 font-mono text-[9px] text-indigo-700 dark:text-indigo-300">
+              <span className="h-2 w-2 rounded-full bg-info ring-2 ring-info/30" />
+              <span className="ml-2 rounded bg-info/15 px-1 py-0.5 font-mono text-[9px] text-info">
                 {d.getHours().toString().padStart(2, '0')}:
                 {d.getMinutes().toString().padStart(2, '0')}
               </span>

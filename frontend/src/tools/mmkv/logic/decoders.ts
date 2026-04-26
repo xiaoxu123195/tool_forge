@@ -46,8 +46,8 @@ export const TYPE_LABELS: Record<MMKVType, string> = {
 export const TYPE_BG: Record<MMKVType, string> = {
   hexstring: 'bg-muted/50',
   string: 'bg-emerald-200/60 dark:bg-emerald-900/30',
-  int32: 'bg-violet-200/60 dark:bg-violet-900/30',
-  int64: 'bg-violet-300/60 dark:bg-violet-800/40',
+  int32: 'bg-pink-200/60 dark:bg-pink-900/30',
+  int64: 'bg-pink-300/60 dark:bg-pink-800/40',
   uint32: 'bg-sky-200/60 dark:bg-sky-900/30',
   uint64: 'bg-sky-300/60 dark:bg-sky-800/40',
   float32: 'bg-amber-200/60 dark:bg-amber-900/30',

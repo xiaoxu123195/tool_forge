@@ -106,7 +106,7 @@ export function ClipboardSection() {
             disabled={busy}
             className={
               'relative inline-flex h-6 w-11 items-center rounded-full transition-colors ' +
-              (enabled ? 'bg-indigo-500' : 'bg-muted')
+              (enabled ? 'bg-info' : 'bg-muted')
             }
           >
             <span
@@ -138,7 +138,7 @@ export function ClipboardSection() {
               className={
                 'inline-flex h-8 min-w-[64px] items-center justify-center rounded-md border px-3 text-xs font-medium transition-colors ' +
                 (limit === n
-                  ? 'border-indigo-500 bg-indigo-500/10 text-indigo-600 dark:text-indigo-300'
+                  ? 'border-info bg-info/10 text-info'
                   : 'border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground')
               }
             >
@@ -167,7 +167,7 @@ export function ClipboardSection() {
               className={
                 'inline-flex h-8 min-w-[64px] items-center justify-center rounded-md border px-3 text-xs font-medium transition-colors ' +
                 (maxImageMB === mb
-                  ? 'border-indigo-500 bg-indigo-500/10 text-indigo-600 dark:text-indigo-300'
+                  ? 'border-info bg-info/10 text-info'
                   : 'border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground')
               }
             >

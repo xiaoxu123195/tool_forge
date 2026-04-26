@@ -250,7 +250,7 @@ function FlagToggles({
           className={cn(
             'inline-flex h-8 w-8 items-center justify-center rounded-md border font-mono text-xs',
             flags.includes(x.f)
-              ? 'border-indigo-500/50 bg-indigo-500/15 text-indigo-700 dark:text-indigo-300'
+              ? 'border-info/50 bg-info/15 text-info'
               : 'border-border bg-background text-muted-foreground hover:bg-accent',
           )}
         >
@@ -323,7 +323,7 @@ function TabButton({
       className={cn(
         'inline-flex h-8 items-center gap-1 rounded-md px-3 text-xs font-medium transition-colors',
         active
-          ? 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300'
+          ? 'bg-info/15 text-info'
           : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
       )}
     >
@@ -351,7 +351,7 @@ function MatchesPanel({
       {matches.map((m, i) => (
         <li key={i} className="p-2">
           <div className="flex items-start gap-2">
-            <span className="shrink-0 rounded bg-indigo-500/15 px-1.5 py-0.5 font-mono text-[10px] text-indigo-700 dark:text-indigo-300">
+            <span className="shrink-0 rounded bg-info/15 px-1.5 py-0.5 font-mono text-[10px] text-info">
               #{i + 1}
             </span>
             <code className="min-w-0 flex-1 break-all rounded bg-secondary px-1.5 py-0.5 font-mono">

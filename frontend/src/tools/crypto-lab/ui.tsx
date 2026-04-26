@@ -31,7 +31,7 @@ export function EncodingSelect({
           className={cn(
             'rounded-sm px-2 py-0.5 text-[10px] font-medium',
             value === o
-              ? 'bg-indigo-500 text-white'
+              ? 'bg-info text-white'
               : 'text-muted-foreground hover:text-foreground',
           )}
         >
@@ -201,7 +201,7 @@ export function OpRow({
           className={cn(
             'rounded-sm px-3 py-1 text-xs font-medium',
             direction === 'enc'
-              ? 'bg-indigo-500 text-white'
+              ? 'bg-info text-white'
               : 'text-muted-foreground hover:text-foreground',
           )}
         >
@@ -212,7 +212,7 @@ export function OpRow({
           className={cn(
             'rounded-sm px-3 py-1 text-xs font-medium',
             direction === 'dec'
-              ? 'bg-indigo-500 text-white'
+              ? 'bg-info text-white'
               : 'text-muted-foreground hover:text-foreground',
           )}
         >

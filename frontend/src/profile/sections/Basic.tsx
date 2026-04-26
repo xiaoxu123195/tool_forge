@@ -1,4 +1,5 @@
-import { Moon, Sun, Monitor, Check } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { Moon, Sun, Monitor, Check, Image as ImageIcon, X, Upload } from 'lucide-react'
 import { useLayoutStore, type StyleId } from '@/stores/layout'
 import { useProfileStore } from '@/stores/profile'
 import { cn } from '@/lib/utils'
@@ -82,8 +83,160 @@ export function BasicSection() {
             title="Forest"
             description="苔绿森系，舒缓低疲"
           />
+          <StylePreviewCard
+            id="glass"
+            active={styleId === 'glass'}
+            onSelect={setStyle}
+            title="Glass"
+            description="毛玻璃 · 自定义壁纸"
+          />
         </div>
       </Field>
+
+      {styleId === 'glass' && <GlassWallpaperField />}
+    </div>
+  )
+}
+
+function GlassWallpaperField() {
+  const wallpaperLight = useLayoutStore((s) => s.glassWallpaperLight)
+  const wallpaperDark = useLayoutStore((s) => s.glassWallpaperDark)
+  const setWallpaper = useLayoutStore((s) => s.setGlassWallpaper)
+
+  return (
+    <Field label="毛玻璃壁纸" hint="留空使用默认动漫壁纸 · 支持粘贴 URL 或上传本地图片">
+      <div className="space-y-4">
+        <WallpaperRow
+          mode="light"
+          label="浅色模式"
+          value={wallpaperLight}
+          onChange={(v) => setWallpaper('light', v)}
+        />
+        <WallpaperRow
+          mode="dark"
+          label="深色模式"
+          value={wallpaperDark}
+          onChange={(v) => setWallpaper('dark', v)}
+        />
+      </div>
+    </Field>
+  )
+}
+
+function WallpaperRow({
+  mode,
+  label,
+  value,
+  onChange,
+}: {
+  mode: 'light' | 'dark'
+  label: string
+  value: string
+  onChange: (v: string) => void
+}) {
+  const [draft, setDraft] = useState(value)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [error, setError] = useState('')
+
+  // 同步外部变化(切回/重置)
+  if (draft !== value && document.activeElement?.tagName !== 'INPUT') {
+    setDraft(value)
+  }
+
+  const onPickFile = async (file: File) => {
+    setError('')
+    if (!file.type.startsWith('image/')) {
+      setError('只能选图片文件')
+      return
+    }
+    if (file.size > 4 * 1024 * 1024) {
+      setError('图片不能超过 4 MB(localStorage 容量限制)')
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = reader.result as string
+      setDraft(dataUrl)
+      onChange(dataUrl)
+    }
+    reader.onerror = () => setError('读取失败')
+    reader.readAsDataURL(file)
+  }
+
+  const isDataUrl = value.startsWith('data:')
+  const displayValue = isDataUrl ? '(本地图片)' : value
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        {mode === 'light' ? <Sun className="h-3 w-3" /> : <Moon className="h-3 w-3" />}
+        {label}
+      </div>
+      <div className="flex items-center gap-2">
+        <div className="relative h-10 w-16 shrink-0 overflow-hidden rounded border border-border bg-secondary">
+          {value ? (
+            <img src={value} alt="" className="h-full w-full object-cover" />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+              <ImageIcon className="h-4 w-4" />
+            </div>
+          )}
+        </div>
+        <input
+          value={isDataUrl ? '(本地图片,粘贴 URL 可替换)' : draft}
+          onChange={(e) => {
+            if (isDataUrl) return
+            setDraft(e.target.value)
+          }}
+          onBlur={() => {
+            if (isDataUrl) return
+            if (draft !== value) onChange(draft.trim())
+          }}
+          placeholder="https://... 或留空用默认"
+          readOnly={isDataUrl}
+          className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-1 focus:ring-ring"
+        />
+        <button
+          onClick={() => fileRef.current?.click()}
+          title="上传本地图片"
+          className="inline-flex h-9 items-center gap-1.5 rounded-md border border-input bg-background px-3 text-sm transition-colors hover:bg-accent"
+        >
+          <Upload className="h-3.5 w-3.5" />
+          上传
+        </button>
+        {value && (
+          <button
+            onClick={() => {
+              setDraft('')
+              onChange('')
+              setError('')
+              if (fileRef.current) fileRef.current.value = ''
+            }}
+            title="重置为默认壁纸"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-input bg-background text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            if (f) onPickFile(f)
+          }}
+        />
+      </div>
+      {displayValue && !isDataUrl && (
+        <div className="truncate pl-[72px] text-[11px] text-muted-foreground">
+          {displayValue}
+        </div>
+      )}
+      {error && (
+        <div className="pl-[72px] text-[11px] text-destructive">{error}</div>
+      )}
     </div>
   )
 }
@@ -208,6 +361,42 @@ function StylePreview({ styleId }: { styleId: StyleId }) {
           <div className="h-6 w-6 rounded-md bg-teal-500/30 ring-1 ring-teal-400/40" />
           <div className="ml-auto h-1.5 w-8 rounded-full bg-gradient-to-r from-cyan-400 to-sky-400" />
         </div>
+      </div>
+    )
+  }
+  if (styleId === 'glass') {
+    return (
+      <div
+        className="relative h-20 overflow-hidden rounded-md"
+        style={{
+          backgroundImage:
+            "url('https://cdn.jsdelivr.net/gh/buwant888/ck/test/%E3%80%90%E5%93%B2%E9%A3%8E%E5%A3%81%E7%BA%B8%E3%80%91eva-%E5%8A%A8%E6%BC%AB%E5%A3%81%E7%BA%B8.png')",
+          backgroundSize: 'cover',
+          backgroundPosition: 'center',
+        }}
+      >
+        <div
+          className="absolute left-3 top-3 h-14 w-[55%] rounded-md"
+          style={{
+            background: 'hsl(0 0% 100% / 0.55)',
+            backdropFilter: 'blur(14px) saturate(180%)',
+            WebkitBackdropFilter: 'blur(14px) saturate(180%)',
+            boxShadow:
+              'inset 0 1px 0 hsl(0 0% 100% / 0.85), 0 4px 12px -4px hsl(240 30% 20% / 0.18)',
+            border: '1px solid hsl(0 0% 100% / 0.6)',
+          }}
+        />
+        <div
+          className="absolute right-3 top-3 h-14 w-[28%] rounded-md"
+          style={{
+            background: 'hsl(0 0% 100% / 0.45)',
+            backdropFilter: 'blur(14px) saturate(180%)',
+            WebkitBackdropFilter: 'blur(14px) saturate(180%)',
+            boxShadow:
+              'inset 0 1px 0 hsl(0 0% 100% / 0.85), 0 4px 12px -4px hsl(240 30% 20% / 0.18)',
+            border: '1px solid hsl(0 0% 100% / 0.6)',
+          }}
+        />
       </div>
     )
   }

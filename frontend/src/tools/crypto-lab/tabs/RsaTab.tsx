@@ -214,7 +214,7 @@ function OpSelect({ value, onChange }: { value: Op; onChange: (v: Op) => void })
           className={
             'rounded-sm px-3 py-1 text-xs font-medium ' +
             (value === o.v
-              ? 'bg-indigo-500 text-white'
+              ? 'bg-info text-white'
               : 'text-muted-foreground hover:text-foreground')
           }
         >

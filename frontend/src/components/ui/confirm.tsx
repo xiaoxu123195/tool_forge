@@ -101,7 +101,7 @@ function ConfirmDialog({
               'flex h-9 w-9 shrink-0 items-center justify-center rounded-full',
               opts.danger
                 ? 'bg-red-500/10 text-red-600 dark:text-red-400'
-                : 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-300',
+                : 'bg-info/10 text-info',
             )}
           >
             <AlertTriangle className="h-4 w-4" />

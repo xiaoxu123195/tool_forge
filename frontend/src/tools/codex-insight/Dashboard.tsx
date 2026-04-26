@@ -98,7 +98,7 @@ function ErrorBox({ message }: { message: string }) {
 function EmptyCodexDir({ dir }: { dir: string }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
-      <Bot className="h-10 w-10 text-indigo-500" />
+      <Bot className="h-10 w-10 text-info" />
       <div className="space-y-1">
         <h2 className="text-base font-medium">未找到任何 Codex 会话</h2>
         <p className="max-w-md text-sm text-muted-foreground">
@@ -174,7 +174,7 @@ function StatCard({
       )}
     >
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-gradient-to-br from-indigo-500/20 to-indigo-600/10 text-indigo-600 transition-transform duration-200 group-hover:scale-110 dark:text-indigo-300">
+        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-gradient-to-br from-info/20 to-info/10 text-info transition-transform duration-200 group-hover:scale-110">
           {icon}
         </span>
         {label}
@@ -253,7 +253,7 @@ function SegmentButton({
       className={cn(
         'h-6 rounded px-2 text-[11px] transition-colors',
         active
-          ? 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300'
+          ? 'bg-info/15 text-info'
           : 'text-muted-foreground hover:bg-secondary'
       )}
     >
@@ -283,7 +283,7 @@ function WeeklyBars({ buckets }: { buckets: codexinsight.DailyBucket[] }) {
                   'w-full rounded-t transition-colors',
                   b.messages === 0
                     ? 'bg-secondary'
-                    : 'bg-indigo-500/40 group-hover:bg-indigo-500/70'
+                    : 'bg-info/40 group-hover:bg-info/70'
                 )}
                 style={{ height: `${h}%`, minHeight: b.messages > 0 ? 4 : 2 }}
               />
@@ -322,8 +322,8 @@ function HourlyBars({ hours, peakHour }: { hours: number[]; peakHour: number }) 
                     n === 0
                       ? 'bg-secondary'
                       : isPeak
-                      ? 'bg-indigo-500/80 group-hover:bg-indigo-500'
-                      : 'bg-indigo-500/40 group-hover:bg-indigo-500/70'
+                      ? 'bg-info/80 group-hover:bg-info'
+                      : 'bg-info/40 group-hover:bg-info/70'
                   )}
                   style={{ height: `${h}%`, minHeight: n > 0 ? 3 : 2 }}
                 />
@@ -393,13 +393,13 @@ function heatLevelClass(level: number): string {
     case 0:
       return 'bg-secondary'
     case 1:
-      return 'bg-indigo-500/20'
+      return 'bg-info/20'
     case 2:
-      return 'bg-indigo-500/40'
+      return 'bg-info/40'
     case 3:
-      return 'bg-indigo-500/60'
+      return 'bg-info/60'
     default:
-      return 'bg-indigo-500/90'
+      return 'bg-info/90'
   }
 }
 
@@ -413,7 +413,7 @@ function TopProjectsCard({ rows }: { rows: codexinsight.ProjectStat[] }) {
         {rows.map((r) => (
           <li key={r.project} className="space-y-0.5">
             <div className="flex items-baseline gap-2 text-xs">
-              <Folder className="h-3 w-3 shrink-0 text-indigo-500" />
+              <Folder className="h-3 w-3 shrink-0 text-info" />
               <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground" title={r.project}>
                 {shortenProject(r.project)}
               </span>
@@ -426,7 +426,7 @@ function TopProjectsCard({ rows }: { rows: codexinsight.ProjectStat[] }) {
             </div>
             <div className="h-1 w-full overflow-hidden rounded bg-secondary/60">
               <div
-                className="h-full bg-indigo-500/50"
+                className="h-full bg-info/50"
                 style={{ width: `${(r.messages / max) * 100}%` }}
               />
             </div>
@@ -477,9 +477,9 @@ function TokensByModelTable({ rows }: { rows: codexinsight.ModelTokens[] }) {
 function LongestSessionBanner({ s }: { s?: codexinsight.SessionSummary }) {
   if (!s) return null
   return (
-    <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border border-border bg-gradient-to-r from-indigo-500/10 to-transparent px-4 py-3">
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border border-border bg-gradient-to-r from-info/10 to-transparent px-4 py-3">
       <div className="flex items-center gap-2 text-sm font-medium">
-        <Bot className="h-4 w-4 text-indigo-500" />
+        <Bot className="h-4 w-4 text-info" />
         最长会话
       </div>
       <div className="flex min-w-0 flex-1 items-center gap-2 text-xs text-muted-foreground">
@@ -514,7 +514,7 @@ function RecentSessionsList({ list }: { list: codexinsight.SessionSummary[] }) {
       <ul className="space-y-2">
         {list.map((s) => (
           <li key={s.id} className="flex items-center gap-2 text-sm">
-            <MessageSquare className="h-3.5 w-3.5 shrink-0 text-indigo-500" />
+            <MessageSquare className="h-3.5 w-3.5 shrink-0 text-info" />
             <span className="min-w-0 flex-1 truncate font-mono text-xs" title={s.project}>
               {shortenProject(s.project)}
             </span>

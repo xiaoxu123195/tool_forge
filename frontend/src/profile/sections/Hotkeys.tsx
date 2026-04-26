@@ -93,7 +93,7 @@ function Row({
   const dirty = info.currentSpec !== info.defaultSpec
   return (
     <div className="flex items-center gap-3 rounded-lg border border-border bg-card p-3">
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-indigo-500/20 to-indigo-600/10 text-indigo-600 dark:text-indigo-300">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-info/20 to-info/10 text-info">
         <Keyboard className="h-4 w-4" />
       </div>
       <div className="min-w-0 flex-1">
@@ -233,7 +233,7 @@ function Recorder({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center gap-2">
-          <Keyboard className="h-5 w-5 text-indigo-500" />
+          <Keyboard className="h-5 w-5 text-info" />
           <div className="text-base font-semibold">按下要绑定的组合键</div>
         </div>
         <div className="mb-4 flex h-16 items-center justify-center gap-1.5 rounded-lg bg-secondary/40 font-mono text-sm">

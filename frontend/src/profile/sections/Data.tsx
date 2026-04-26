@@ -401,7 +401,7 @@ function StatCard({
   return (
     <div className="rounded-lg border border-border bg-card p-3">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-gradient-to-br from-indigo-500/20 to-indigo-600/10 text-indigo-600 dark:text-indigo-300">
+        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-gradient-to-br from-info/20 to-info/10 text-info">
           {icon}
         </span>
         {label}
