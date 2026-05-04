@@ -874,6 +874,15 @@ func (a *App) SaveAIConfig(c aichat.Config) string {
 	return ""
 }
 
+// ListAIUsage 返回 ~/.toolforge/ai-chat/usage.jsonl 全量记录(按时间正序)
+func (a *App) ListAIUsage() []aichat.UsageRecord {
+	if a.aichat == nil {
+		return nil
+	}
+	list, _ := a.aichat.ListUsage()
+	return list
+}
+
 // ListAIConversations 列出所有会话(按 UpdatedAt 倒序)
 func (a *App) ListAIConversations() []aichat.ConversationSummary {
 	if a.aichat == nil {

@@ -75,6 +75,20 @@ export interface ConversationSummary {
   messageCount: number
 }
 
+/** 一条用量记录,后端 append 到 ~/.toolforge/ai-chat/usage.jsonl */
+export interface UsageRecord {
+  ts: number
+  convId: string
+  providerId: string
+  providerName: string
+  model: string
+  inputTokens: number
+  outputTokens: number
+  reasoningTokens?: number
+  cachedTokens?: number
+  durationMs: number
+}
+
 /** Wails 事件名常量 */
 export const EV_CHUNK_PREFIX = 'ai-chat:chunk:'
 export const EV_THINKING_PREFIX = 'ai-chat:thinking:'

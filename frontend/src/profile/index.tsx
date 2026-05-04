@@ -15,6 +15,7 @@ import {
 import { cn } from '@/lib/utils'
 import { AboutSection } from './sections/About'
 import { AIChatSection } from './sections/AIChat'
+import { AIUsageSection } from './sections/AIUsage'
 import { BasicSection } from './sections/Basic'
 import { ClipboardSection } from './sections/Clipboard'
 import { DataSection } from './sections/Data'
@@ -46,7 +47,7 @@ const SECTIONS: Section[] = [
   { id: 'clipboard', label: '剪贴板', icon: ClipboardList },
   { id: 'hotkeys', label: '快捷键', icon: Keyboard },
   { id: 'ai', label: 'AI 配置', icon: Bot },
-  { id: 'usage', label: 'AI 用量', icon: SlidersHorizontal, comingSoon: true },
+  { id: 'usage', label: 'AI 用量', icon: SlidersHorizontal },
   { id: 'preferences', label: '工具偏好', icon: Palette, comingSoon: true },
   { id: 'data', label: '数据', icon: Database },
   { id: 'about', label: '关于', icon: Info },
@@ -105,6 +106,8 @@ export function Profile() {
           <HotkeysSection />
         ) : active === 'ai' ? (
           <AIChatSection />
+        ) : active === 'usage' ? (
+          <AIUsageSection />
         ) : active === 'data' ? (
           <DataSection />
         ) : active === 'about' ? (

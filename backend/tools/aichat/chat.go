@@ -16,6 +16,7 @@ import (
 type streamCallbacks struct {
 	onText     func(string)
 	onThinking func(string)
+	onUsage    func(Usage) // 各协议在拿到 usage 时(可能多次)调用,runStream 取最新非零值
 	onDone     func()
 	onError    func(error)
 }
@@ -259,7 +260,23 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 	defer s.streams.clear(conv.ID)
 	defer cancel()
 
+	startTime := time.Now()
 	var bText, bThink strings.Builder
+	var accumUsage Usage
+	writeUsage := func() {
+		_ = appendUsageRecord(UsageRecord{
+			Ts:              time.Now().UnixMilli(),
+			ConvID:          conv.ID,
+			ProviderID:      prov.ID,
+			ProviderName:    prov.Name,
+			Model:           conv.ModelID,
+			InputTokens:     accumUsage.InputTokens,
+			OutputTokens:    accumUsage.OutputTokens,
+			ReasoningTokens: accumUsage.ReasoningTokens,
+			CachedTokens:    accumUsage.CachedTokens,
+			DurationMs:      time.Since(startTime).Milliseconds(),
+		})
+	}
 	cb := streamCallbacks{
 		onText: func(d string) {
 			if d == "" {
@@ -279,8 +296,25 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 				wailsruntime.EventsEmit(s.ctx, EventThinkingPrefix+conv.ID, d)
 			}
 		},
+		onUsage: func(u Usage) {
+			// 同一次请求 usage 可能多次到达(Anthropic message_start 给 input、
+			// message_delta 给 output);取每个字段的最新非零值即可
+			if u.InputTokens > 0 {
+				accumUsage.InputTokens = u.InputTokens
+			}
+			if u.OutputTokens > 0 {
+				accumUsage.OutputTokens = u.OutputTokens
+			}
+			if u.ReasoningTokens > 0 {
+				accumUsage.ReasoningTokens = u.ReasoningTokens
+			}
+			if u.CachedTokens > 0 {
+				accumUsage.CachedTokens = u.CachedTokens
+			}
+		},
 		onDone: func() {
 			s.persistAssistant(conv.ID, asstMsgID, bText.String(), bThink.String(), false)
+			writeUsage()
 			if s.ctx != nil {
 				wailsruntime.EventsEmit(s.ctx, EventDonePrefix+conv.ID, bText.String())
 			}
@@ -290,12 +324,14 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 			// 不弹错误对话框 — 改走 done 通道
 			if ctx.Err() != nil || isCanceledErr(err) {
 				s.persistAssistant(conv.ID, asstMsgID, bText.String(), bThink.String(), true)
+				writeUsage()
 				if s.ctx != nil {
 					wailsruntime.EventsEmit(s.ctx, EventDonePrefix+conv.ID, bText.String())
 				}
 				return
 			}
 			s.persistAssistant(conv.ID, asstMsgID, bText.String(), bThink.String(), true)
+			writeUsage()
 			if s.ctx != nil {
 				wailsruntime.EventsEmit(s.ctx, EventErrorPrefix+conv.ID, err.Error())
 			}

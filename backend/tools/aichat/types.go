@@ -112,3 +112,25 @@ type Config struct {
 	DefaultProviderID string `json:"defaultProviderId"`
 	DefaultModelID    string `json:"defaultModelId"`
 }
+
+// Usage 单次请求的 token 用量(由各协议从最后一帧解析)
+type Usage struct {
+	InputTokens     int `json:"inputTokens"`
+	OutputTokens    int `json:"outputTokens"`
+	ReasoningTokens int `json:"reasoningTokens,omitempty"`
+	CachedTokens    int `json:"cachedTokens,omitempty"`
+}
+
+// UsageRecord 一条用量日志(append 到 ~/.toolforge/ai-chat/usage.jsonl)
+type UsageRecord struct {
+	Ts              int64  `json:"ts"`         // unix milli
+	ConvID          string `json:"convId"`
+	ProviderID      string `json:"providerId"`
+	ProviderName    string `json:"providerName"` // 写入时快照,删 provider 后仍可看
+	Model           string `json:"model"`
+	InputTokens     int    `json:"inputTokens"`
+	OutputTokens    int    `json:"outputTokens"`
+	ReasoningTokens int    `json:"reasoningTokens,omitempty"`
+	CachedTokens    int    `json:"cachedTokens,omitempty"`
+	DurationMs      int64  `json:"durationMs"`
+}

@@ -223,6 +223,8 @@ func streamOpenAI(ctx context.Context, p Provider, conv Conversation, useRespons
 			"model":    conv.ModelID,
 			"messages": buildOpenAIChatMessages(conv),
 			"stream":   true,
+			// stream_options.include_usage:让 chat-completions 在最后一帧返回 usage
+			"stream_options": map[string]any{"include_usage": true},
 		}
 		if isReasoningModel(conv.ModelID) {
 			body["reasoning_effort"] = "medium"
@@ -275,6 +277,9 @@ func streamOpenAI(ctx context.Context, p Provider, conv Conversation, useRespons
 		var text, thinking string
 		if useResponses {
 			text, thinking = parseOpenAIResponsesDelta(payload)
+			if u := parseOpenAIResponsesUsage(payload); u != nil {
+				cb.onUsage(*u)
+			}
 		} else {
 			text, thinking = parseOpenAIChatDelta(payload)
 			if text != "" {
@@ -283,6 +288,9 @@ func streamOpenAI(ctx context.Context, p Provider, conv Conversation, useRespons
 				if extra != "" {
 					thinking += extra
 				}
+			}
+			if u := parseOpenAIChatUsage(payload); u != nil {
+				cb.onUsage(*u)
 			}
 		}
 		if thinking != "" {
@@ -382,6 +390,71 @@ func parseOpenAIChatDelta(payload string) (text, thinking string) {
 		return d.Content, d.ReasoningContent + d.Reasoning
 	}
 	return "", ""
+}
+
+// parseOpenAIChatUsage 从 chat-completions 最后一帧解析 usage
+//
+//	需要请求里带 stream_options.include_usage = true
+func parseOpenAIChatUsage(payload string) *Usage {
+	var ev struct {
+		Usage *struct {
+			PromptTokens        int `json:"prompt_tokens"`
+			CompletionTokens    int `json:"completion_tokens"`
+			PromptTokensDetails struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
+			CompletionTokensDetails struct {
+				ReasoningTokens int `json:"reasoning_tokens"`
+			} `json:"completion_tokens_details"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil || ev.Usage == nil {
+		return nil
+	}
+	if ev.Usage.PromptTokens == 0 && ev.Usage.CompletionTokens == 0 {
+		return nil
+	}
+	return &Usage{
+		InputTokens:     ev.Usage.PromptTokens,
+		OutputTokens:    ev.Usage.CompletionTokens,
+		CachedTokens:    ev.Usage.PromptTokensDetails.CachedTokens,
+		ReasoningTokens: ev.Usage.CompletionTokensDetails.ReasoningTokens,
+	}
+}
+
+// parseOpenAIResponsesUsage 从 /responses 的 response.completed 事件解析 usage
+func parseOpenAIResponsesUsage(payload string) *Usage {
+	var ev struct {
+		Type     string `json:"type"`
+		Response struct {
+			Usage *struct {
+				InputTokens         int `json:"input_tokens"`
+				OutputTokens        int `json:"output_tokens"`
+				InputTokensDetails  struct {
+					CachedTokens int `json:"cached_tokens"`
+				} `json:"input_tokens_details"`
+				OutputTokensDetails struct {
+					ReasoningTokens int `json:"reasoning_tokens"`
+				} `json:"output_tokens_details"`
+			} `json:"usage"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+		return nil
+	}
+	// type 形如 "response.completed";包含 usage 即可
+	if ev.Response.Usage == nil {
+		return nil
+	}
+	if ev.Response.Usage.InputTokens == 0 && ev.Response.Usage.OutputTokens == 0 {
+		return nil
+	}
+	return &Usage{
+		InputTokens:     ev.Response.Usage.InputTokens,
+		OutputTokens:    ev.Response.Usage.OutputTokens,
+		CachedTokens:    ev.Response.Usage.InputTokensDetails.CachedTokens,
+		ReasoningTokens: ev.Response.Usage.OutputTokensDetails.ReasoningTokens,
+	}
 }
 
 // extractErrorMessage 从 OpenAI 错误响应里抠 error.message 或 message

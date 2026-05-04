@@ -140,12 +140,58 @@ func streamAnthropic(ctx context.Context, p Provider, conv Conversation, cb stre
 		if text != "" {
 			cb.onText(text)
 		}
+		if u := parseAnthropicUsage(payload); u != nil {
+			cb.onUsage(*u)
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		cb.onError(fmt.Errorf("读取流失败: %w", err))
 		return
 	}
 	cb.onDone()
+}
+
+// parseAnthropicUsage 从 message_start / message_delta 中抠 usage。
+//
+//	message_start.message.usage:input_tokens + cache_*_input_tokens
+//	message_delta.usage.output_tokens:最终 output 累计
+func parseAnthropicUsage(payload string) *Usage {
+	var ev struct {
+		Type    string `json:"type"`
+		Message struct {
+			Usage struct {
+				InputTokens              int `json:"input_tokens"`
+				OutputTokens             int `json:"output_tokens"`
+				CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+				CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			} `json:"usage"`
+		} `json:"message"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+		return nil
+	}
+	switch ev.Type {
+	case "message_start":
+		u := ev.Message.Usage
+		if u.InputTokens == 0 && u.OutputTokens == 0 {
+			return nil
+		}
+		return &Usage{
+			InputTokens:  u.InputTokens,
+			OutputTokens: u.OutputTokens,
+			CachedTokens: u.CacheReadInputTokens, // 命中缓存的部分
+		}
+	case "message_delta":
+		if ev.Usage.OutputTokens == 0 {
+			return nil
+		}
+		return &Usage{OutputTokens: ev.Usage.OutputTokens}
+	}
+	return nil
 }
 
 // buildAnthropicMessages 只能是 user/assistant 交替,system 走外层字段

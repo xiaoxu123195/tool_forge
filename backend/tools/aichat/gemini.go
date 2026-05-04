@@ -136,12 +136,43 @@ func streamGemini(ctx context.Context, p Provider, conv Conversation, cb streamC
 		if text != "" {
 			cb.onText(text)
 		}
+		if u := parseGeminiUsage(payload); u != nil {
+			cb.onUsage(*u)
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		cb.onError(fmt.Errorf("读取流失败: %w", err))
 		return
 	}
 	cb.onDone()
+}
+
+// parseGeminiUsage 从 streamGenerateContent 的 chunk 里抠 usageMetadata。
+//
+//	usageMetadata 通常在最后一帧出现,字段:
+//	  promptTokenCount / candidatesTokenCount / thoughtsTokenCount / cachedContentTokenCount
+func parseGeminiUsage(payload string) *Usage {
+	var ev struct {
+		UsageMetadata *struct {
+			PromptTokenCount        int `json:"promptTokenCount"`
+			CandidatesTokenCount    int `json:"candidatesTokenCount"`
+			ThoughtsTokenCount      int `json:"thoughtsTokenCount"`
+			CachedContentTokenCount int `json:"cachedContentTokenCount"`
+		} `json:"usageMetadata"`
+	}
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil || ev.UsageMetadata == nil {
+		return nil
+	}
+	u := ev.UsageMetadata
+	if u.PromptTokenCount == 0 && u.CandidatesTokenCount == 0 {
+		return nil
+	}
+	return &Usage{
+		InputTokens:     u.PromptTokenCount,
+		OutputTokens:    u.CandidatesTokenCount,
+		ReasoningTokens: u.ThoughtsTokenCount,
+		CachedTokens:    u.CachedContentTokenCount,
+	}
 }
 
 // buildGeminiContents Gemini 用 user/model 角色,system 走单独字段

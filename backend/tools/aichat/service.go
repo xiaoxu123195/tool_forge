@@ -299,6 +299,11 @@ func (s *Service) SaveConfig(c Config) error {
 	return saveConfig(c)
 }
 
+// ListUsage 返回 usage.jsonl 的全量记录(按时间正序)
+func (s *Service) ListUsage() ([]UsageRecord, error) {
+	return readUsageRecords()
+}
+
 // FindEnabledProvider 给前端的便利方法:校验 providerID 是 enabled 且 model 在其 Models 列表里
 func (s *Service) FindEnabledProvider(providerID, modelID string) (*Provider, error) {
 	s.mu.Lock()
