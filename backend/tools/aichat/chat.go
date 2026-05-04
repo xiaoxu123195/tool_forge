@@ -16,7 +16,8 @@ import (
 type streamCallbacks struct {
 	onText     func(string)
 	onThinking func(string)
-	onUsage    func(Usage) // 各协议在拿到 usage 时(可能多次)调用,runStream 取最新非零值
+	onImage    func(ImageBlock) // 模型生成的图片(DALL-E / Gemini imagen / grok-imagine 等)
+	onUsage    func(Usage)      // 各协议在拿到 usage 时(可能多次)调用,runStream 取最新非零值
 	onDone     func()
 	onError    func(error)
 }
@@ -25,6 +26,7 @@ type streamCallbacks struct {
 const (
 	EventChunkPrefix    = "ai-chat:chunk:"    // 正文增量
 	EventThinkingPrefix = "ai-chat:thinking:" // 思考增量(deepseek-r1 / o1 / claude extended)
+	EventImagePrefix    = "ai-chat:image:"    // 模型生成的图片(payload = ImageBlock)
 	EventDonePrefix     = "ai-chat:done:"
 	EventErrorPrefix    = "ai-chat:error:"
 )
@@ -83,7 +85,7 @@ func (s *Service) CancelStream(id string) bool {
 //
 // 返回的 Conversation 是"刚追加完 user + 空 assistant"的状态,前端拿到后立刻渲染,
 // 然后监听三种事件来更新 assistant.content
-func (s *Service) SendChat(ctx context.Context, convID, userContent string) (*Conversation, error) {
+func (s *Service) SendChat(ctx context.Context, convID, userContent string, userImages []ImageBlock) (*Conversation, error) {
 	c, err := loadConversation(convID)
 	if err != nil {
 		return nil, err
@@ -98,7 +100,8 @@ func (s *Service) SendChat(ctx context.Context, convID, userContent string) (*Co
 	if c.ModelID == "" {
 		return nil, fmt.Errorf("会话未指定模型")
 	}
-	if strings.TrimSpace(userContent) == "" {
+	// 允许"只发图、不带文字"——只要至少有一张图,文本可空
+	if strings.TrimSpace(userContent) == "" && len(userImages) == 0 {
 		return nil, fmt.Errorf("消息不能为空")
 	}
 
@@ -107,6 +110,7 @@ func (s *Service) SendChat(ctx context.Context, convID, userContent string) (*Co
 		ID:        uuid.NewString(),
 		Role:      "user",
 		Content:   userContent,
+		Images:    userImages,
 		CreatedAt: now,
 	}
 	asstMsg := Message{
@@ -263,6 +267,7 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 	startTime := time.Now()
 	var bText, bThink strings.Builder
 	var accumUsage Usage
+	var accumImages []ImageBlock
 	writeUsage := func() {
 		_ = appendUsageRecord(UsageRecord{
 			Ts:              time.Now().UnixMilli(),
@@ -296,6 +301,15 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 				wailsruntime.EventsEmit(s.ctx, EventThinkingPrefix+conv.ID, d)
 			}
 		},
+		onImage: func(img ImageBlock) {
+			if img.Data == "" && img.URL == "" {
+				return
+			}
+			accumImages = append(accumImages, img)
+			if s.ctx != nil {
+				wailsruntime.EventsEmit(s.ctx, EventImagePrefix+conv.ID, img)
+			}
+		},
 		onUsage: func(u Usage) {
 			// 同一次请求 usage 可能多次到达(Anthropic message_start 给 input、
 			// message_delta 给 output);取每个字段的最新非零值即可
@@ -313,7 +327,7 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 			}
 		},
 		onDone: func() {
-			s.persistAssistant(conv.ID, asstMsgID, bText.String(), bThink.String(), false)
+			s.persistAssistant(conv.ID, asstMsgID, bText.String(), bThink.String(), accumImages, false)
 			writeUsage()
 			if s.ctx != nil {
 				wailsruntime.EventsEmit(s.ctx, EventDonePrefix+conv.ID, bText.String())
@@ -323,14 +337,14 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 			// 用户主动取消(StopAIChat):保留已收到的内容并加截断标记,
 			// 不弹错误对话框 — 改走 done 通道
 			if ctx.Err() != nil || isCanceledErr(err) {
-				s.persistAssistant(conv.ID, asstMsgID, bText.String(), bThink.String(), true)
+				s.persistAssistant(conv.ID, asstMsgID, bText.String(), bThink.String(), accumImages, true)
 				writeUsage()
 				if s.ctx != nil {
 					wailsruntime.EventsEmit(s.ctx, EventDonePrefix+conv.ID, bText.String())
 				}
 				return
 			}
-			s.persistAssistant(conv.ID, asstMsgID, bText.String(), bThink.String(), true)
+			s.persistAssistant(conv.ID, asstMsgID, bText.String(), bThink.String(), accumImages, true)
 			writeUsage()
 			if s.ctx != nil {
 				wailsruntime.EventsEmit(s.ctx, EventErrorPrefix+conv.ID, err.Error())
@@ -351,8 +365,8 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 	}
 }
 
-// persistAssistant 流结束时把 assistant 消息(正文 + 思考)写回磁盘
-func (s *Service) persistAssistant(convID, msgID, content, thinking string, truncated bool) {
+// persistAssistant 流结束时把 assistant 消息(正文 + 思考 + 图片)写回磁盘
+func (s *Service) persistAssistant(convID, msgID, content, thinking string, images []ImageBlock, truncated bool) {
 	c, err := loadConversation(convID)
 	if err != nil {
 		return
@@ -361,6 +375,9 @@ func (s *Service) persistAssistant(convID, msgID, content, thinking string, trun
 		if c.Messages[i].ID == msgID {
 			c.Messages[i].Content = content
 			c.Messages[i].Thinking = thinking
+			if len(images) > 0 {
+				c.Messages[i].Images = images
+			}
 			if truncated {
 				c.Messages[i].Content += " …" // 标记中断
 			}

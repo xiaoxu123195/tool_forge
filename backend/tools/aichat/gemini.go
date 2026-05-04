@@ -139,6 +139,9 @@ func streamGemini(ctx context.Context, p Provider, conv Conversation, cb streamC
 		if u := parseGeminiUsage(payload); u != nil {
 			cb.onUsage(*u)
 		}
+		for _, img := range parseGeminiImages(payload) {
+			cb.onImage(img)
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		cb.onError(fmt.Errorf("读取流失败: %w", err))
@@ -176,6 +179,8 @@ func parseGeminiUsage(payload string) *Usage {
 }
 
 // buildGeminiContents Gemini 用 user/model 角色,system 走单独字段
+//
+//	带图片时 parts 含 {inlineData:{mimeType,data}}(仅 base64,Gemini 不直接吃远程 URL)
 func buildGeminiContents(conv Conversation) []map[string]any {
 	msgs := contextMessages(conv)
 	out := make([]map[string]any, 0, len(msgs))
@@ -190,9 +195,34 @@ func buildGeminiContents(conv Conversation) []map[string]any {
 		if m.Role == "assistant" {
 			role = "model"
 		}
+		parts := []map[string]any{}
+		if m.Content != "" {
+			parts = append(parts, map[string]any{"text": m.Content})
+		}
+		if m.Role == "user" {
+			for _, img := range m.Images {
+				if img.Data == "" {
+					// Gemini 不支持直接吃远程 URL,跳过(前端应在上传时转 base64)
+					continue
+				}
+				mime := img.MimeType
+				if mime == "" {
+					mime = "image/png"
+				}
+				parts = append(parts, map[string]any{
+					"inlineData": map[string]string{
+						"mimeType": mime,
+						"data":     img.Data,
+					},
+				})
+			}
+		}
+		if len(parts) == 0 {
+			parts = append(parts, map[string]any{"text": ""})
+		}
 		out = append(out, map[string]any{
 			"role":  role,
-			"parts": []map[string]string{{"text": m.Content}},
+			"parts": parts,
 		})
 	}
 	return out
@@ -225,6 +255,38 @@ func parseGeminiDelta(payload string) (text, thinking string) {
 		}
 	}
 	return sbText.String(), sbThink.String()
+}
+
+// parseGeminiImages 从 chunk 中抠 inlineData(模型生成的图)
+func parseGeminiImages(payload string) []ImageBlock {
+	var ev struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					InlineData *struct {
+						MimeType string `json:"mimeType"`
+						Data     string `json:"data"`
+					} `json:"inlineData"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+		return nil
+	}
+	out := make([]ImageBlock, 0)
+	for _, c := range ev.Candidates {
+		for _, part := range c.Content.Parts {
+			if part.InlineData != nil && part.InlineData.Data != "" {
+				mime := part.InlineData.MimeType
+				if mime == "" {
+					mime = "image/png"
+				}
+				out = append(out, ImageBlock{MimeType: mime, Data: part.InlineData.Data})
+			}
+		}
+	}
+	return out
 }
 
 func testGeminiModel(p Provider, modelID string) TestResult {

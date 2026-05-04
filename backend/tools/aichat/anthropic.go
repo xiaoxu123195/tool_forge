@@ -195,9 +195,11 @@ func parseAnthropicUsage(payload string) *Usage {
 }
 
 // buildAnthropicMessages 只能是 user/assistant 交替,system 走外层字段
-func buildAnthropicMessages(conv Conversation) []map[string]string {
+//
+//	带图片时 content 是 [{type:"image",source:{...}}, {type:"text",text}] 数组
+func buildAnthropicMessages(conv Conversation) []map[string]any {
 	msgs := contextMessages(conv)
-	out := make([]map[string]string, 0, len(msgs))
+	out := make([]map[string]any, 0, len(msgs))
 	for _, m := range msgs {
 		if m.Role == "system" || m.Role == RoleClear {
 			continue
@@ -205,7 +207,32 @@ func buildAnthropicMessages(conv Conversation) []map[string]string {
 		if m.Role == "assistant" && m.Content == "" {
 			continue
 		}
-		out = append(out, map[string]string{"role": m.Role, "content": m.Content})
+		if len(m.Images) > 0 && m.Role == "user" {
+			parts := []map[string]any{}
+			for _, img := range m.Images {
+				var source map[string]any
+				if img.URL != "" {
+					source = map[string]any{"type": "url", "url": img.URL}
+				} else {
+					mime := img.MimeType
+					if mime == "" {
+						mime = "image/png"
+					}
+					source = map[string]any{
+						"type":       "base64",
+						"media_type": mime,
+						"data":       img.Data,
+					}
+				}
+				parts = append(parts, map[string]any{"type": "image", "source": source})
+			}
+			if m.Content != "" {
+				parts = append(parts, map[string]any{"type": "text", "text": m.Content})
+			}
+			out = append(out, map[string]any{"role": m.Role, "content": parts})
+			continue
+		}
+		out = append(out, map[string]any{"role": m.Role, "content": m.Content})
 	}
 	return out
 }

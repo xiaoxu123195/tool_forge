@@ -71,11 +71,23 @@ const (
 	RoleClear     = "clear"
 )
 
+// ImageBlock 一张图(base64 或远程 URL),作为消息的多模态附件。
+//
+//	user 消息:用户上传给 vision 模型看
+//	assistant 消息:模型生成的图(DALL-E / Gemini imagen / grok-imagine 等)
+type ImageBlock struct {
+	MimeType string `json:"mimeType,omitempty"` // image/png / image/jpeg / ...
+	Data     string `json:"data,omitempty"`     // base64,无 data: 前缀
+	URL      string `json:"url,omitempty"`      // 远程 URL(替代 Data,不重复存)
+}
+
 // Message 对话里的一条消息
 type Message struct {
 	ID      string `json:"id"`
 	Role    string `json:"role"` // user / assistant / system / clear
 	Content string `json:"content"`
+	// Images 附件图片(用户上传 or 模型生成)
+	Images []ImageBlock `json:"images,omitempty"`
 	// Thinking 模型的"思考"内容(deepseek-r1 / o1 / o3 / claude extended thinking)
 	Thinking string `json:"thinking,omitempty"`
 	// Model 这条消息使用的模型 ID(仅 assistant 有意义)

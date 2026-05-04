@@ -259,6 +259,10 @@ func streamOpenAI(ctx context.Context, p Provider, conv Conversation, useRespons
 	// 用一个状态机把它拆出来路由到 thinking 通道。仅对 chat completions 启用,
 	// /responses 已经按事件类型分开了。
 	var splitter thinkSplitter
+	// 兜底:跟踪是否输出了任何文本/图片;
+	// 跑完全程仍是 0 → 把最后几帧原始 payload 拼进错误信息便于排查
+	emitted := false
+	recentPayloads := make([]string, 0, 8)
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -274,12 +278,19 @@ func streamOpenAI(ctx context.Context, p Provider, conv Conversation, useRespons
 		if payload == "[DONE]" {
 			break
 		}
+		// 留档最近 8 帧;空响应兜底时把它们打进错误消息
+		recentPayloads = append(recentPayloads, payload)
+		if len(recentPayloads) > 8 {
+			recentPayloads = recentPayloads[1:]
+		}
 		var text, thinking string
+		var images []ImageBlock
 		if useResponses {
 			text, thinking = parseOpenAIResponsesDelta(payload)
 			if u := parseOpenAIResponsesUsage(payload); u != nil {
 				cb.onUsage(*u)
 			}
+			images = parseOpenAIResponsesImages(payload)
 		} else {
 			text, thinking = parseOpenAIChatDelta(payload)
 			if text != "" {
@@ -292,22 +303,47 @@ func streamOpenAI(ctx context.Context, p Provider, conv Conversation, useRespons
 			if u := parseOpenAIChatUsage(payload); u != nil {
 				cb.onUsage(*u)
 			}
+			images = parseOpenAIChatImages(payload)
+			// 通用兜底:如果仍没解析出图,从 payload 里挖一遍可能的 base64/URL 字段
+			if len(images) == 0 {
+				images = sniffImagesFromPayload(payload)
+			}
 		}
 		if thinking != "" {
 			cb.onThinking(thinking)
 		}
 		if text != "" {
 			cb.onText(text)
+			emitted = true
+		}
+		for _, img := range images {
+			cb.onImage(img)
+			emitted = true
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		cb.onError(fmt.Errorf("读取流失败: %w", err))
 		return
 	}
+	if !emitted {
+		// 流跑完了但没有任何 text/image 输出 — 多半是非标准格式没解析到。
+		// 把最后几帧原始 payload 一起返回,方便用户/我们对照适配。
+		dump := strings.Join(recentPayloads, "\n")
+		if len(dump) > 1500 {
+			dump = dump[len(dump)-1500:]
+		}
+		if dump == "" {
+			dump = "(无任何 SSE 数据)"
+		}
+		cb.onError(fmt.Errorf("模型未返回可识别的文本或图片\n\n最后 %d 帧原始响应:\n%s", len(recentPayloads), dump))
+		return
+	}
 	cb.onDone()
 }
 
-// buildOpenAIResponsesInput Responses API 的 input 字段:用 [{role, content}] 数组
+// buildOpenAIResponsesInput Responses API 的 input 字段
+//
+//	带图片时 content 是 [{type:"input_text",text}, {type:"input_image",image_url}] 数组
 func buildOpenAIResponsesInput(conv Conversation) []map[string]any {
 	msgs := contextMessages(conv)
 	out := make([]map[string]any, 0, len(msgs)+1)
@@ -319,7 +355,20 @@ func buildOpenAIResponsesInput(conv Conversation) []map[string]any {
 			continue
 		}
 		if m.Role == "assistant" && m.Content == "" {
-			// 流式占位的 assistant 消息别发出去
+			continue
+		}
+		if len(m.Images) > 0 && m.Role == "user" {
+			parts := []map[string]any{}
+			if m.Content != "" {
+				parts = append(parts, map[string]any{"type": "input_text", "text": m.Content})
+			}
+			for _, img := range m.Images {
+				parts = append(parts, map[string]any{
+					"type":      "input_image",
+					"image_url": imageDataURL(img),
+				})
+			}
+			out = append(out, map[string]any{"role": m.Role, "content": parts})
 			continue
 		}
 		out = append(out, map[string]any{"role": m.Role, "content": m.Content})
@@ -328,11 +377,13 @@ func buildOpenAIResponsesInput(conv Conversation) []map[string]any {
 }
 
 // buildOpenAIChatMessages 经典 Chat Completions 的 messages 数组
-func buildOpenAIChatMessages(conv Conversation) []map[string]string {
+//
+//	带图片时 content 是 [{type:"text",text}, {type:"image_url",image_url:{url}}] 数组
+func buildOpenAIChatMessages(conv Conversation) []map[string]any {
 	msgs := contextMessages(conv)
-	out := make([]map[string]string, 0, len(msgs)+1)
+	out := make([]map[string]any, 0, len(msgs)+1)
 	if conv.System != "" {
-		out = append(out, map[string]string{"role": "system", "content": conv.System})
+		out = append(out, map[string]any{"role": "system", "content": conv.System})
 	}
 	for _, m := range msgs {
 		if m.Role == RoleClear {
@@ -341,9 +392,37 @@ func buildOpenAIChatMessages(conv Conversation) []map[string]string {
 		if m.Role == "assistant" && m.Content == "" {
 			continue
 		}
-		out = append(out, map[string]string{"role": m.Role, "content": m.Content})
+		if len(m.Images) > 0 && m.Role == "user" {
+			parts := []map[string]any{}
+			if m.Content != "" {
+				parts = append(parts, map[string]any{"type": "text", "text": m.Content})
+			}
+			for _, img := range m.Images {
+				parts = append(parts, map[string]any{
+					"type":      "image_url",
+					"image_url": map[string]string{"url": imageDataURL(img)},
+				})
+			}
+			out = append(out, map[string]any{"role": m.Role, "content": parts})
+			continue
+		}
+		out = append(out, map[string]any{"role": m.Role, "content": m.Content})
 	}
 	return out
+}
+
+// imageDataURL 把 ImageBlock 还原成可直接放进 image_url 字段的字符串。
+//
+//	URL 优先(免去 base64 体积);否则 data:<mime>;base64,<data>
+func imageDataURL(img ImageBlock) string {
+	if img.URL != "" {
+		return img.URL
+	}
+	mime := img.MimeType
+	if mime == "" {
+		mime = "image/png"
+	}
+	return "data:" + mime + ";base64," + img.Data
 }
 
 // parseOpenAIResponsesDelta 从 /v1/responses 的事件 payload 抠 (text, thinking) 增量
@@ -455,6 +534,226 @@ func parseOpenAIResponsesUsage(payload string) *Usage {
 		CachedTokens:    ev.Response.Usage.InputTokensDetails.CachedTokens,
 		ReasoningTokens: ev.Response.Usage.OutputTokensDetails.ReasoningTokens,
 	}
+}
+
+// parseOpenAIChatImages 从 chat-completions chunk 抠模型返回的图片。
+//
+//	兼容多种非标准代理格式:
+//	  delta.images:    [{image_url:{url:"..."}} | {url:"..."} | {b64_json:"..."}]
+//	  delta.image_url: 单字符串
+//	  delta.images_b64:[{mime_type, data}]
+//
+// 后两种是 grok / xAI 风格的代理常见写法
+func parseOpenAIChatImages(payload string) []ImageBlock {
+	var ev struct {
+		Choices []struct {
+			Delta struct {
+				Images []struct {
+					ImageURL struct {
+						URL string `json:"url"`
+					} `json:"image_url"`
+					URL      string `json:"url"`
+					B64JSON  string `json:"b64_json"`
+					MimeType string `json:"mime_type"`
+					Data     string `json:"data"`
+				} `json:"images"`
+				ImageURL string `json:"image_url"`
+				ImagesB64 []struct {
+					MimeType string `json:"mime_type"`
+					Data     string `json:"data"`
+				} `json:"images_b64"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+		return nil
+	}
+	if len(ev.Choices) == 0 {
+		return nil
+	}
+	d := ev.Choices[0].Delta
+	out := make([]ImageBlock, 0, 1)
+	for _, im := range d.Images {
+		if im.ImageURL.URL != "" {
+			out = append(out, fromImageURL(im.ImageURL.URL))
+		} else if im.URL != "" {
+			out = append(out, fromImageURL(im.URL))
+		} else if im.B64JSON != "" {
+			out = append(out, ImageBlock{MimeType: "image/png", Data: im.B64JSON})
+		} else if im.Data != "" {
+			mime := im.MimeType
+			if mime == "" {
+				mime = "image/png"
+			}
+			out = append(out, ImageBlock{MimeType: mime, Data: im.Data})
+		}
+	}
+	if d.ImageURL != "" {
+		out = append(out, fromImageURL(d.ImageURL))
+	}
+	for _, im := range d.ImagesB64 {
+		mime := im.MimeType
+		if mime == "" {
+			mime = "image/png"
+		}
+		out = append(out, ImageBlock{MimeType: mime, Data: im.Data})
+	}
+	return out
+}
+
+// parseOpenAIResponsesImages 从 /v1/responses 事件里抠图(image_generation_call.completed 等)
+func parseOpenAIResponsesImages(payload string) []ImageBlock {
+	var ev struct {
+		Type string `json:"type"`
+		// 事件 payload 字段名因版本而异,做几种兼容
+		B64JSON  string `json:"b64_json"`
+		ImageURL string `json:"image_url"`
+		Result   string `json:"result"`
+		Image    *struct {
+			B64JSON  string `json:"b64_json"`
+			URL      string `json:"url"`
+			MimeType string `json:"mime_type"`
+		} `json:"image"`
+	}
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+		return nil
+	}
+	if !strings.Contains(ev.Type, "image_generation") && !strings.Contains(ev.Type, "image.completed") {
+		return nil
+	}
+	out := make([]ImageBlock, 0, 1)
+	if ev.B64JSON != "" {
+		out = append(out, ImageBlock{MimeType: "image/png", Data: ev.B64JSON})
+	}
+	if ev.Result != "" {
+		// result 有时是裸 base64,有时是 data URL
+		out = append(out, parseImageString(ev.Result))
+	}
+	if ev.ImageURL != "" {
+		out = append(out, fromImageURL(ev.ImageURL))
+	}
+	if ev.Image != nil {
+		if ev.Image.B64JSON != "" {
+			mime := ev.Image.MimeType
+			if mime == "" {
+				mime = "image/png"
+			}
+			out = append(out, ImageBlock{MimeType: mime, Data: ev.Image.B64JSON})
+		} else if ev.Image.URL != "" {
+			out = append(out, fromImageURL(ev.Image.URL))
+		}
+	}
+	return out
+}
+
+// sniffImagesFromPayload 通用兜底:扫整个 chunk 里任何疑似图片字段。
+//
+//	兼容奇形怪状的代理:把整段 JSON 反序列化为 map,递归找
+//	  - "url" / "image_url" 是 http(s) 或 data: 开头 → 算图片
+//	  - "b64_json" / "image_base64" / 长度足够的纯 base64 字符串 → 算 PNG
+//	这样即使代理用了我们没显式处理的字段名,也有可能挖出来。
+func sniffImagesFromPayload(payload string) []ImageBlock {
+	var v any
+	if err := json.Unmarshal([]byte(payload), &v); err != nil {
+		return nil
+	}
+	out := []ImageBlock{}
+	sniffNode(v, &out)
+	return out
+}
+
+func sniffNode(node any, out *[]ImageBlock) {
+	switch t := node.(type) {
+	case map[string]any:
+		for k, val := range t {
+			if s, ok := val.(string); ok {
+				if isImageField(k) {
+					if blk := tryImageString(s); blk != nil {
+						*out = append(*out, *blk)
+					}
+				}
+			} else {
+				sniffNode(val, out)
+			}
+		}
+	case []any:
+		for _, e := range t {
+			sniffNode(e, out)
+		}
+	}
+}
+
+func isImageField(k string) bool {
+	lk := strings.ToLower(k)
+	switch lk {
+	case "url", "image_url", "image", "b64_json", "image_base64", "data_url":
+		return true
+	}
+	return false
+}
+
+func tryImageString(s string) *ImageBlock {
+	if len(s) < 32 {
+		return nil
+	}
+	if strings.HasPrefix(s, "data:image/") {
+		blk := parseImageString(s)
+		return &blk
+	}
+	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+		// 简单后缀过滤,避免把任意 URL 都识别成图
+		low := strings.ToLower(s)
+		for _, ext := range []string{".png", ".jpg", ".jpeg", ".webp", ".gif", "/image", "imagine"} {
+			if strings.Contains(low, ext) {
+				return &ImageBlock{URL: s}
+			}
+		}
+		return nil
+	}
+	// 看起来像裸 base64(只含 base64 字符,长度足够)
+	if looksLikeBase64(s) {
+		return &ImageBlock{MimeType: "image/png", Data: s}
+	}
+	return nil
+}
+
+func looksLikeBase64(s string) bool {
+	if len(s) < 200 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+			c == '+' || c == '/' || c == '=' || c == '\n' || c == '\r' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// fromImageURL 把字符串还原成 ImageBlock(data: 开头的 → 拆 mime+base64)
+func fromImageURL(s string) ImageBlock {
+	return parseImageString(s)
+}
+
+func parseImageString(s string) ImageBlock {
+	if strings.HasPrefix(s, "data:") {
+		// data:image/png;base64,xxxx
+		semi := strings.IndexByte(s, ';')
+		comma := strings.IndexByte(s, ',')
+		if semi > 5 && comma > semi {
+			return ImageBlock{
+				MimeType: s[5:semi],
+				Data:     s[comma+1:],
+			}
+		}
+	}
+	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+		return ImageBlock{URL: s}
+	}
+	// 兜底当 base64 处理
+	return ImageBlock{MimeType: "image/png", Data: s}
 }
 
 // extractErrorMessage 从 OpenAI 错误响应里抠 error.message 或 message

@@ -774,21 +774,97 @@
 }
 
 /* ---- 块级 code:<pre><code>…</code></pre> ---- */
+/* 浅色主题:柔和淡灰底,黑色字;深色主题:不再是 #0d1117 那种"全黑",
+   改用 slate-800 灰蓝,字色稍微亮一点,长时间看不刺眼。 */
 .markdown-preview pre {
-  background: #0d1117;
+  background: hsl(220, 14%, 96%);
+  border: 1px solid hsl(var(--border));
   border-radius: 0.5rem;
-  padding: 1rem;
-  margin: 1em 0;
+  padding: 0.875rem 1rem;
+  margin: 0.75em 0;
   overflow-x: auto;
+  position: relative;
+}
+.dark .markdown-preview pre {
+  background: hsl(220, 14%, 14%);
+  border-color: hsl(220, 13%, 22%);
 }
 .markdown-preview pre > code {
   display: block;
   background: transparent;
-  color: #e6edf3;
+  color: hsl(220, 13%, 18%);
   padding: 0;
   font-size: 12.5px;
   line-height: 1.55;
   border-radius: 0;
+}
+.dark .markdown-preview pre > code {
+  color: hsl(220, 14%, 88%);
+}
+/* 让 highlight.js 在浅色主题下用深字、深色主题下用亮字。
+   关键 token 的色调用 CSS 变量级别强制覆盖,避免 github-dark.css 的硬编码值在浅色下"看不见"。 */
+.markdown-preview pre .hljs-keyword,
+.markdown-preview pre .hljs-selector-tag,
+.markdown-preview pre .hljs-built_in,
+.markdown-preview pre .hljs-name,
+.markdown-preview pre .hljs-tag {
+  color: #cf222e;
+}
+.markdown-preview pre .hljs-string,
+.markdown-preview pre .hljs-attr,
+.markdown-preview pre .hljs-symbol,
+.markdown-preview pre .hljs-bullet,
+.markdown-preview pre .hljs-addition {
+  color: #0a3069;
+}
+.markdown-preview pre .hljs-comment,
+.markdown-preview pre .hljs-quote,
+.markdown-preview pre .hljs-deletion {
+  color: #6e7781;
+  font-style: italic;
+}
+.markdown-preview pre .hljs-number,
+.markdown-preview pre .hljs-literal {
+  color: #0550ae;
+}
+.markdown-preview pre .hljs-title,
+.markdown-preview pre .hljs-section {
+  color: #8250df;
+}
+.markdown-preview pre .hljs-variable,
+.markdown-preview pre .hljs-template-variable {
+  color: #953800;
+}
+.dark .markdown-preview pre .hljs-keyword,
+.dark .markdown-preview pre .hljs-selector-tag,
+.dark .markdown-preview pre .hljs-built_in,
+.dark .markdown-preview pre .hljs-name,
+.dark .markdown-preview pre .hljs-tag {
+  color: #ff7b72;
+}
+.dark .markdown-preview pre .hljs-string,
+.dark .markdown-preview pre .hljs-attr,
+.dark .markdown-preview pre .hljs-symbol,
+.dark .markdown-preview pre .hljs-bullet,
+.dark .markdown-preview pre .hljs-addition {
+  color: #a5d6ff;
+}
+.dark .markdown-preview pre .hljs-comment,
+.dark .markdown-preview pre .hljs-quote,
+.dark .markdown-preview pre .hljs-deletion {
+  color: #8b949e;
+}
+.dark .markdown-preview pre .hljs-number,
+.dark .markdown-preview pre .hljs-literal {
+  color: #79c0ff;
+}
+.dark .markdown-preview pre .hljs-title,
+.dark .markdown-preview pre .hljs-section {
+  color: #d2a8ff;
+}
+.dark .markdown-preview pre .hljs-variable,
+.dark .markdown-preview pre .hljs-template-variable {
+  color: #ffa657;
 }
 
 /* ---- 其他元素主题化 ---- */

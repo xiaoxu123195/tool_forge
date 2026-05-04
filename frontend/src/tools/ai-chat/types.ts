@@ -41,11 +41,22 @@ export interface AIConfig {
   defaultModelId: string
 }
 
+/** 一张图(用户上传给 vision 模型 / 模型生成给用户) */
+export interface ImageBlock {
+  /** image/png · image/jpeg · ... */
+  mimeType?: string
+  /** base64,无 data: 前缀 */
+  data?: string
+  /** 远程 URL(替代 data) */
+  url?: string
+}
+
 export interface Message {
   id: string
   /** 'clear' 是前端"清除上下文"分隔标记,只用于渲染,不发给模型 */
   role: 'user' | 'assistant' | 'system' | 'clear'
   content: string
+  images?: ImageBlock[]
   /** 模型的「思考」内容(deepseek-r1 / o1 / claude extended) */
   thinking?: string
   /** 这条 assistant 消息使用的模型 ID */
@@ -92,5 +103,6 @@ export interface UsageRecord {
 /** Wails 事件名常量 */
 export const EV_CHUNK_PREFIX = 'ai-chat:chunk:'
 export const EV_THINKING_PREFIX = 'ai-chat:thinking:'
+export const EV_IMAGE_PREFIX = 'ai-chat:image:'
 export const EV_DONE_PREFIX = 'ai-chat:done:'
 export const EV_ERROR_PREFIX = 'ai-chat:error:'
