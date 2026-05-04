@@ -207,7 +207,9 @@ func buildAnthropicMessages(conv Conversation) []map[string]any {
 		if m.Role == "assistant" && m.Content == "" {
 			continue
 		}
-		if len(m.Images) > 0 && m.Role == "user" {
+		if m.Role == "user" && (len(m.Images) > 0 || len(m.Files) > 0) {
+			textFiles, binaryFiles := partitionFiles(m.Files, true)
+			text := userContentWithFileText(m.Content, textFiles)
 			parts := []map[string]any{}
 			for _, img := range m.Images {
 				var source map[string]any
@@ -226,8 +228,22 @@ func buildAnthropicMessages(conv Conversation) []map[string]any {
 				}
 				parts = append(parts, map[string]any{"type": "image", "source": source})
 			}
-			if m.Content != "" {
-				parts = append(parts, map[string]any{"type": "text", "text": m.Content})
+			for _, f := range binaryFiles {
+				mime := f.MimeType
+				if mime == "" {
+					mime = "application/pdf"
+				}
+				parts = append(parts, map[string]any{
+					"type": "document",
+					"source": map[string]any{
+						"type":       "base64",
+						"media_type": mime,
+						"data":       f.Data,
+					},
+				})
+			}
+			if text != "" {
+				parts = append(parts, map[string]any{"type": "text", "text": text})
 			}
 			out = append(out, map[string]any{"role": m.Role, "content": parts})
 			continue

@@ -81,6 +81,20 @@ type ImageBlock struct {
 	URL      string `json:"url,omitempty"`      // 远程 URL(替代 Data,不重复存)
 }
 
+// FileBlock 一个非图附件(PDF / docx / xlsx / pptx / 纯文本 / 代码)。
+//
+//	Text 已由前端解析出的文本内容(docx/xlsx/pptx/txt/code → 直接拿到文本)
+//	Data 二进制 base64(主要是 PDF,各协议有原生支持)
+//	两者通常二选一,允许同时存在(Text 用于 fallback,Data 用于原生)
+type FileBlock struct {
+	Name      string `json:"name"`              // 显示名(含扩展名)
+	MimeType  string `json:"mimeType,omitempty"`
+	Text      string `json:"text,omitempty"`    // 提取/原始文本
+	Data      string `json:"data,omitempty"`    // base64,无 data: 前缀
+	URL       string `json:"url,omitempty"`     // 远程引用(暂未启用)
+	SizeBytes int    `json:"sizeBytes,omitempty"`
+}
+
 // Message 对话里的一条消息
 type Message struct {
 	ID      string `json:"id"`
@@ -88,6 +102,8 @@ type Message struct {
 	Content string `json:"content"`
 	// Images 附件图片(用户上传 or 模型生成)
 	Images []ImageBlock `json:"images,omitempty"`
+	// Files 非图附件(用户上传:PDF / docx / xlsx / pptx / 文本 / 代码)
+	Files []FileBlock `json:"files,omitempty"`
 	// Thinking 模型的"思考"内容(deepseek-r1 / o1 / o3 / claude extended thinking)
 	Thinking string `json:"thinking,omitempty"`
 	// Model 这条消息使用的模型 ID(仅 assistant 有意义)

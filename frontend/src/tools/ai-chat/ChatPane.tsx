@@ -15,8 +15,13 @@ import {
   Eraser,
   Trash2,
   X,
-  ImagePlus,
+  Paperclip,
   Download,
+  FileText,
+  FileSpreadsheet,
+  Presentation,
+  FileCode2,
+  FileType2,
 } from 'lucide-react'
 import {
   DeleteAIChatMessage,
@@ -38,10 +43,18 @@ import {
   EV_DONE_PREFIX,
   EV_ERROR_PREFIX,
   type Conversation,
+  type FileBlock,
   type ImageBlock,
   type Message,
   type Provider,
 } from './types'
+import {
+  detectFileKind,
+  fileToFileBlock,
+  formatFileSize,
+  isImageFile,
+  MAX_FILES_PER_MESSAGE,
+} from './file-parsers'
 import { Button } from '@/components/ui/button'
 import { useConfirm } from '@/components/ui/confirm'
 import { MarkdownPreview } from '@/components/tool/MarkdownPreview'
@@ -62,10 +75,9 @@ const SUGGESTIONS = [
   '帮我润色一段产品介绍文案',
 ]
 
-const MAX_IMAGES = 4
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024 // 5 MB
 
-/** 把 File 转 ImageBlock(base64,无 data: 前缀) */
+/** 把图片 File 转 ImageBlock(base64,无 data: 前缀) */
 async function fileToImageBlock(file: File): Promise<ImageBlock> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -88,6 +100,18 @@ function imageSrc(img: ImageBlock): string {
   return `data:${img.mimeType ?? 'image/png'};base64,${img.data ?? ''}`
 }
 
+/** 根据文件类型挑一个图标 */
+function fileIcon(name: string) {
+  const kind = detectFileKind(name)
+  const ext = name.toLowerCase().split('.').pop() ?? ''
+  if (kind === 'pdf') return FileType2
+  if (ext === 'docx' || ext === 'doc') return FileText
+  if (ext === 'xlsx' || ext === 'xls' || ext === 'csv') return FileSpreadsheet
+  if (ext === 'pptx' || ext === 'ppt') return Presentation
+  if (kind === 'text') return FileCode2
+  return FileText
+}
+
 export function ChatPane({ conversationId, onTitleChange }: Props) {
   const dialog = useConfirm()
   const [conv, setConv] = useState<Conversation | null>(null)
@@ -97,7 +121,9 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [systemOpen, setSystemOpen] = useState(false)
   const [pendingImages, setPendingImages] = useState<ImageBlock[]>([])
+  const [pendingFiles, setPendingFiles] = useState<FileBlock[]>([])
   const [previewImage, setPreviewImage] = useState<ImageBlock | null>(null)
+  const [previewFile, setPreviewFile] = useState<FileBlock | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -231,10 +257,17 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
 
   const onSend = async (override?: string) => {
     const content = (override ?? draft).trim()
-    if ((!content && pendingImages.length === 0) || streaming || !conv) return
+    if (
+      (!content && pendingImages.length === 0 && pendingFiles.length === 0) ||
+      streaming ||
+      !conv
+    )
+      return
     const imagesToSend = pendingImages
+    const filesToSend = pendingFiles
     setDraft('')
     setPendingImages([])
+    setPendingFiles([])
     setStreaming(true)
 
     // 乐观更新:先把 user + assistant 占位放进本地状态,
@@ -245,6 +278,7 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
       role: 'user',
       content,
       images: imagesToSend.length > 0 ? imagesToSend : undefined,
+      files: filesToSend.length > 0 ? filesToSend : undefined,
       createdAt: now,
     }
     const tmpAsst: Message = {
@@ -259,7 +293,7 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
       prev ? { ...prev, messages: [...prev.messages, tmpUser, tmpAsst] } : prev,
     )
 
-    const r = (await SendAIChat(conv.id, content, imagesToSend)) as any
+    const r = (await SendAIChat(conv.id, content, imagesToSend, filesToSend)) as any
     const err = pickSecond(r)
     if (err) {
       setStreaming(false)
@@ -274,8 +308,9 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
             }
           : prev,
       )
-      // 失败也把图片塞回去,避免用户刚拖了图就丢了
+      // 失败也把附件塞回去,避免用户刚拖了文件就丢了
       setPendingImages(imagesToSend)
+      setPendingFiles(filesToSend)
       await dialog({ title: '发送失败', message: err, confirmLabel: '知道了' })
       return
     }
@@ -285,32 +320,48 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
   }
 
   const ingestFiles = async (files: FileList | File[]) => {
-    const list = Array.from(files).filter((f) => f.type.startsWith('image/'))
+    const list = Array.from(files)
     if (list.length === 0) return
-    const tooBig = list.find((f) => f.size > MAX_IMAGE_BYTES)
-    if (tooBig) {
+    const totalAfter =
+      pendingImages.length + pendingFiles.length + list.length
+    if (totalAfter > MAX_FILES_PER_MESSAGE) {
       await dialog({
-        title: '图片过大',
-        message: `「${tooBig.name}」超过 5 MB,请压缩后再上传。`,
+        title: '附件数量超限',
+        message: `单条消息最多 ${MAX_FILES_PER_MESSAGE} 个附件(图片/文件合计)`,
         confirmLabel: '知道了',
       })
       return
     }
-    const remaining = MAX_IMAGES - pendingImages.length
-    if (remaining <= 0) {
+    const newImages: ImageBlock[] = []
+    const newFiles: FileBlock[] = []
+    const errors: string[] = []
+    for (const f of list) {
+      try {
+        if (isImageFile(f)) {
+          if (f.size > MAX_IMAGE_BYTES) {
+            errors.push(`「${f.name}」超过 5 MB`)
+            continue
+          }
+          newImages.push(await fileToImageBlock(f))
+        } else {
+          newFiles.push(await fileToFileBlock(f))
+        }
+      } catch (e: any) {
+        errors.push(`「${f.name}」${e?.message ?? e}`)
+      }
+    }
+    if (newImages.length > 0) {
+      setPendingImages((prev) => [...prev, ...newImages])
+    }
+    if (newFiles.length > 0) {
+      setPendingFiles((prev) => [...prev, ...newFiles])
+    }
+    if (errors.length > 0) {
       await dialog({
-        title: '图片数量已达上限',
-        message: `单条消息最多附带 ${MAX_IMAGES} 张图。`,
+        title: '部分文件无法上传',
+        message: errors.join('\n'),
         confirmLabel: '知道了',
       })
-      return
-    }
-    const accept = list.slice(0, remaining)
-    try {
-      const blocks = await Promise.all(accept.map(fileToImageBlock))
-      setPendingImages((prev) => [...prev, ...blocks])
-    } catch (e) {
-      await dialog({ title: '读取图片失败', message: String(e), confirmLabel: '知道了' })
     }
   }
 
@@ -322,10 +373,11 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = e.clipboardData?.items
     if (!items) return
+    // 任意 kind=file 都收(图/PDF/docx/...);text 走默认粘贴
     const files: File[] = []
     for (let i = 0; i < items.length; i++) {
       const it = items[i]
-      if (it.kind === 'file' && it.type.startsWith('image/')) {
+      if (it.kind === 'file') {
         const f = it.getAsFile()
         if (f) files.push(f)
       }
@@ -345,6 +397,10 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
 
   const removePendingImage = (idx: number) => {
     setPendingImages((prev) => prev.filter((_, i) => i !== idx))
+  }
+
+  const removePendingFile = (idx: number) => {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== idx))
   }
 
   const onStop = async () => {
@@ -546,6 +602,7 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
                   }
                   onDelete={canMutate ? () => void onDeleteMessage(m.id) : undefined}
                   onPreviewImage={setPreviewImage}
+                  onPreviewFile={setPreviewFile}
                 />
               )
             })}
@@ -589,11 +646,11 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
             }}
             onDrop={onDrop}
           >
-            {pendingImages.length > 0 && (
+            {(pendingImages.length > 0 || pendingFiles.length > 0) && (
               <div className="flex flex-wrap gap-2 border-b border-border/50 p-2">
                 {pendingImages.map((img, i) => (
                   <div
-                    key={i}
+                    key={'img-' + i}
                     className="group/thumb relative h-16 w-16 overflow-hidden rounded-md border border-border bg-secondary/30"
                   >
                     <img
@@ -612,6 +669,38 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
                     </button>
                   </div>
                 ))}
+                {pendingFiles.map((f, i) => {
+                  const Icon = fileIcon(f.name)
+                  return (
+                    <div
+                      key={'file-' + i}
+                      className="group/thumb relative flex h-16 max-w-[220px] cursor-pointer items-center gap-2 overflow-hidden rounded-md border border-border bg-secondary/30 px-2.5"
+                      onClick={() => setPreviewFile(f)}
+                      title={f.name}
+                    >
+                      <Icon className="h-7 w-7 shrink-0 text-info" />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-xs font-medium">{f.name}</div>
+                        <div className="text-[10px] text-muted-foreground">
+                          {f.sizeBytes ? formatFileSize(f.sizeBytes) : ''}
+                          {f.text ? ` · ${f.text.length} 字` : ''}
+                          {f.data ? ' · PDF' : ''}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          removePendingFile(i)
+                        }}
+                        className="absolute right-0.5 top-0.5 hidden h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80 group-hover/thumb:flex"
+                        title="移除"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )
+                })}
               </div>
             )}
             <textarea
@@ -625,7 +714,7 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
                   void onSend()
                 }
               }}
-              placeholder="发条消息(Enter 发送 · Shift+Enter 换行 · 支持粘贴/拖入图片)"
+              placeholder="发条消息(Enter 发送 · Shift+Enter 换行 · 支持粘贴/拖入图片或文件)"
               rows={3}
               className="block max-h-[240px] w-full resize-none rounded-t-xl bg-transparent px-3 pt-3 text-sm outline-none"
             />
@@ -650,16 +739,19 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={streaming || pendingImages.length >= MAX_IMAGES}
+                  disabled={
+                    streaming ||
+                    pendingImages.length + pendingFiles.length >= MAX_FILES_PER_MESSAGE
+                  }
                   className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50"
-                  title={`添加图片(最多 ${MAX_IMAGES} 张,单张 ≤ 5 MB)`}
+                  title={`添加附件(最多 ${MAX_FILES_PER_MESSAGE} 个 · 图片≤5MB · PDF≤20MB · docx/xlsx/pptx≤15MB)`}
                 >
-                  <ImagePlus className="h-3.5 w-3.5" />
+                  <Paperclip className="h-3.5 w-3.5" />
                 </button>
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/*"
+                  accept="image/*,.pdf,.docx,.xlsx,.pptx,.txt,.md,.markdown,.csv,.tsv,.json,.yaml,.yml,.toml,.xml,.html,.css,.log,.go,.mod,.sum,.js,.jsx,.ts,.tsx,.mjs,.cjs,.py,.rb,.php,.rs,.c,.cc,.cpp,.h,.hpp,.java,.kt,.swift,.scala,.cs,.lua,.dart,.sh,.bash,.zsh,.fish,.ps1,.bat,.sql,.proto,.dockerfile,.makefile,.tex"
                   multiple
                   hidden
                   onChange={onPickFiles}
@@ -674,7 +766,11 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
               ) : (
                 <Button
                   onClick={() => void onSend()}
-                  disabled={!draft.trim() && pendingImages.length === 0}
+                  disabled={
+                    !draft.trim() &&
+                    pendingImages.length === 0 &&
+                    pendingFiles.length === 0
+                  }
                   size="sm"
                 >
                   <Send className="h-3 w-3" />
@@ -696,6 +792,10 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
 
       {previewImage && (
         <ImagePreviewModal img={previewImage} onClose={() => setPreviewImage(null)} />
+      )}
+
+      {previewFile && (
+        <FilePreviewModal file={previewFile} onClose={() => setPreviewFile(null)} />
       )}
 
       {systemOpen && (
@@ -791,6 +891,88 @@ function ImagePreviewModal({ img, onClose }: { img: ImageBlock; onClose: () => v
   )
 }
 
+function FilePreviewModal({ file, onClose }: { file: FileBlock; onClose: () => void }) {
+  const onDownload = () => {
+    let blob: Blob
+    if (file.data) {
+      const bin = atob(file.data)
+      const arr = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+      blob = new Blob([arr], { type: file.mimeType ?? 'application/octet-stream' })
+    } else {
+      blob = new Blob([file.text ?? ''], { type: 'text/plain;charset=utf-8' })
+    }
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = file.name
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+  const Icon = fileIcon(file.name)
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 p-6"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div className="flex h-[80vh] w-[760px] max-w-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+        <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-border px-4">
+          <div className="flex min-w-0 items-center gap-2">
+            <Icon className="h-4 w-4 shrink-0 text-info" />
+            <span className="truncate text-sm font-semibold" title={file.name}>
+              {file.name}
+            </span>
+            <span className="shrink-0 text-[11px] text-muted-foreground">
+              {file.sizeBytes ? formatFileSize(file.sizeBytes) : ''}
+              {file.text ? ` · ${file.text.length} 字` : ''}
+              {file.data ? ' · 二进制' : ''}
+            </span>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={onDownload}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+              title="下载"
+            >
+              <Download className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+              title="关闭"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </header>
+        <div className="min-h-0 flex-1 overflow-auto p-4">
+          {file.text ? (
+            <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
+              {file.text}
+            </pre>
+          ) : file.data ? (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              <div className="text-center">
+                <Icon className="mx-auto h-12 w-12 text-info/60" />
+                <p className="mt-3">这是二进制文件,无法直接预览。</p>
+                <p className="mt-1 text-xs">点击右上角下载查看。</p>
+              </div>
+            </div>
+          ) : (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              (无内容)
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ClearDivider({ onDelete }: { onDelete?: () => void }) {
   return (
     <li className="group/clear flex items-center gap-3 py-1 text-[11px] text-muted-foreground">
@@ -820,6 +1002,7 @@ function MessageItem({
   onEditResend,
   onDelete,
   onPreviewImage,
+  onPreviewFile,
 }: {
   message: Message
   fallbackModel: string
@@ -828,6 +1011,7 @@ function MessageItem({
   onEditResend?: (newContent: string) => void
   onDelete?: () => void
   onPreviewImage?: (img: ImageBlock) => void
+  onPreviewFile?: (f: FileBlock) => void
 }) {
   const [copied, setCopied] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -898,6 +1082,33 @@ function MessageItem({
           </div>
         )}
 
+        {message.files && message.files.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {message.files.map((f, i) => {
+              const Icon = fileIcon(f.name)
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => onPreviewFile?.(f)}
+                  className="flex max-w-[280px] items-center gap-2 rounded-md border border-border bg-secondary/30 px-3 py-2 text-left transition-colors hover:bg-secondary"
+                  title={f.name}
+                >
+                  <Icon className="h-7 w-7 shrink-0 text-info" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs font-medium">{f.name}</div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {f.sizeBytes ? formatFileSize(f.sizeBytes) : ''}
+                      {f.text ? ` · ${f.text.length} 字` : ''}
+                      {f.data ? ' · PDF' : ''}
+                    </div>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        )}
+
         <div className="min-w-0 text-sm leading-relaxed">
           {isUser ? (
             editing ? (
@@ -948,7 +1159,9 @@ function MessageItem({
             <div className="rounded-lg border border-border bg-card px-3 py-2">
               <MarkdownPreview value={message.content} className="markdown-preview text-sm" />
             </div>
-          ) : !message.thinking && (!message.images || message.images.length === 0) ? (
+          ) : !message.thinking &&
+            (!message.images || message.images.length === 0) &&
+            (!message.files || message.files.length === 0) ? (
             <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
               <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground" />
               {streaming ? '正在思考...' : '(没有返回内容,请检查后端日志或换个模型再试)'}

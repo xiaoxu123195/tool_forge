@@ -196,10 +196,13 @@ func buildGeminiContents(conv Conversation) []map[string]any {
 			role = "model"
 		}
 		parts := []map[string]any{}
-		if m.Content != "" {
-			parts = append(parts, map[string]any{"text": m.Content})
-		}
+		text := m.Content
 		if m.Role == "user" {
+			textFiles, binaryFiles := partitionFiles(m.Files, true)
+			text = userContentWithFileText(m.Content, textFiles)
+			if text != "" {
+				parts = append(parts, map[string]any{"text": text})
+			}
 			for _, img := range m.Images {
 				if img.Data == "" {
 					// Gemini 不支持直接吃远程 URL,跳过(前端应在上传时转 base64)
@@ -216,6 +219,20 @@ func buildGeminiContents(conv Conversation) []map[string]any {
 					},
 				})
 			}
+			for _, f := range binaryFiles {
+				mime := f.MimeType
+				if mime == "" {
+					mime = "application/pdf"
+				}
+				parts = append(parts, map[string]any{
+					"inlineData": map[string]string{
+						"mimeType": mime,
+						"data":     f.Data,
+					},
+				})
+			}
+		} else if text != "" {
+			parts = append(parts, map[string]any{"text": text})
 		}
 		if len(parts) == 0 {
 			parts = append(parts, map[string]any{"text": ""})

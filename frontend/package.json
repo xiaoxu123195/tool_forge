@@ -32,7 +32,9 @@
     "crypto-js": "^4.2.0",
     "diff": "^8.0.4",
     "highlight.js": "^11.11.1",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.441.0",
+    "mammoth": "^1.12.0",
     "pinyin-pro": "^3.28.1",
     "protobufjs": "^7.4.0",
     "qrcode": "^1.5.4",
@@ -44,6 +46,7 @@
     "remark-gfm": "^4.0.1",
     "sm-crypto": "^0.3.13",
     "tailwind-merge": "^2.5.2",
+    "xlsx": "^0.18.5",
     "zustand": "^4.5.5"
   },
   "devDependencies": {

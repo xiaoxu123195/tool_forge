@@ -85,7 +85,7 @@ func (s *Service) CancelStream(id string) bool {
 //
 // 返回的 Conversation 是"刚追加完 user + 空 assistant"的状态,前端拿到后立刻渲染,
 // 然后监听三种事件来更新 assistant.content
-func (s *Service) SendChat(ctx context.Context, convID, userContent string, userImages []ImageBlock) (*Conversation, error) {
+func (s *Service) SendChat(ctx context.Context, convID, userContent string, userImages []ImageBlock, userFiles []FileBlock) (*Conversation, error) {
 	c, err := loadConversation(convID)
 	if err != nil {
 		return nil, err
@@ -100,10 +100,13 @@ func (s *Service) SendChat(ctx context.Context, convID, userContent string, user
 	if c.ModelID == "" {
 		return nil, fmt.Errorf("会话未指定模型")
 	}
-	// 允许"只发图、不带文字"——只要至少有一张图,文本可空
-	if strings.TrimSpace(userContent) == "" && len(userImages) == 0 {
+	// 允许"只发附件、不带文字"——文本/图/文件至少其一
+	if strings.TrimSpace(userContent) == "" && len(userImages) == 0 && len(userFiles) == 0 {
 		return nil, fmt.Errorf("消息不能为空")
 	}
+
+	// PDF 后端兜底:openai-compat 协议没有原生文件入参,把 PDF 二进制当场提取成文本附进 Files.Text
+	userFiles = ensureFileText(prov.Type, userFiles)
 
 	now := time.Now().UnixMilli()
 	userMsg := Message{
@@ -111,6 +114,7 @@ func (s *Service) SendChat(ctx context.Context, convID, userContent string, user
 		Role:      "user",
 		Content:   userContent,
 		Images:    userImages,
+		Files:     userFiles,
 		CreatedAt: now,
 	}
 	asstMsg := Message{

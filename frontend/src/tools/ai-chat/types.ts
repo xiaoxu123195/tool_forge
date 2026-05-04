@@ -51,12 +51,25 @@ export interface ImageBlock {
   url?: string
 }
 
+/** 一个非图附件(PDF / docx / xlsx / pptx / 文本 / 代码) */
+export interface FileBlock {
+  name: string
+  mimeType?: string
+  /** 已解析的文本(docx/xlsx/pptx/txt/code) */
+  text?: string
+  /** base64,无 data: 前缀(主要是 PDF) */
+  data?: string
+  url?: string
+  sizeBytes?: number
+}
+
 export interface Message {
   id: string
   /** 'clear' 是前端"清除上下文"分隔标记,只用于渲染,不发给模型 */
   role: 'user' | 'assistant' | 'system' | 'clear'
   content: string
   images?: ImageBlock[]
+  files?: FileBlock[]
   /** 模型的「思考」内容(deepseek-r1 / o1 / claude extended) */
   thinking?: string
   /** 这条 assistant 消息使用的模型 ID */

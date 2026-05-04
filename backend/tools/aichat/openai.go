@@ -357,10 +357,12 @@ func buildOpenAIResponsesInput(conv Conversation) []map[string]any {
 		if m.Role == "assistant" && m.Content == "" {
 			continue
 		}
-		if len(m.Images) > 0 && m.Role == "user" {
+		if m.Role == "user" && (len(m.Images) > 0 || len(m.Files) > 0) {
+			textFiles, binaryFiles := partitionFiles(m.Files, true)
+			text := userContentWithFileText(m.Content, textFiles)
 			parts := []map[string]any{}
-			if m.Content != "" {
-				parts = append(parts, map[string]any{"type": "input_text", "text": m.Content})
+			if text != "" {
+				parts = append(parts, map[string]any{"type": "input_text", "text": text})
 			}
 			for _, img := range m.Images {
 				parts = append(parts, map[string]any{
@@ -368,8 +370,21 @@ func buildOpenAIResponsesInput(conv Conversation) []map[string]any {
 					"image_url": imageDataURL(img),
 				})
 			}
-			out = append(out, map[string]any{"role": m.Role, "content": parts})
-			continue
+			for _, f := range binaryFiles {
+				mime := f.MimeType
+				if mime == "" {
+					mime = "application/pdf"
+				}
+				parts = append(parts, map[string]any{
+					"type":      "input_file",
+					"filename":  f.Name,
+					"file_data": "data:" + mime + ";base64," + f.Data,
+				})
+			}
+			if len(parts) > 0 {
+				out = append(out, map[string]any{"role": m.Role, "content": parts})
+				continue
+			}
 		}
 		out = append(out, map[string]any{"role": m.Role, "content": m.Content})
 	}
@@ -379,6 +394,7 @@ func buildOpenAIResponsesInput(conv Conversation) []map[string]any {
 // buildOpenAIChatMessages 经典 Chat Completions 的 messages 数组
 //
 //	带图片时 content 是 [{type:"text",text}, {type:"image_url",image_url:{url}}] 数组
+//	chat-completions 不支持原生 PDF,文件全部走文本拼接(ensureFileText 已确保 Text 存在)
 func buildOpenAIChatMessages(conv Conversation) []map[string]any {
 	msgs := contextMessages(conv)
 	out := make([]map[string]any, 0, len(msgs)+1)
@@ -392,19 +408,27 @@ func buildOpenAIChatMessages(conv Conversation) []map[string]any {
 		if m.Role == "assistant" && m.Content == "" {
 			continue
 		}
-		if len(m.Images) > 0 && m.Role == "user" {
-			parts := []map[string]any{}
-			if m.Content != "" {
-				parts = append(parts, map[string]any{"type": "text", "text": m.Content})
+		if m.Role == "user" {
+			textFiles, _ := partitionFiles(m.Files, false) // chat-compat 不支持原生 PDF
+			text := userContentWithFileText(m.Content, textFiles)
+			if len(m.Images) > 0 {
+				parts := []map[string]any{}
+				if text != "" {
+					parts = append(parts, map[string]any{"type": "text", "text": text})
+				}
+				for _, img := range m.Images {
+					parts = append(parts, map[string]any{
+						"type":      "image_url",
+						"image_url": map[string]string{"url": imageDataURL(img)},
+					})
+				}
+				out = append(out, map[string]any{"role": m.Role, "content": parts})
+				continue
 			}
-			for _, img := range m.Images {
-				parts = append(parts, map[string]any{
-					"type":      "image_url",
-					"image_url": map[string]string{"url": imageDataURL(img)},
-				})
+			if text != m.Content {
+				out = append(out, map[string]any{"role": m.Role, "content": text})
+				continue
 			}
-			out = append(out, map[string]any{"role": m.Role, "content": parts})
-			continue
 		}
 		out = append(out, map[string]any{"role": m.Role, "content": m.Content})
 	}

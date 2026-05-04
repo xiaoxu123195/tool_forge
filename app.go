@@ -986,13 +986,14 @@ func (a *App) DeleteAIConversation(id string) string {
 // SendAIChat 在会话里追加 user 消息并启动流式回复
 //
 //	userImages 可选;每个 ImageBlock 用 base64(无 data: 前缀) 或 url 二选一
+//	userFiles  可选;Text(已解析的文本) 或 Data(base64,主要是 PDF) 二选一
 //	返回的 Conversation 已含 user 消息 + 空 assistant 占位;
 //	后续每个 chunk 通过事件 ai-chat:chunk:{id} / done:{id} / error:{id} 推送
-func (a *App) SendAIChat(convID, userContent string, userImages []aichat.ImageBlock) (aichat.Conversation, string) {
+func (a *App) SendAIChat(convID, userContent string, userImages []aichat.ImageBlock, userFiles []aichat.FileBlock) (aichat.Conversation, string) {
 	if a.aichat == nil {
 		return aichat.Conversation{}, "AI 服务未初始化"
 	}
-	c, err := a.aichat.SendChat(a.ctx, convID, userContent, userImages)
+	c, err := a.aichat.SendChat(a.ctx, convID, userContent, userImages, userFiles)
 	if err != nil {
 		return aichat.Conversation{}, err.Error()
 	}
