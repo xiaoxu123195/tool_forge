@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { AlertCircle, Check, Copy, X } from 'lucide-react'
+import { AlertCircle, Check, Copy, Radio, ShieldAlert, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { TOOL_EXAMPLES, type ToolExampleSet } from './examples'
 
@@ -41,8 +41,10 @@ export function ToolExampleDialog({
     const authHeader = config.auth_enabled && config.token
       ? ` \\\n  -H "Authorization: Bearer ${config.token}"`
       : ''
-    return `curl -X POST ${url}${authHeader} \\\n  -H "Content-Type: application/json" \\\n  -d '${bodyJson.replace(/\n/g, '')}'`
-  }, [url, bodyJson, config.auth_enabled, config.token])
+    // 流式(SSE)必须加 -N 关闭 curl 输出缓冲,否则看不到实时日志
+    const flag = set?.streaming ? '-N ' : ''
+    return `curl ${flag}-X POST ${url}${authHeader} \\\n  -H "Content-Type: application/json" \\\n  -d '${bodyJson.replace(/\n/g, '')}'`
+  }, [url, bodyJson, config.auth_enabled, config.token, set?.streaming])
 
   const handleCopy = async (text: string, key: 'body' | 'curl') => {
     await navigator.clipboard.writeText(text)
@@ -74,6 +76,24 @@ export function ToolExampleDialog({
 
         {set ? (
           <div className="min-h-0 flex-1 space-y-4 overflow-auto p-4">
+            {/* 标记:流式 / 敏感 */}
+            {(set.streaming || set.sensitive) && (
+              <div className="flex flex-wrap gap-2">
+                {set.streaming && (
+                  <span className="inline-flex items-center gap-1 rounded-md border border-info/40 bg-info/5 px-2 py-1 text-xs text-info">
+                    <Radio className="h-3 w-3" />
+                    SSE 流式响应
+                  </span>
+                )}
+                {set.sensitive && (
+                  <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-300">
+                    <ShieldAlert className="h-3 w-3" />
+                    敏感操作 · 建议开 Token 鉴权
+                  </span>
+                )}
+              </div>
+            )}
+
             {/* 场景 tab */}
             <div className="flex flex-wrap gap-1.5">
               {set.scenarios.map((s, i) => (

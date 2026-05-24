@@ -51,6 +51,9 @@ type Service struct {
 	mu      sync.Mutex
 	jobs    map[string]*job
 	binPath string
+	// subscribers 给 HTTP SSE 等"非 Wails 前端"用的订阅者。
+	// emit 时既调 wailsruntime.EventsEmit(给桌面工具页),也 fan-out 到此处的 channel。
+	subscribers map[string][]chan EventEnvelope
 }
 
 type job struct {
@@ -58,9 +61,76 @@ type job struct {
 	cancel context.CancelFunc
 }
 
+// EventEnvelope 统一封装 log / done 两类事件,Subscribe 用
+type EventEnvelope struct {
+	Type string     `json:"type"` // "log" | "done"
+	Log  *LogLine   `json:"log,omitempty"`
+	Done *DoneEvent `json:"done,omitempty"`
+}
+
 // New 新建服务
 func New() *Service {
-	return &Service{jobs: make(map[string]*job)}
+	return &Service{
+		jobs:        make(map[string]*job),
+		subscribers: make(map[string][]chan EventEnvelope),
+	}
+}
+
+// Subscribe 订阅指定 jobID 的事件流。
+// 返回的 channel 在收到 type=="done" 后会自动关闭(由 emitDone 触发)。
+// 调用方应在 defer 里调 unsubscribe,避免任务还没结束就 leak。
+func (s *Service) Subscribe(jobID string) (<-chan EventEnvelope, func()) {
+	ch := make(chan EventEnvelope, 64)
+	s.mu.Lock()
+	s.subscribers[jobID] = append(s.subscribers[jobID], ch)
+	s.mu.Unlock()
+
+	unsubscribe := func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		list := s.subscribers[jobID]
+		for i, c := range list {
+			if c == ch {
+				// 删除 + 关闭(允许重复 close 无副作用,但用 recover 保险)
+				s.subscribers[jobID] = append(list[:i], list[i+1:]...)
+				defer func() {
+					recover()
+				}()
+				close(ch)
+				return
+			}
+		}
+	}
+	return ch, unsubscribe
+}
+
+// emitToSubscribers 给指定 jobID 的所有订阅者推一个事件;channel 满时丢弃。
+func (s *Service) emitToSubscribers(jobID string, env EventEnvelope) {
+	s.mu.Lock()
+	chans := append([]chan EventEnvelope(nil), s.subscribers[jobID]...)
+	s.mu.Unlock()
+	for _, ch := range chans {
+		select {
+		case ch <- env:
+		default: // 满了就丢,避免阻塞 service 主流程
+		}
+	}
+}
+
+// closeSubscribers 任务结束时主动关闭所有该 jobID 的订阅 channel,
+// 让正在 range 等数据的协程能优雅退出。
+func (s *Service) closeSubscribers(jobID string) {
+	s.mu.Lock()
+	chans := s.subscribers[jobID]
+	delete(s.subscribers, jobID)
+	s.mu.Unlock()
+	for _, ch := range chans {
+		// close 已 closed channel 会 panic,用 recover 兜底
+		func() {
+			defer func() { recover() }()
+			close(ch)
+		}()
+	}
 }
 
 // SetContext 保存 Wails 上下文（用于事件推送与取消）
@@ -177,6 +247,9 @@ func (s *Service) Run(args []string) (string, error) {
 			done.ExitCode = 0
 		}
 		wailsruntime.EventsEmit(s.ctx, EventDone, done)
+		s.emitToSubscribers(jobID, EventEnvelope{Type: "done", Done: &done})
+		// 关 channel 让 SSE handler 优雅退出
+		s.closeSubscribers(jobID)
 	}()
 
 	return jobID, nil
@@ -202,11 +275,13 @@ func (s *Service) pumpStream(jobID, stream string, r io.ReadCloser) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		wailsruntime.EventsEmit(s.ctx, EventLog, LogLine{
+		line := LogLine{
 			JobID:  jobID,
 			Stream: stream,
 			Line:   scanner.Text(),
-		})
+		}
+		wailsruntime.EventsEmit(s.ctx, EventLog, line)
+		s.emitToSubscribers(jobID, EventEnvelope{Type: "log", Log: &line})
 	}
 }
 

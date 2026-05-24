@@ -9,7 +9,9 @@ import {
   KeyRound,
   Loader2,
   Network,
+  Radio,
   RefreshCw,
+  ShieldAlert,
   ShieldCheck,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -303,7 +305,8 @@ export function LocalAPISection() {
         ) : (
           <ul className="space-y-1">
             {tools.map((t) => {
-              const hasExamples = !!TOOL_EXAMPLES[t.name]
+              const set = TOOL_EXAMPLES[t.name]
+              const hasExamples = !!set
               return (
                 <li
                   key={t.name}
@@ -317,9 +320,27 @@ export function LocalAPISection() {
                     className="mt-0.5 h-4 w-4 accent-info"
                   />
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 text-sm">
+                    <div className="flex flex-wrap items-center gap-2 text-sm">
                       <span className="font-medium">{t.title}</span>
                       <span className="font-mono text-[11px] text-muted-foreground">{t.path}</span>
+                      {set?.streaming && (
+                        <span
+                          className="inline-flex items-center gap-0.5 rounded border border-info/40 bg-info/5 px-1 text-[10px] text-info"
+                          title="返回 SSE 流式响应"
+                        >
+                          <Radio className="h-2.5 w-2.5" />
+                          SSE
+                        </span>
+                      )}
+                      {set?.sensitive && (
+                        <span
+                          className="inline-flex items-center gap-0.5 rounded border border-amber-500/40 bg-amber-500/5 px-1 text-[10px] text-amber-700 dark:text-amber-300"
+                          title="敏感操作,建议开 Token 鉴权"
+                        >
+                          <ShieldAlert className="h-2.5 w-2.5" />
+                          敏感
+                        </span>
+                      )}
                     </div>
                     <div className="text-xs text-muted-foreground">{t.description}</div>
                   </div>

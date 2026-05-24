@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -312,6 +313,12 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 流式 handler 走 SSE 分支
+	if sh, ok := h.(StreamHandler); ok {
+		serveSSE(w, r, sh, body)
+		return
+	}
+
 	resp, err := h.Handle(r.Context(), body)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "tool_error", err.Error())
@@ -319,6 +326,57 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_, _ = w.Write(resp)
+}
+
+// serveSSE 把 StreamHandler 包装成 Server-Sent Events 响应。
+//
+// 协议: 每个事件一行 "data: <json>\n\n"。客户端用 curl -N 或 EventSource 接收。
+// 客户端断开 (r.Context().Done()) 会触发 handler 内部 ctx 取消, handler 可借此停掉
+// 后台任务(比如 kill go-forensic 进程)。
+func serveSSE(w http.ResponseWriter, r *http.Request, h StreamHandler, body []byte) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming_unsupported", "服务器不支持流式响应")
+		return
+	}
+
+	// SSE 长连接可能跑几分钟到几十分钟,清掉 server 全局 WriteTimeout
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetWriteDeadline(time.Time{})
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	// 关掉 Nginx 等反代缓冲(虽然我们目前不走反代,放着不亏)
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	// emit 串行写,handler 内部多 goroutine 调用时需自己做同步(参考 forensic handler 用 channel)
+	emit := func(ev StreamEvent) error {
+		data, err := json.Marshal(ev)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	}
+
+	// handler 出错时写一条 error 事件 + 结束;不再 writeError 因为头已经发了 200
+	if err := h.HandleStream(r.Context(), body, emit); err != nil && !isClientGone(r.Context()) {
+		_ = emit(StreamEvent{
+			Type: "error",
+			Data: map[string]string{"message": err.Error()},
+		})
+	}
+}
+
+func isClientGone(ctx context.Context) bool {
+	return ctx.Err() != nil
 }
 
 // =================== Token 生成 ===================

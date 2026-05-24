@@ -32,6 +32,10 @@ export interface ToolExampleSet {
   fields?: ExampleField[]
   /** 附加说明,渲染成 bullet 列表 */
   notes?: string[]
+  /** 流式(SSE)工具;影响 curl 命令的 -N 标志和提示文案 */
+  streaming?: boolean
+  /** 敏感工具,工具列表行加 ⚠ 标记 */
+  sensitive?: boolean
 }
 
 export const TOOL_EXAMPLES: Record<string, ToolExampleSet> = {
@@ -106,6 +110,78 @@ export const TOOL_EXAMPLES: Record<string, ToolExampleSet> = {
       'Android market ID: 华为=6 · 应用宝=3 · 小米=4 · OPPO=9 · VIVO=8 · 魅族=7 · 百度=2 · 360=1 · 豌豆荚=5 · GooglePlay=10 · 鸿蒙=11',
       '七麦的两个源(qimai_ios / qimai_android)需要在 Profile → 外部工具里配好 PHPSESSID,否则会返回登录失败',
       '所有源并发执行,响应里 statuses 字段会列出每个源的执行结果(成功 / 失败原因 / 命中数)',
+    ],
+  },
+  'mobile-forensic': {
+    streaming: true,
+    sensitive: true,
+    scenarios: [
+      {
+        label: 'Android 关键字搜索',
+        hint: '从 root 设备抽取所有匹配关键字的 App 数据',
+        body: { args: ['android', 'export', '-k', 'wechat', '-o', '/tmp/forensic'] },
+      },
+      {
+        label: 'Android 指定包名',
+        hint: '-k 也可以传完整包名,更精准',
+        body: { args: ['android', 'export', '-k', 'com.tencent.mm', '-o', '/tmp/forensic'] },
+      },
+      {
+        label: 'iOS via USB',
+        hint: '默认走 USB 代理(usbmuxd),需要设备已信任电脑',
+        body: { args: ['ios', 'export', '-k', 'wechat', '-o', '/tmp/forensic'] },
+      },
+      {
+        label: 'iOS via SSH',
+        hint: '越狱设备走 SSH;-p 是 root 密码,默认 alpine',
+        body: {
+          args: [
+            'ios',
+            'export',
+            '-k',
+            'wechat',
+            '-o',
+            '/tmp/forensic',
+            '-a',
+            'root@127.0.0.1:22',
+            '-p',
+            'alpine',
+            '-u=false',
+          ],
+        },
+      },
+      {
+        label: '只抽指定路径',
+        hint: '-s 指定 App 内部具体路径,跳过全量扫描',
+        body: {
+          args: [
+            'android',
+            'export',
+            '-k',
+            'com.tencent.mm',
+            '-s',
+            '/data/data/com.tencent.mm/databases',
+            '-o',
+            '/tmp/forensic',
+          ],
+        },
+      },
+    ],
+    fields: [
+      {
+        name: 'args',
+        required: true,
+        type: 'string[]',
+        description: '完整 go-forensic CLI 参数;首参数是平台(android/ios),次参数是子命令(export)',
+      },
+    ],
+    notes: [
+      '✱ 响应是 SSE 流(text/event-stream),用 curl -N 或 EventSource 接收',
+      '事件格式: data: {"type":"log","data":{...}}\\n\\n; type 取值: started / log / done / error',
+      'log 事件的 data 包含 stream(stdout/stderr) 和 line;done 事件的 data 含 exitCode 和 canceled',
+      '客户端关闭连接(curl Ctrl+C / EventSource.close) → 后端自动 Cancel,杀掉 go-forensic 进程',
+      '需要先在 Profile → 外部工具中配置 go-forensic 可执行文件路径,否则会立刻返回 error',
+      '⚠ 此工具会调用外部 CLI 访问 Android / iOS 设备数据,涉及隐私敏感操作,强烈建议在 "本地 API" 里开启 Token 鉴权',
     ],
   },
 }

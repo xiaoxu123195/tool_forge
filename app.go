@@ -76,11 +76,13 @@ func NewApp() *App {
 	prov, _ := providerswitch.New()
 	aic, _ := aichat.New()
 	apsearch := appsearch.New()
+	fns := forensic.New()
 	// 本地 API server:把指定工具暴露为 HTTP 接口
 	api := apiserver.New()
 	api.Register(appsearch.NewHandler(apsearch))
+	api.Register(forensic.NewStreamHandler(fns))
 	return &App{
-		forensic:  forensic.New(),
+		forensic:  fns,
 		appsearch: apsearch,
 		clipboard: clip,
 		hotkey:    hkManager,
