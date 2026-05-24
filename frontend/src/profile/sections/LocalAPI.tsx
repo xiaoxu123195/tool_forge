@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   AlertCircle,
+  BookOpen,
   Check,
   Copy,
   Eye,
@@ -13,6 +14,8 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { ToolExampleDialog } from './local-api/ToolExampleDialog'
+import { TOOL_EXAMPLES } from './local-api/examples'
 
 /**
  * 本地 API server 配置页。
@@ -72,8 +75,9 @@ export function LocalAPISection() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [showToken, setShowToken] = useState(false)
-  const [copied, setCopied] = useState<'token' | 'curl' | ''>('')
+  const [copied, setCopied] = useState<'token' | ''>('')
   const [error, setError] = useState('')
+  const [dialogTool, setDialogTool] = useState<ToolInfo | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -150,32 +154,11 @@ export function LocalAPISection() {
     void save(next)
   }
 
-  const copyText = async (text: string, key: 'token' | 'curl') => {
+  const copyText = async (text: string, key: 'token') => {
     await navigator.clipboard.writeText(text)
     setCopied(key)
     setTimeout(() => setCopied(''), 1500)
   }
-
-  const baseURL = useMemo(
-    () => `http://127.0.0.1:${cfg.port}`,
-    [cfg.port],
-  )
-
-  // 选第一个 enabled 的工具做示例,如果没有,用 app-search 占位
-  const exampleTool = useMemo(() => {
-    const enabled = tools.find((t) => t.enabled)
-    return enabled ?? tools[0] ?? { name: 'app-search', path: '/api/v1/tools/app-search' }
-  }, [tools])
-
-  const curlExample = useMemo(() => {
-    const url = `${baseURL}${exampleTool.path}`
-    const authLine = cfg.auth_enabled && cfg.token ? ` \\\n  -H "Authorization: Bearer ${cfg.token}"` : ''
-    const body =
-      exampleTool.name === 'app-search'
-        ? `{"keyword":"微信","sources":["itunes"],"country":"cn"}`
-        : `{}`
-    return `curl -X POST ${url}${authLine} \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`
-  }, [baseURL, exampleTool, cfg.auth_enabled, cfg.token])
 
   if (loading) {
     return (
@@ -319,72 +302,74 @@ export function LocalAPISection() {
           <div className="text-xs text-muted-foreground">暂无可暴露的工具</div>
         ) : (
           <ul className="space-y-1">
-            {tools.map((t) => (
-              <li
-                key={t.name}
-                className="flex items-start gap-3 rounded-md border border-border bg-background px-3 py-2.5"
-              >
-                <input
-                  type="checkbox"
-                  checked={!!cfg.enabled_tools[t.name]}
-                  onChange={(e) => handleToolToggle(t.name, e.target.checked)}
-                  disabled={saving}
-                  className="mt-0.5 h-4 w-4 accent-info"
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 text-sm">
-                    <span className="font-medium">{t.title}</span>
-                    <span className="font-mono text-[11px] text-muted-foreground">{t.path}</span>
+            {tools.map((t) => {
+              const hasExamples = !!TOOL_EXAMPLES[t.name]
+              return (
+                <li
+                  key={t.name}
+                  className="flex items-start gap-3 rounded-md border border-border bg-background px-3 py-2.5"
+                >
+                  <input
+                    type="checkbox"
+                    checked={!!cfg.enabled_tools[t.name]}
+                    onChange={(e) => handleToolToggle(t.name, e.target.checked)}
+                    disabled={saving}
+                    className="mt-0.5 h-4 w-4 accent-info"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="font-medium">{t.title}</span>
+                      <span className="font-mono text-[11px] text-muted-foreground">{t.path}</span>
+                    </div>
+                    <div className="text-xs text-muted-foreground">{t.description}</div>
                   </div>
-                  <div className="text-xs text-muted-foreground">{t.description}</div>
-                </div>
-              </li>
-            ))}
+                  {hasExamples && (
+                    <button
+                      type="button"
+                      onClick={() => setDialogTool(t)}
+                      className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                      title="查看示例与参数说明"
+                    >
+                      <BookOpen className="h-3 w-3" />
+                      示例
+                    </button>
+                  )}
+                </li>
+              )
+            })}
           </ul>
         )}
       </Card>
 
-      {/* curl 示例 */}
-      <Card title="调用示例" description="server 启动后可直接复制下方命令到终端测试。">
-        <div className="relative">
-          <pre className="overflow-x-auto rounded-md border border-border bg-muted/30 p-3 font-mono text-xs leading-relaxed">
-            {curlExample}
-          </pre>
-          <button
-            type="button"
-            onClick={() => copyText(curlExample, 'curl')}
-            className="absolute right-2 top-2 inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs hover:bg-accent"
-          >
-            {copied === 'curl' ? (
-              <>
-                <Check className="h-3 w-3 text-success" />
-                已复制
-              </>
-            ) : (
-              <>
-                <Copy className="h-3 w-3" />
-                复制
-              </>
-            )}
-          </button>
-        </div>
-        <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => void refresh()}
-            className="h-7 px-2"
-          >
-            <RefreshCw className="h-3 w-3" />
-            刷新状态
-          </Button>
-          {!status.running && cfg.enabled && (
-            <span className="text-amber-500">
-              server 已启用但未在监听,可能端口被占用
-            </span>
-          )}
-        </div>
-      </Card>
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => void refresh()}
+          className="h-7 px-2"
+        >
+          <RefreshCw className="h-3 w-3" />
+          刷新状态
+        </Button>
+        {!status.running && cfg.enabled && (
+          <span className="text-amber-500">
+            server 已启用但未在监听,可能端口被占用
+          </span>
+        )}
+        <span className="ml-auto">点工具旁的"示例"查看调用方法</span>
+      </div>
+
+      {dialogTool && (
+        <ToolExampleDialog
+          tool={dialogTool}
+          config={{
+            port: cfg.port,
+            auth_enabled: cfg.auth_enabled,
+            token: cfg.token,
+          }}
+          onClose={() => setDialogTool(null)}
+        />
+      )}
     </div>
   )
 }
