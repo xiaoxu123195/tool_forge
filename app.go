@@ -571,6 +571,20 @@ func (a *App) PickHashFiles() ([]string, error) {
 	return system.PickFiles(a.ctx, "选择要计算哈希的文件")
 }
 
+// SaveImageFile 把前端 canvas 导出的 base64 图片保存到用户选定路径(原生对话框)。
+// ext 形如 "png"/"jpg"/"webp";displayName 是过滤器显示名。返回保存路径,取消返回空串。
+func (a *App) SaveImageFile(defaultName, ext, displayName, dataB64 string) (string, error) {
+	opts := system.PickFileOptions{
+		Title:           "保存拼接图片",
+		DefaultFilename: defaultName,
+	}
+	if ext != "" {
+		opts.Extensions = []string{"." + ext}
+		opts.DisplayName = displayName
+	}
+	return system.SaveBytesToFile(a.ctx, opts, dataB64)
+}
+
 // ================ AI Stupid Level (Drift Monitor) ================
 
 // FetchAIStupidDrift 拉取 aistupidlevel.info 的最新模型漂移数据（CUSUM 检测）。

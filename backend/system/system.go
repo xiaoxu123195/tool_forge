@@ -3,6 +3,7 @@ package system
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"github.com/zalando/go-keyring"
 	"os"
@@ -89,6 +90,27 @@ func PickSaveFile(ctx context.Context, opts PickFileOptions) (string, error) {
 		DefaultFilename:      opts.DefaultFilename,
 		CanCreateDirectories: true,
 	})
+}
+
+// SaveBytesToFile 弹原生保存对话框,把 base64 数据写入用户选定路径。
+// 返回保存后的绝对路径;用户取消返回 ("", nil)。前端 canvas 导出的图片走这里落盘,
+// 避免依赖浏览器下载行为,也让用户自选保存位置/文件名。
+func SaveBytesToFile(ctx context.Context, opts PickFileOptions, dataB64 string) (string, error) {
+	data, err := base64.StdEncoding.DecodeString(dataB64)
+	if err != nil {
+		return "", fmt.Errorf("解码数据失败: %w", err)
+	}
+	path, err := PickSaveFile(ctx, opts)
+	if err != nil {
+		return "", err
+	}
+	if path == "" {
+		return "", nil // 用户取消
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return "", fmt.Errorf("写入文件失败: %w", err)
+	}
+	return path, nil
 }
 
 // PickDirectory 弹出原生目录选择对话框

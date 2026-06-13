@@ -115,6 +115,9 @@ import { meta as httpTestMeta } from './http-test/meta'
 import NetTools from './net-tools'
 import { meta as netToolsMeta } from './net-tools/meta'
 
+import ImageMerge from './image-merge'
+import { meta as imageMergeMeta } from './image-merge/meta'
+
 export interface ToolEntry {
   meta: ToolMeta
   Component: ComponentType
@@ -159,6 +162,7 @@ export const tools: ToolEntry[] = [
   { meta: outlookMailMeta, Component: OutlookMail },
   { meta: httpTestMeta, Component: HttpTest },
   { meta: netToolsMeta, Component: NetTools },
+  { meta: imageMergeMeta, Component: ImageMerge },
 ]
 
 export const toolRegistry: ToolMeta[] = tools.map((t) => t.meta)
