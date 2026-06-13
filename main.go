@@ -28,6 +28,9 @@ func main() {
 		Width:     1200,
 		Height:    800,
 		Frameless: true,
+		// 先隐藏窗口,等前端首帧画好后由前端 WindowShow() 显示;
+		// 否则原生窗口会先于 webview 出现,露出透明/Mica 黑底 → 启动黑屏闪一下
+		StartHidden: true,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
