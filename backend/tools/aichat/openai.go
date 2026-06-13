@@ -1,7 +1,6 @@
 package aichat
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -166,8 +166,7 @@ func testModel(p Provider, modelID string, useResponses bool) TestResult {
 	}
 
 	// 读取流,首个非空 SSE data 行即成功
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	scanner := newSSEScanner(resp.Body)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.HasPrefix(line, "data:") {
@@ -253,8 +252,7 @@ func streamOpenAI(ctx context.Context, p Provider, conv Conversation, useRespons
 		return
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	scanner := newSSEScanner(resp.Body)
 	// 部分中转/Grok 代理把思考内容嵌在 delta.content 的 <think>...</think> 里;
 	// 用一个状态机把它拆出来路由到 thinking 通道。仅对 chat completions 启用,
 	// /responses 已经按事件类型分开了。
@@ -287,12 +285,25 @@ func streamOpenAI(ctx context.Context, p Provider, conv Conversation, useRespons
 		var images []ImageBlock
 		if useResponses {
 			text, thinking = parseOpenAIResponsesDelta(payload)
+			// 中转(如 chatgpt2api 的 gpt-image)把生图结果以 markdown data:image
+			// 形式塞进正文,这里抽到图片通道,避免几 MB base64 当正文渲染/落盘
+			if text != "" {
+				var inlineImgs []ImageBlock
+				text, inlineImgs = extractInlineDataImages(text)
+				images = append(images, inlineImgs...)
+			}
 			if u := parseOpenAIResponsesUsage(payload); u != nil {
 				cb.onUsage(*u)
 			}
-			images = parseOpenAIResponsesImages(payload)
+			images = append(images, parseOpenAIResponsesImages(payload)...)
 		} else {
 			text, thinking = parseOpenAIChatDelta(payload)
+			// 同上:把内联在 delta.content 里的 base64 图片抽到图片通道
+			if text != "" {
+				var inlineImgs []ImageBlock
+				text, inlineImgs = extractInlineDataImages(text)
+				images = append(images, inlineImgs...)
+			}
 			if text != "" {
 				var extra string
 				text, extra = splitter.feed(text)
@@ -303,10 +314,10 @@ func streamOpenAI(ctx context.Context, p Provider, conv Conversation, useRespons
 			if u := parseOpenAIChatUsage(payload); u != nil {
 				cb.onUsage(*u)
 			}
-			images = parseOpenAIChatImages(payload)
+			images = append(images, parseOpenAIChatImages(payload)...)
 			// 通用兜底:如果仍没解析出图,从 payload 里挖一遍可能的 base64/URL 字段
 			if len(images) == 0 {
-				images = sniffImagesFromPayload(payload)
+				images = append(images, sniffImagesFromPayload(payload)...)
 			}
 		}
 		if thinking != "" {
@@ -531,9 +542,9 @@ func parseOpenAIResponsesUsage(payload string) *Usage {
 		Type     string `json:"type"`
 		Response struct {
 			Usage *struct {
-				InputTokens         int `json:"input_tokens"`
-				OutputTokens        int `json:"output_tokens"`
-				InputTokensDetails  struct {
+				InputTokens        int `json:"input_tokens"`
+				OutputTokens       int `json:"output_tokens"`
+				InputTokensDetails struct {
 					CachedTokens int `json:"cached_tokens"`
 				} `json:"input_tokens_details"`
 				OutputTokensDetails struct {
@@ -581,7 +592,7 @@ func parseOpenAIChatImages(payload string) []ImageBlock {
 					MimeType string `json:"mime_type"`
 					Data     string `json:"data"`
 				} `json:"images"`
-				ImageURL string `json:"image_url"`
+				ImageURL  string `json:"image_url"`
 				ImagesB64 []struct {
 					MimeType string `json:"mime_type"`
 					Data     string `json:"data"`
@@ -668,6 +679,42 @@ func parseOpenAIResponsesImages(payload string) []ImageBlock {
 		}
 	}
 	return out
+}
+
+// 内联图片:一些中转(如 chatgpt2api 的 gpt-image-2)生图是"异步"完成后,把成品
+// 以 markdown ![alt](data:image/png;base64,xxxx) 的形式塞进 delta.content,整张图
+// 落在一行 data: 里。下面两个正则把它从正文里剥出来:
+//   - reMarkdownDataImage:markdown 包裹形式,捕获括号里的 data URL
+//   - reBareDataImage:    裸 data:image 形式(无 markdown 包裹时兜底)
+var (
+	reMarkdownDataImage = regexp.MustCompile(`!\[[^\]]*\]\((data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+)\)`)
+	reBareDataImage     = regexp.MustCompile(`data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+`)
+)
+
+// extractInlineDataImages 从一段(流式)正文里剥离内联的 base64 图片。
+//
+//	返回 (剔除图片后的正文, 解析出的图片列表)。剔除后若仍有图片,顺手把残留的
+//	空白裁掉,避免出现只剩 "\n\n" 的正文被渲染成"(空 Markdown)"。
+//	无 base64 时零成本直接返回(快路径)。
+func extractInlineDataImages(text string) (string, []ImageBlock) {
+	if !strings.Contains(text, ";base64,") {
+		return text, nil
+	}
+	var imgs []ImageBlock
+	text = reMarkdownDataImage.ReplaceAllStringFunc(text, func(m string) string {
+		if sub := reMarkdownDataImage.FindStringSubmatch(m); len(sub) == 2 {
+			imgs = append(imgs, parseImageString(sub[1]))
+		}
+		return ""
+	})
+	text = reBareDataImage.ReplaceAllStringFunc(text, func(m string) string {
+		imgs = append(imgs, parseImageString(m))
+		return ""
+	})
+	if len(imgs) > 0 {
+		text = strings.TrimSpace(text)
+	}
+	return text, imgs
 }
 
 // sniffImagesFromPayload 通用兜底:扫整个 chunk 里任何疑似图片字段。

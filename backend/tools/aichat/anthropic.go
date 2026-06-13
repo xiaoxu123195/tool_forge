@@ -1,7 +1,6 @@
 package aichat
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -119,8 +118,7 @@ func streamAnthropic(ctx context.Context, p Provider, conv Conversation, cb stre
 		return
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	scanner := newSSEScanner(resp.Body)
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -330,8 +328,7 @@ func testAnthropicModel(p Provider, modelID string) TestResult {
 		}
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	scanner := newSSEScanner(resp.Body)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.HasPrefix(line, "data:") {
