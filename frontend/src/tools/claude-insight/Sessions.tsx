@@ -107,6 +107,28 @@ export function Sessions({ reloadToken }: SessionsProps) {
     }
   }
 
+  const exportAll = async () => {
+    if (filtered.length === 0) return
+    try {
+      setBusy(true)
+      const count = filtered.length
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+      const defaultName = `claude-sessions-${count}-${stamp}.zip`
+      const dest = await PickClaudeExportPath(defaultName)
+      if (!dest) return
+      const r = await ExportClaudeSessions(
+        filtered.map((it) => it.file_path),
+        dest,
+      )
+      setImportResult(`已导出 ${r.sessions} 个会话到 ${r.zip_path}`)
+      setTimeout(() => setImportResult(''), 4000)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const doDelete = async (it: Item) => {
     try {
       setBusy(true)
@@ -198,6 +220,7 @@ export function Sessions({ reloadToken }: SessionsProps) {
           query={query}
           onQuery={setQuery}
           onImport={importZip}
+          onExportAll={exportAll}
           busy={busy}
         />
         {importResult && (
@@ -254,6 +277,7 @@ function Toolbar({
   query,
   onQuery,
   onImport,
+  onExportAll,
   busy,
 }: {
   items: Item[]
@@ -261,8 +285,10 @@ function Toolbar({
   query: string
   onQuery: (v: string) => void
   onImport: () => void
+  onExportAll: () => void
   busy: boolean
 }) {
+  const isFiltered = query.trim().length > 0
   return (
     <div className="flex items-center gap-3">
       <div className="relative min-w-0 flex-1">
@@ -274,6 +300,16 @@ function Toolbar({
           className="h-8 w-full rounded-md border border-border bg-background pl-7 pr-2 text-sm outline-none focus:border-foreground/30"
         />
       </div>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={onExportAll}
+        disabled={busy || filtered.length === 0}
+        title={isFiltered ? '导出当前筛选出的会话为一个 ZIP' : '导出全部会话为一个 ZIP'}
+      >
+        <Download className="h-3.5 w-3.5" />
+        {isFiltered ? `导出筛选结果 (${filtered.length})` : `导出全部 (${items.length})`}
+      </Button>
       <Button variant="ghost" size="sm" onClick={onImport} disabled={busy}>
         <Upload className="h-3.5 w-3.5" />
         导入 ZIP
