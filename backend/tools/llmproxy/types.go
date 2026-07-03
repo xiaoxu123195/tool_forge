@@ -52,6 +52,7 @@ type LogEntry struct {
 	Path             string `json:"path"`
 	Status           int    `json:"status"`
 	DurationMs       int    `json:"durationMs"`
+	TTFTMs           int    `json:"ttftMs"` // 首字节时间(流式=首个 token 到达);0=未知
 	Stream           bool   `json:"stream"`
 	ReqBytes         int    `json:"reqBytes"`
 	RespBytes        int    `json:"respBytes"`
@@ -91,6 +92,58 @@ type LogPage struct {
 	Total int        `json:"total"`
 }
 
+// StatsQuery 统计的时间范围(unix ms;0 表示不限)。
+type StatsQuery struct {
+	Since int64 `json:"since"`
+	Until int64 `json:"until"`
+}
+
+// ModelStat 按模型的聚合。
+type ModelStat struct {
+	Model            string `json:"model"`
+	Requests         int    `json:"requests"`
+	Errors           int    `json:"errors"`
+	PromptTokens     int    `json:"promptTokens"`
+	CompletionTokens int    `json:"completionTokens"`
+	TotalTokens      int    `json:"totalTokens"`
+	AvgDurationMs    int    `json:"avgDurationMs"`
+	AvgTTFTMs        int    `json:"avgTtftMs"`
+}
+
+// UpstreamStat 按上游的聚合。
+type UpstreamStat struct {
+	Upstream    string `json:"upstream"`
+	Requests    int    `json:"requests"`
+	Errors      int    `json:"errors"`
+	TotalTokens int    `json:"totalTokens"`
+}
+
+// DayBucket 按天的趋势桶(date 为本地 YYYY-MM-DD)。
+type DayBucket struct {
+	Date        string `json:"date"`
+	Requests    int    `json:"requests"`
+	TotalTokens int    `json:"totalTokens"`
+	Errors      int    `json:"errors"`
+}
+
+// Stats 概览统计结果。
+type Stats struct {
+	Requests         int            `json:"requests"`
+	Errors           int            `json:"errors"`
+	Streamed         int            `json:"streamed"`
+	PromptTokens     int            `json:"promptTokens"`
+	CompletionTokens int            `json:"completionTokens"`
+	TotalTokens      int            `json:"totalTokens"`
+	AvgDurationMs    int            `json:"avgDurationMs"`
+	P50DurationMs    int            `json:"p50DurationMs"`
+	P95DurationMs    int            `json:"p95DurationMs"`
+	AvgTTFTMs        int            `json:"avgTtftMs"`
+	P95TTFTMs        int            `json:"p95TtftMs"`
+	Models           []ModelStat    `json:"models"`
+	Upstreams        []UpstreamStat `json:"upstreams"`
+	Timeline         []DayBucket    `json:"timeline"`
+}
+
 // ReplayInput 重放一条请求(密钥未落盘,需用户在 headers 里自带 Authorization)。
 type ReplayInput struct {
 	Upstream string            `json:"upstream"`
@@ -111,6 +164,7 @@ type capture struct {
 	reqBytes     int
 	reqTrunc     bool
 	status       int
+	ttftMs       int    // 首字节时间(ms)
 	respEncoding string // 上游 Content-Encoding(gzip/deflate),捕获侧据此解压
 	respHeaders  map[string]string
 	respBody     string // 原始响应(非流)或原始 SSE(流)

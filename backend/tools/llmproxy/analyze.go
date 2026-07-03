@@ -50,6 +50,12 @@ func usageFromJSON(s string) (prompt, completion, total int) {
 		}
 	}
 	if usage == nil {
+		// OpenAI Responses API 的 response.completed 把 usage 套在 response 里
+		if resp, ok := m["response"].(map[string]any); ok {
+			usage, _ = resp["usage"].(map[string]any)
+		}
+	}
+	if usage == nil {
 		return 0, 0, 0
 	}
 	prompt = numField(usage, "prompt_tokens", "input_tokens")
@@ -61,9 +67,12 @@ func usageFromJSON(s string) (prompt, completion, total int) {
 	return
 }
 
-// mergeSSE 把原始 SSE 文本里的增量内容拼成可读文本。
-// 兼容 OpenAI chat(choices[].delta.content)/ completions(choices[].text)与
-// Anthropic(content_block_delta.delta.text)。解析不出就返回空(UI 退回看原始)。
+// mergeSSE 把原始 SSE 文本里的增量内容拼成可读文本。兼容:
+//   - OpenAI Responses API:type=response.output_text.delta,delta 为字符串
+//   - OpenAI chat:choices[].delta.content / completions:choices[].text
+//   - Anthropic:content_block_delta 的 delta.text
+//
+// 解析不出就返回空(UI 退回看原始)。
 func mergeSSE(raw string) string {
 	var sb strings.Builder
 	for _, line := range strings.Split(raw, "\n") {
@@ -79,14 +88,23 @@ func mergeSSE(raw string) string {
 		if err := json.Unmarshal([]byte(payload), &m); err != nil {
 			continue
 		}
-		// Anthropic
+		// OpenAI Responses API:delta 是字符串。只取正文增量(output_text.delta),
+		// 避开推理摘要(reasoning_summary_text.delta)与工具入参(function_call_arguments.delta)。
+		if s, ok := m["delta"].(string); ok {
+			t, _ := m["type"].(string)
+			if t == "" || strings.HasSuffix(t, "output_text.delta") {
+				sb.WriteString(s)
+			}
+			continue
+		}
+		// Anthropic:delta 是对象
 		if delta, ok := m["delta"].(map[string]any); ok {
 			if t, ok := delta["text"].(string); ok {
 				sb.WriteString(t)
 				continue
 			}
 		}
-		// OpenAI
+		// OpenAI chat / completions
 		if choices, ok := m["choices"].([]any); ok && len(choices) > 0 {
 			if ch, ok := choices[0].(map[string]any); ok {
 				if d, ok := ch["delta"].(map[string]any); ok {

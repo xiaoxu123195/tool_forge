@@ -80,7 +80,10 @@ export function LogList({ page, query, setQuery, upstreams, selectedId, onSelect
                 <Td className={cn('whitespace-nowrap font-mono font-medium', statusClass(e.status))}>
                   {e.error ? '错误' : e.status ? e.status : <span className="text-muted-foreground">进行中…</span>}
                 </Td>
-                <Td className="whitespace-nowrap text-muted-foreground">{e.durationMs}ms</Td>
+                <Td className="whitespace-nowrap text-muted-foreground" title={e.ttftMs ? `首字节 ${e.ttftMs}ms` : ''}>
+                  {e.durationMs}ms
+                  {e.ttftMs > 0 && <span className="ml-1 text-[10px] opacity-70">· 首{e.ttftMs}</span>}
+                </Td>
                 <Td className="whitespace-nowrap text-muted-foreground" title={`${fmtBytes(e.reqBytes)} → ${fmtBytes(e.respBytes)}`}>
                   {e.totalTokens ? e.totalTokens : '-'}
                 </Td>

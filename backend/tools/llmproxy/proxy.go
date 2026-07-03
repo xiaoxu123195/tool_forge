@@ -30,17 +30,21 @@ var doneMarker = []byte("[DONE]")
 // 并在每次读到数据后回调 onData,让上层"边流边回填"日志——这样即使上游流式连接
 // 迟迟不 EOF(中转在 [DONE] 后不及时关闭),内容也已经入库,而不是卡在"进行中"。
 type teeCapture struct {
-	rc     io.ReadCloser
-	buf    bytes.Buffer
-	limit  int
-	total  int
-	trunc  bool
-	onData func(force bool) // force=true 表示遇到 [DONE] 或读结束,应立即回填(不受节流限制)
+	rc      io.ReadCloser
+	buf     bytes.Buffer
+	limit   int
+	total   int
+	trunc   bool
+	firstAt time.Time        // 首次读到数据的时刻,用于算 TTFT
+	onData  func(force bool) // force=true 表示遇到 [DONE] 或读结束,应立即回填(不受节流限制)
 }
 
 func (t *teeCapture) Read(p []byte) (int, error) {
 	n, err := t.rc.Read(p)
 	if n > 0 {
+		if t.firstAt.IsZero() {
+			t.firstAt = time.Now()
+		}
 		t.total += n
 		if remain := t.limit - t.buf.Len(); remain > 0 {
 			if remain >= n {
@@ -115,6 +119,9 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, up Upstream, na
 	flush := func() {
 		cap.durationMs = int(time.Since(start).Milliseconds())
 		if capTee != nil {
+			if !capTee.firstAt.IsZero() {
+				cap.ttftMs = int(capTee.firstAt.Sub(start).Milliseconds())
+			}
 			cap.respBytes = capTee.total
 			cap.respTrunc = capTee.trunc
 			// 上游若压缩了(极少,因为我们已请求 identity),这里解压成可读文本入库

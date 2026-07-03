@@ -511,6 +511,14 @@ func (a *App) ListLLMProxyLogs(query llmproxy.LogQuery) (*llmproxy.LogPage, erro
 	return a.llmproxy.ListLogs(query)
 }
 
+// GetLLMProxyStats 概览统计(请求/tokens/延迟/错误,按模型/上游/天聚合)。
+func (a *App) GetLLMProxyStats(query llmproxy.StatsQuery) (*llmproxy.Stats, error) {
+	if a.llmproxy == nil {
+		return &llmproxy.Stats{}, nil
+	}
+	return a.llmproxy.Stats(query)
+}
+
 // GetLLMProxyLog 单条日志详情(含头与体)。
 func (a *App) GetLLMProxyLog(id int64) (*llmproxy.LogDetail, error) {
 	if a.llmproxy == nil {

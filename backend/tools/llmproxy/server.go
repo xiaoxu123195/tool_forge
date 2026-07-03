@@ -256,6 +256,7 @@ func (s *Server) maxBodyBytes() int {
 // ----- 日志查询(委托 store) -----
 
 func (s *Server) ListLogs(q LogQuery) (*LogPage, error)  { return s.store.Query(q) }
+func (s *Server) Stats(q StatsQuery) (*Stats, error)     { return s.store.Stats(q) }
 func (s *Server) LogDetail(id int64) (*LogDetail, error) { return s.store.Detail(id) }
 func (s *Server) DeleteLog(id int64) error               { return s.store.Delete(id) }
 func (s *Server) ClearLogs() error                       { return s.store.Clear() }

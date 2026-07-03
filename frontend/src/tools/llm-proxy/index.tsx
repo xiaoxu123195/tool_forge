@@ -17,6 +17,7 @@ import { meta } from './meta'
 import { Settings } from './Settings'
 import { LogList } from './LogList'
 import { LogDetail } from './LogDetail'
+import { Dashboard } from './Dashboard'
 import { Modal } from './Modal'
 import { CopyMenu } from './CopyMenu'
 
@@ -38,6 +39,8 @@ export default function LlmProxy() {
   const [showSettings, setShowSettings] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [view, setView] = useState<'logs' | 'dash'>('logs')
+  const [dashReload, setDashReload] = useState(0)
 
   const queryRef = useRef(query)
   queryRef.current = query
@@ -147,7 +150,29 @@ export default function LlmProxy() {
         </div>
       }
     >
-      <div className="mx-auto max-w-5xl space-y-3">
+      <div className="mx-auto max-w-6xl space-y-3">
+        {/* 视图切换 */}
+        <div className="inline-flex items-center rounded-md border border-border bg-background p-0.5">
+          {(['logs', 'dash'] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => {
+                setView(v)
+                if (v === 'dash') {
+                  setDetail(null)
+                  setDashReload((n) => n + 1)
+                }
+              }}
+              className={cn(
+                'rounded-sm px-3 py-1 text-xs font-medium transition-colors',
+                view === v ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {v === 'logs' ? '日志' : '概览'}
+            </button>
+          ))}
+        </div>
+
         {/* 控制条 */}
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
           <span
@@ -189,14 +214,18 @@ export default function LlmProxy() {
           </div>
         )}
 
-        <LogList
-          page={page}
-          query={query}
-          setQuery={setQuery}
-          upstreams={upstreams}
-          selectedId={detail?.entry.id ?? null}
-          onSelect={openDetail}
-        />
+        {view === 'logs' ? (
+          <LogList
+            page={page}
+            query={query}
+            setQuery={setQuery}
+            upstreams={upstreams}
+            selectedId={detail?.entry.id ?? null}
+            onSelect={openDetail}
+          />
+        ) : (
+          <Dashboard reloadToken={dashReload} />
+        )}
       </div>
 
       {detail && (

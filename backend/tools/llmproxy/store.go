@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS requests (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts INTEGER NOT NULL,
   upstream TEXT, method TEXT, path TEXT,
-  status INTEGER, duration_ms INTEGER, stream INTEGER,
+  status INTEGER, duration_ms INTEGER, ttft_ms INTEGER, stream INTEGER,
   req_bytes INTEGER, resp_bytes INTEGER,
   model TEXT, prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER,
   tag TEXT, error TEXT,
@@ -51,7 +51,82 @@ func openStore(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	// 老库迁移:补上后加的列(CREATE TABLE IF NOT EXISTS 不会给已存在的表加列)。
+	ensureColumn(db, "ttft_ms", "INTEGER DEFAULT 0")
+	// 一次性回填:早期写入的行(mergeSSE/usage 尚不支持 Responses API 时)token 记成了 0,
+	// 用最新逻辑从已存响应体重算,让概览/花费对历史数据也有意义。user_version 保证只跑一次。
+	backfillUsage(db)
 	return &Store{db: db}, nil
+}
+
+// backfillUsage 用最新的 extractUsage/mergeSSE/extractModel 回填 token=0 的历史行(只跑一次)。
+func backfillUsage(db *sql.DB) {
+	var ver int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&ver); err != nil || ver >= 2 {
+		return
+	}
+	rows, err := db.Query(`SELECT id,stream,req_body,resp_body FROM requests
+	  WHERE prompt_tokens=0 AND completion_tokens=0 AND total_tokens=0`)
+	if err != nil {
+		return
+	}
+	type rec struct {
+		id     int64
+		stream int
+		req    string
+		resp   string
+	}
+	var recs []rec
+	for rows.Next() {
+		var r rec
+		if err := rows.Scan(&r.id, &r.stream, &r.req, &r.resp); err != nil {
+			rows.Close()
+			return
+		}
+		recs = append(recs, r)
+	}
+	rows.Close()
+
+	for _, r := range recs {
+		stream := r.stream != 0
+		p, c, t := extractUsage(r.resp, stream)
+		if p == 0 && c == 0 && t == 0 {
+			continue
+		}
+		if model := extractModel(r.req, r.resp); model != "" {
+			_, _ = db.Exec("UPDATE requests SET prompt_tokens=?,completion_tokens=?,total_tokens=?,model=CASE WHEN model='' THEN ? ELSE model END WHERE id=?",
+				p, c, t, model, r.id)
+		} else {
+			_, _ = db.Exec("UPDATE requests SET prompt_tokens=?,completion_tokens=?,total_tokens=? WHERE id=?", p, c, t, r.id)
+		}
+		if stream {
+			if m := mergeSSE(r.resp); m != "" {
+				_, _ = db.Exec("UPDATE requests SET resp_merged=? WHERE id=?", m, r.id)
+			}
+		}
+	}
+	_, _ = db.Exec("PRAGMA user_version = 2")
+}
+
+// ensureColumn 若 requests 表缺某列则补上(已存在会报错,忽略即可)。
+func ensureColumn(db *sql.DB, name, decl string) {
+	rows, err := db.Query("PRAGMA table_info(requests)")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notnull, pk int
+		var cname, ctype string
+		var dflt any
+		if err := rows.Scan(&cid, &cname, &ctype, &notnull, &dflt, &pk); err != nil {
+			return
+		}
+		if cname == name {
+			return // 已存在
+		}
+	}
+	_, _ = db.Exec("ALTER TABLE requests ADD COLUMN " + name + " " + decl)
 }
 
 func (s *Store) Close() error {
@@ -66,11 +141,11 @@ func (s *Store) Insert(c *capture) (int64, error) {
 	reqH, _ := json.Marshal(c.reqHeaders)
 	respH, _ := json.Marshal(c.respHeaders)
 	res, err := s.db.Exec(`INSERT INTO requests
-	  (ts,upstream,method,path,status,duration_ms,stream,req_bytes,resp_bytes,model,
+	  (ts,upstream,method,path,status,duration_ms,ttft_ms,stream,req_bytes,resp_bytes,model,
 	   prompt_tokens,completion_tokens,total_tokens,tag,error,
 	   req_headers,resp_headers,req_body,resp_body,resp_merged,req_truncated,resp_truncated)
-	  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		c.ts, c.upstream, c.method, c.path, c.status, c.durationMs, b2i(c.stream),
+	  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		c.ts, c.upstream, c.method, c.path, c.status, c.durationMs, c.ttftMs, b2i(c.stream),
 		c.reqBytes, c.respBytes, c.model, c.promptTok, c.completeTok, c.totalTok,
 		c.tag, c.errMsg, string(reqH), string(respH), c.reqBody, c.respBody, c.respMerged,
 		b2i(c.reqTrunc), b2i(c.respTrunc))
@@ -84,11 +159,11 @@ func (s *Store) Insert(c *capture) (int64, error) {
 func (s *Store) Update(id int64, c *capture) error {
 	respH, _ := json.Marshal(c.respHeaders)
 	_, err := s.db.Exec(`UPDATE requests SET
-	  status=?, duration_ms=?, stream=?, resp_bytes=?, model=?,
+	  status=?, duration_ms=?, ttft_ms=?, stream=?, resp_bytes=?, model=?,
 	  prompt_tokens=?, completion_tokens=?, total_tokens=?, error=?,
 	  resp_headers=?, resp_body=?, resp_merged=?, resp_truncated=?
 	  WHERE id=?`,
-		c.status, c.durationMs, b2i(c.stream), c.respBytes, c.model,
+		c.status, c.durationMs, c.ttftMs, b2i(c.stream), c.respBytes, c.model,
 		c.promptTok, c.completeTok, c.totalTok, c.errMsg,
 		string(respH), c.respBody, c.respMerged, b2i(c.respTrunc), id)
 	return err
@@ -107,7 +182,7 @@ func (s *Store) Query(q LogQuery) (*LogPage, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.Query(`SELECT id,ts,upstream,method,path,status,duration_ms,stream,
+	rows, err := s.db.Query(`SELECT id,ts,upstream,method,path,status,duration_ms,ttft_ms,stream,
 	  req_bytes,resp_bytes,model,prompt_tokens,completion_tokens,total_tokens,tag,error
 	  FROM requests `+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 		append(args, limit, q.Offset)...)
@@ -119,7 +194,7 @@ func (s *Store) Query(q LogQuery) (*LogPage, error) {
 		var e LogEntry
 		var stream int
 		if err := rows.Scan(&e.ID, &e.TS, &e.Upstream, &e.Method, &e.Path, &e.Status,
-			&e.DurationMs, &stream, &e.ReqBytes, &e.RespBytes, &e.Model,
+			&e.DurationMs, &e.TTFTMs, &stream, &e.ReqBytes, &e.RespBytes, &e.Model,
 			&e.PromptTokens, &e.CompletionTokens, &e.TotalTokens, &e.Tag, &e.Error); err != nil {
 			return nil, err
 		}
@@ -137,13 +212,13 @@ func (s *Store) Detail(id int64) (*LogDetail, error) {
 	var d LogDetail
 	var stream, reqTrunc, respTrunc int
 	var reqH, respH, rawResp, merged string
-	row := s.db.QueryRow(`SELECT id,ts,upstream,method,path,status,duration_ms,stream,
+	row := s.db.QueryRow(`SELECT id,ts,upstream,method,path,status,duration_ms,ttft_ms,stream,
 	  req_bytes,resp_bytes,model,prompt_tokens,completion_tokens,total_tokens,tag,error,
 	  req_headers,resp_headers,req_body,resp_body,resp_merged,req_truncated,resp_truncated
 	  FROM requests WHERE id=?`, id)
 	e := &d.Entry
 	if err := row.Scan(&e.ID, &e.TS, &e.Upstream, &e.Method, &e.Path, &e.Status,
-		&e.DurationMs, &stream, &e.ReqBytes, &e.RespBytes, &e.Model,
+		&e.DurationMs, &e.TTFTMs, &stream, &e.ReqBytes, &e.RespBytes, &e.Model,
 		&e.PromptTokens, &e.CompletionTokens, &e.TotalTokens, &e.Tag, &e.Error,
 		&reqH, &respH, &d.ReqBody, &rawResp, &merged, &reqTrunc, &respTrunc); err != nil {
 		return nil, err
@@ -155,7 +230,12 @@ func (s *Store) Detail(id int64) (*LogDetail, error) {
 	_ = json.Unmarshal([]byte(respH), &d.RespHeaders)
 	if e.Stream {
 		d.RespRaw = rawResp
-		d.RespBody = merged
+		// 读取时用最新逻辑重新合并(改进 mergeSSE 后历史记录也能受益);合不出再退回落库时的值。
+		if m := mergeSSE(rawResp); m != "" {
+			d.RespBody = m
+		} else {
+			d.RespBody = merged
+		}
 	} else {
 		d.RespBody = rawResp
 	}

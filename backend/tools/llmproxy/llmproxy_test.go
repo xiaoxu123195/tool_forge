@@ -215,6 +215,15 @@ func TestMergeSSE(t *testing.T) {
 	if got := mergeSSE(anthropic); got != "你好" {
 		t.Errorf("Anthropic 合并=%q,want %q", got, "你好")
 	}
+	// OpenAI Responses API:delta 为字符串,且要跳过 reasoning / 工具入参增量
+	responses := "event: response.output_text.delta\n" +
+		"data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"思考\"}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\" there\"}\n\n" +
+		"data: {\"type\":\"response.function_call_arguments.delta\",\"delta\":\"{\\\"a\\\":1}\"}\n\n"
+	if got := mergeSSE(responses); got != "Hi there" {
+		t.Errorf("Responses 合并=%q,want %q", got, "Hi there")
+	}
 }
 
 func TestExtractUsageAndModel(t *testing.T) {
@@ -231,6 +240,12 @@ func TestExtractUsageAndModel(t *testing.T) {
 	p, c, total = extractUsage(ant, false)
 	if p != 20 || c != 8 || total != 28 {
 		t.Errorf("anthropic usage=(%d,%d,%d)", p, c, total)
+	}
+	// OpenAI Responses API:usage 在流式 response.completed 的 response 里
+	respStream := "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":40,\"total_tokens\":140}}}\n\n"
+	p, c, total = extractUsage(respStream, true)
+	if p != 100 || c != 40 || total != 140 {
+		t.Errorf("responses usage=(%d,%d,%d)", p, c, total)
 	}
 }
 

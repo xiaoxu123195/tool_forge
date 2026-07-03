@@ -7,6 +7,19 @@ export function fmtBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
+export function fmtTokens(n: number): string {
+  if (!n) return '0'
+  if (n < 1000) return String(n)
+  if (n < 1_000_000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K'
+  return (n / 1_000_000).toFixed(2).replace(/\.?0+$/, '') + 'M'
+}
+
+export function fmtMs(n: number): string {
+  if (!n) return '-'
+  if (n < 1000) return `${n}ms`
+  return `${(n / 1000).toFixed(n < 10000 ? 2 : 1)}s`
+}
+
 export function fmtTime(ms: number): string {
   if (!ms) return '-'
   const d = new Date(ms)
