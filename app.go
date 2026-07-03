@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -60,6 +61,10 @@ type App struct {
 	outlook   *outlookmail.Service
 	filehash  *filehash.Service
 	llmproxy  *llmproxy.Server
+
+	// windowShown:启动时窗口 StartHidden;首帧后由前端 ShowWindow 显示,后端 5s 兜底显示。
+	// 两者用这个原子标记去重,保证只有一方真正执行,避免重复显示/抢焦点。
+	windowShown atomic.Bool
 }
 
 // NewApp creates a new App application struct
@@ -150,11 +155,24 @@ func (a *App) startup(ctx context.Context) {
 			wailsruntime.LogWarningf(ctx, "llmproxy 启动失败: %v", err)
 		}
 	}
+
+	// 窗口显示兜底:正常由前端首帧渲染后调用 ShowWindow() 显示(StartHidden 下避免黑屏闪烁)。
+	// 万一生产包前端异常、迟迟没显示,5 秒后由这里强制显示一次,避免永久无窗口。
+	// CompareAndSwap 与前端去重:谁先显示谁生效,兜底不会重复弹窗/抢焦点。
+	go func() {
+		time.Sleep(5 * time.Second)
+		if a.windowShown.CompareAndSwap(false, true) {
+			wailsruntime.WindowShow(ctx)
+		}
+	}()
 }
 
-// domready 在 DOM 可用后显示窗口，避免生产包前端异常时 StartHidden 导致永久无窗口。
-func (a *App) domready(ctx context.Context) {
-	wailsruntime.WindowShow(ctx)
+// ShowWindow 由前端在首帧渲染完成后调用,显示启动时被 StartHidden 隐藏的窗口。
+// 与后端兜底(startup 里的延时显示)用同一原子标记去重,保证只显示一次。
+func (a *App) ShowWindow() {
+	if a.windowShown.CompareAndSwap(false, true) {
+		wailsruntime.WindowShow(a.ctx)
+	}
 }
 
 // shutdown 在 Wails 关闭前调用,释放剪贴板监听等
