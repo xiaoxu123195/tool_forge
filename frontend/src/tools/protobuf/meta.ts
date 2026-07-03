@@ -5,7 +5,7 @@ export const meta: ToolMeta = {
   id: 'protobuf',
   path: '/tools/protobuf',
   title: 'Protobuf 编解码',
-  description: '贴 .proto + 二进制（hex/base64）消息 → JSON；反向亦可',
+  description: '无需 .proto 递归裸解析(强于 protoc --decode_raw);也支持 .proto/.pb 按名编解码',
   icon: Braces,
   category: 'codec',
   order: 15,

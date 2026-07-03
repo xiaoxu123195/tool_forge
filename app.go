@@ -29,6 +29,7 @@ import (
 	"tool_forge/backend/tools/netenvcheck"
 	"tool_forge/backend/tools/netscan"
 	"tool_forge/backend/tools/outlookmail"
+	"tool_forge/backend/tools/protobuf"
 	"tool_forge/backend/tools/providerswitch"
 	"tool_forge/backend/updater"
 )
@@ -448,6 +449,29 @@ func (a *App) ExportNetEnvReport(report netenvcheck.Report, format string) (stri
 		DisplayName:     strings.ToUpper(ext) + " 文件",
 	}
 	return system.SaveBytesToFile(a.ctx, opts, base64.StdEncoding.EncodeToString([]byte(content)))
+}
+
+// ================ Protobuf 编解码 ================
+
+// ProtobufDecodeRaw 无 Schema 递归裸解析(等价并强于 protoc --decode_raw)。
+// 返回字段树 + protoc 文本 + 反推出的 .proto 骨架。
+func (a *App) ProtobufDecodeRaw(input protobuf.DecodeInput) (*protobuf.RawResult, error) {
+	return protobuf.DecodeRaw(input)
+}
+
+// ProtobufInspectSchema 解析 .proto/.pb 描述符,返回可选消息类型与内含文件。
+func (a *App) ProtobufInspectSchema(src protobuf.SchemaSource) protobuf.SchemaInfo {
+	return protobuf.InspectSchema(src)
+}
+
+// ProtobufDecodeSchema 按消息类型把二进制解码为 JSON(未知字段回退裸解析)。
+func (a *App) ProtobufDecodeSchema(input protobuf.SchemaDecodeInput) (*protobuf.SchemaDecodeResult, error) {
+	return protobuf.DecodeSchema(input)
+}
+
+// ProtobufEncodeSchema 按消息类型把 JSON 编码为二进制(hex/base64)。
+func (a *App) ProtobufEncodeSchema(input protobuf.SchemaEncodeInput) (*protobuf.SchemaEncodeResult, error) {
+	return protobuf.EncodeSchema(input)
 }
 
 // ================ LLM 透明代理 ================

@@ -1,231 +1,45 @@
-import protobuf from 'protobufjs'
-// 加载 descriptor 扩展：使 Root.fromDescriptor / FileDescriptorSet 可用
-import pbDescriptor from 'protobufjs/ext/descriptor'
+// Protobuf 工具前端辅助:输入编码、文件读取、示例数据。
+// 解析全部在 Go 后端完成(protowire + protocompile),前端只做输入/展示。
 
-export type SchemaSource =
-  | { kind: 'proto'; text: string }
-  | { kind: 'descriptor'; bytes: Uint8Array; fileName?: string }
+export type InputEncoding = 'hex' | 'base64' | 'blob'
+export type SchemaKind = 'proto' | 'descriptor'
+export type RawView = 'tree' | 'text' | 'proto'
+export type Direction = 'decode' | 'encode'
 
-export interface ParsedSchema {
-  root: protobuf.Root
-  types: string[] // 全限定名（a.b.MessageName）
-  files: string[] // descriptor 里包含的文件名（仅 kind=descriptor 有）
-}
-
-/**
- * 解析 .proto 文本。
- * 不走文件系统（protobufjs 默认按路径解析 import），把输入当成单文件处理；
- * import 语句暂不支持。若需要 import，请用 .pb 描述符。
- */
-export function parseProto(source: string): ParsedSchema {
-  if (!source.trim()) throw new Error('空的 .proto')
-  const parsed = protobuf.parse(source, { keepCase: false })
-  const root = parsed.root
-  root.resolveAll()
-  const types: string[] = []
-  collectMessageTypes(root, types)
-  return { root, types, files: [] }
-}
-
-/**
- * 从 FileDescriptorSet 二进制（.pb / .desc）加载 schema。
- * 这是 `protoc --descriptor_set_out=x.pb` 的输出，自带所有 import。
- *
- * 注意：protobufjs 的 Root.fromDescriptor 有个 bug —— 把 map 字段当成普通 repeated message 处理，
- * 并错把 parent 的 options.map_entry 标成 true。我们在此做修正。
- */
-export function parseDescriptor(bytes: Uint8Array): ParsedSchema {
-  if (!bytes || bytes.length === 0) throw new Error('空的描述符字节流')
-  const FDS: any = (pbDescriptor as any).FileDescriptorSet
-  if (!FDS) throw new Error('protobufjs descriptor 扩展未加载')
-  const decoded = FDS.decode(bytes)
-  const root: protobuf.Root = (protobuf.Root as any).fromDescriptor(decoded)
-  root.resolveAll()
-  fixMapFields(root)
-  root.resolveAll()
-  const types: string[] = []
-  collectMessageTypes(root, types)
-  const files: string[] = Array.isArray(decoded?.file)
-    ? decoded.file.map((f: any) => f.name).filter(Boolean)
-    : []
-  return { root, types, files }
-}
-
-/**
- * 修复 protobufjs fromDescriptor 的 map 识别问题：
- * - 把被错误标在父 type 上的 options.map_entry 清掉
- * - 把父 type 里指向 Entry 的 repeated 字段替换成 MapField
- */
-function fixMapFields(ns: protobuf.ReflectionObject) {
-  if (ns instanceof protobuf.Type) {
-    // 清掉错误的 map_entry 标记（只有真正的 entry 消息自己才应保留）
-    if (
-      ns.options &&
-      (ns.options as any).map_entry &&
-      !(ns.fields.key && ns.fields.value && Object.keys(ns.fields).length === 2)
-    ) {
-      delete (ns.options as any).map_entry
-    }
-
-    // 收集本 type 下所有 entry 子消息
-    const entries: Record<string, protobuf.Type> = {}
-    for (const nested of (ns as any).nestedArray || []) {
-      if (
-        nested instanceof protobuf.Type &&
-        nested.options &&
-        ((nested.options as any).map_entry === true) &&
-        nested.fields.key &&
-        nested.fields.value
-      ) {
-        entries[nested.name] = nested
-      }
-    }
-
-    // 扫自己的 field，把 repeated <Entry> 替换成 MapField
-    for (const fname of Object.keys(ns.fields)) {
-      const f: any = ns.fields[fname]
-      if (f instanceof protobuf.MapField) continue
-      if (!f.repeated) continue
-      // f.type 可能是短名或带 package 的名字；通过 resolvedType 更稳
-      const resolved = f.resolvedType
-      if (!(resolved instanceof protobuf.Type)) continue
-      const entry = resolved.name && entries[resolved.name]
-      if (!entry) continue
-      if (entry !== resolved) continue // 指向的确实是本 type 下的那个 entry
-
-      const keyType = entry.fields.key.type
-      const valueField = entry.fields.value
-      const valueType = valueField.resolvedType
-        ? valueField.resolvedType.fullName.replace(/^\./, '')
-        : valueField.type
-
-      // 新 MapField 替换
-      const mf = new protobuf.MapField(
-        f.name,
-        f.id,
-        keyType,
-        valueType,
-        f.options,
-        f.comment,
-      )
-      ns.remove(f)
-      ns.add(mf)
-    }
+/** 把文件读成 base64(分块避免超大 spread 爆栈)。 */
+export async function fileToBase64(file: File): Promise<string> {
+  const buf = await file.arrayBuffer()
+  const bytes = new Uint8Array(buf)
+  let bin = ''
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk))
   }
-
-  if (ns instanceof protobuf.Namespace) {
-    for (const child of (ns as any).nestedArray || []) {
-      fixMapFields(child)
-    }
-  }
+  return btoa(bin)
 }
 
-function collectMessageTypes(obj: protobuf.ReflectionObject, out: string[]) {
-  if (obj instanceof protobuf.Type) {
-    out.push(obj.fullName.replace(/^\./, ''))
-  }
-  if (obj instanceof protobuf.Namespace) {
-    for (const nested of obj.nestedArray) {
-      collectMessageTypes(nested, out)
-    }
-  }
+export function copyText(s: string): void {
+  void navigator.clipboard?.writeText(s)
 }
 
-export function lookupType(root: protobuf.Root, fullName: string): protobuf.Type {
-  return root.lookupType(fullName)
+export function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
-export function encode(
-  root: protobuf.Root,
-  fullName: string,
-  json: unknown,
-): Uint8Array {
-  const type = root.lookupType(fullName)
-  // 先 fromObject：把 enum 字符串、int64 字符串、默认值等归一化成合法字段；
-  // 再 verify 校验（此时检查的是归一化后的对象，能接受 Long / 整数等实际需要的类型）。
-  const msg = type.fromObject(json as any)
-  const err = type.verify(msg)
-  if (err) throw new Error(err)
-  return type.encode(msg).finish()
-}
+/** 示例:一条仿 Threads「MDCore」记录(嵌套富文本 + 毫秒时间戳),用来演示裸解析。 */
+export const EXAMPLE_HEX =
+  '0a216d69642e24674141635657767548634f536c56774578616d706c655265636f7264121337343738' +
+  '363331313630353439343539383436' +
+  '3a1642554d505f4d525f4f4e5f464f4c4c4f575f584d4154' +
+  '428b013a88010a290a09706c61696e74657874121ce4bda0e59ca8205468726561647320e4b88ae585' +
+  'b3e6b3a8e4ba86200a480a046c696e6b12096277673139383136351a2f0a09627767313938313635' +
+  '122268747470733a2f2f7777772e746872656164732e6e65742f406277673139383136352204626f' +
+  '6c640a110a09706c61696e74657874120420e38082' +
+  '600082010d31373833303434363135343232'
 
-export function decode(
-  root: protobuf.Root,
-  fullName: string,
-  bytes: Uint8Array,
-): unknown {
-  const type = root.lookupType(fullName)
-  const msg = type.decode(bytes)
-  return type.toObject(msg, {
-    longs: String,
-    bytes: String,
-    enums: String,
-    defaults: false,
-    arrays: true,
-    objects: true,
-  })
-}
-
-/**
- * 当用户没指定消息类型 / 解码失败时的兜底：盲解析字节流为字段（tag + wire type + raw）。
- * 用于 hex/base64 → 查看 Protobuf 粗结构。
- */
-export function rawDecode(bytes: Uint8Array): Array<{
-  field: number
-  wire: number
-  wireName: string
-  value: any
-}> {
-  const out: Array<{ field: number; wire: number; wireName: string; value: any }> = []
-  const reader: any = protobuf.Reader.create(bytes)
-  while (reader.pos < reader.len) {
-    const tag = reader.uint32()
-    const field = tag >>> 3
-    const wire = tag & 7
-    let value: any
-    switch (wire) {
-      case 0: // varint
-        value = reader.int64().toString()
-        break
-      case 1: {
-        // 64-bit 固定
-        const buf: Uint8Array = reader.buf.slice(reader.pos, reader.pos + 8)
-        reader.pos += 8
-        value = '0x' + buf2hex(buf)
-        break
-      }
-      case 2: // length-delimited
-        value = reader.bytes()
-        break
-      case 5: {
-        // 32-bit 固定
-        const buf: Uint8Array = reader.buf.slice(reader.pos, reader.pos + 4)
-        reader.pos += 4
-        value = '0x' + buf2hex(buf)
-        break
-      }
-      default:
-        throw new Error(`未知 wire type: ${wire}`)
-    }
-    out.push({ field, wire, wireName: wireNames[wire] || '?', value })
-  }
-  return out
-}
-
-const wireNames: Record<number, string> = {
-  0: 'varint',
-  1: '64-bit',
-  2: 'length-delimited',
-  5: '32-bit',
-}
-
-function buf2hex(b: Uint8Array): string {
-  let s = ''
-  for (let i = 0; i < b.length; i++) s += b[i].toString(16).padStart(2, '0')
-  return s
-}
-
-// ---- 示例 ----
+/** Schema 模式示例。 */
 export const EXAMPLE_PROTO = `syntax = "proto3";
 
 package demo;
@@ -260,3 +74,12 @@ export const EXAMPLE_JSON = `{
   "attrs": { "role": "admin", "team": "platform" },
   "status": "ACTIVE"
 }`
+
+const INPUT_PLACEHOLDER: Record<InputEncoding, string> = {
+  hex: '粘贴 hex,如 0a22...(容许空格/逗号/0x 前缀);或把 .bin 拖进来',
+  base64: '粘贴 base64;或把 .bin 拖进来',
+  blob: "粘贴 SQLite BLOB 字面量,如 X'0a22...';或把 .bin 拖进来",
+}
+export function inputPlaceholder(enc: InputEncoding): string {
+  return INPUT_PLACEHOLDER[enc]
+}

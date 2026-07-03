@@ -3,6 +3,7 @@ module tool_forge
 go 1.25.0
 
 require (
+	github.com/bufbuild/protocompile v0.14.1
 	github.com/google/uuid v1.6.0
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/mattn/go-ieproxy v0.0.12
@@ -14,6 +15,7 @@ require (
 	golang.org/x/image v0.28.0
 	golang.org/x/net v0.35.0
 	golang.org/x/sys v0.44.0
+	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.53.0
 )
 
@@ -46,6 +48,7 @@ require (
 	golang.org/x/crypto v0.33.0 // indirect
 	golang.org/x/exp/shiny v0.0.0-20250606033433-dcc06ee1d476 // indirect
 	golang.org/x/mobile v0.0.0-20250606033058-a2a15c67f36f // indirect
+	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/text v0.26.0 // indirect
 	modernc.org/libc v1.73.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
