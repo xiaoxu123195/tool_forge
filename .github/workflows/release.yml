@@ -149,9 +149,11 @@ jobs:
 
           ref="${{ github.event.inputs.tag || github.ref_name }}"
           ver="${ref#v}"
-          src="build/bin/tool_forge.app"
-          if [[ ! -d "$src" ]]; then
-            echo "build product not found at $src" >&2
+          # 自动识别 wails 产出的 .app(名字由 wails.json 决定,不写死),避免名字对不上导致整包失败
+          src="$(ls -d build/bin/*.app 2>/dev/null | head -1)"
+          if [[ -z "$src" || ! -d "$src" ]]; then
+            echo "no .app found under build/bin" >&2
+            ls -la build/bin >&2 || true
             exit 1
           fi
 
@@ -188,6 +190,8 @@ jobs:
     needs:
       - build-windows
       - build-macos
+    # 只要 Windows 成功就发布;macOS 失败不阻塞(有 mac 产物就带上,没有就先发 Windows)
+    if: ${{ always() && needs.build-windows.result == 'success' }}
 
     steps:
       - name: Download release artifacts
