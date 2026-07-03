@@ -262,7 +262,7 @@ func parseMod(s string) (hotkey.Modifier, error) {
 	case "shift":
 		return hotkey.ModShift, nil
 	case "alt", "option":
-		return hotkey.ModAlt, nil
+		return hotkeyAltModifier(), nil
 	}
 	return 0, fmt.Errorf("未知修饰键: %s", s)
 }
@@ -422,8 +422,10 @@ func normalizeSpec(spec string) string {
 			hasCtrl = true
 		case hotkey.ModShift:
 			hasShift = true
-		case hotkey.ModAlt:
-			hasAlt = true
+		default:
+			if isHotkeyAltModifier(m) {
+				hasAlt = true
+			}
 		}
 	}
 	parts := []string{}

@@ -152,6 +152,11 @@ func (a *App) startup(ctx context.Context) {
 	}
 }
 
+// domready 在 DOM 可用后显示窗口，避免生产包前端异常时 StartHidden 导致永久无窗口。
+func (a *App) domready(ctx context.Context) {
+	wailsruntime.WindowShow(ctx)
+}
+
 // shutdown 在 Wails 关闭前调用,释放剪贴板监听等
 func (a *App) shutdown(ctx context.Context) {
 	if a.clipboard != nil {

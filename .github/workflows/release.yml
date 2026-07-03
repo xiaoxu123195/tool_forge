@@ -1,7 +1,7 @@
 name: Release
 
-# 推 tag(形如 v0.3.0)自动构建 Windows 产物并上传到 GitHub Release。
-# 触发后约 4-6 分钟可完成,完成后 Cloudflare Worker 会在 5 分钟内更新 manifest,
+# 推 tag(形如 v0.3.0)自动构建 Windows 与 macOS 产物并上传到 GitHub Release。
+# 触发后约 6-10 分钟可完成,完成后 Cloudflare Worker 会在 5 分钟内更新 manifest,
 # 老版客户端自动收到升级通知。
 #
 # 也支持手动触发(workflow_dispatch),用来重跑或测试。
@@ -24,7 +24,12 @@ jobs:
   build-windows:
     name: Build Windows (amd64)
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    outputs:
+      asset_name: ${{ steps.pack.outputs.asset_name }}
+      version: ${{ steps.pack.outputs.version }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+      size: ${{ steps.pack.outputs.size }}
 
     steps:
       - name: Checkout
@@ -35,27 +40,30 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: go.mod
           cache-dependency-path: go.sum
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
+          cache: npm
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.11.0
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
 
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
 
-      - name: Build (Windows amd64)
+      - name: Run Go tests
+        run: go test -timeout 60s ./backend/...
+
+      - name: Build Windows amd64
         run: wails build -platform windows/amd64 -clean -trimpath
 
-      - name: Package & checksum
+      - name: Package Windows asset
         id: pack
         shell: pwsh
         run: |
@@ -66,8 +74,10 @@ jobs:
             Write-Error "build product not found at $src"
             exit 1
           }
+
+          New-Item -ItemType Directory -Force -Path "release-assets" | Out-Null
           $assetName = "ToolForge-$ver-windows-amd64.exe"
-          $dst = "build/bin/$assetName"
+          $dst = "release-assets/$assetName"
           Move-Item -Path $src -Destination $dst
 
           $hash = (Get-FileHash $dst -Algorithm SHA256).Hash.ToLower()
@@ -77,18 +87,122 @@ jobs:
           Write-Host "Size:   $size bytes"
           Write-Host "SHA256: $hash"
 
-          "asset_path=$dst"      | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "asset_name=$assetName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "version=$ver"          | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "sha256=$hash"          | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "size=$size"            | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: release-assets/${{ steps.pack.outputs.asset_name }}
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS (Universal)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    outputs:
+      asset_name: ${{ steps.pack.outputs.asset_name }}
+      version: ${{ steps.pack.outputs.version }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+      size: ${{ steps.pack.outputs.size }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run Go tests
+        run: go test -timeout 60s ./backend/...
+
+      - name: Build macOS Universal
+        run: wails build -platform darwin/universal -clean -trimpath
+
+      - name: Package macOS asset
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ref="${{ github.event.inputs.tag || github.ref_name }}"
+          ver="${ref#v}"
+          src="build/bin/tool_forge.app"
+          if [[ ! -d "$src" ]]; then
+            echo "build product not found at $src" >&2
+            exit 1
+          fi
+
+          mkdir -p release-assets
+          asset_name="ToolForge-${ver}-darwin-universal.zip"
+          dst="release-assets/${asset_name}"
+          ditto -c -k --sequesterRsrc --keepParent "$src" "$dst"
+
+          hash="$(shasum -a 256 "$dst" | awk '{print $1}')"
+          size="$(stat -f%z "$dst")"
+
+          echo "Asset:  $dst"
+          echo "Size:   $size bytes"
+          echo "SHA256: $hash"
+
+          {
+            echo "asset_name=$asset_name"
+            echo "version=$ver"
+            echo "sha256=$hash"
+            echo "size=$size"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: release-assets/${{ steps.pack.outputs.asset_name }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs:
+      - build-windows
+      - build-macos
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
 
       - name: Create or update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: ${{ steps.pack.outputs.asset_path }}
+          files: release-assets/*
           # 行为说明:
           # - release 已存在(手动 draft 过 / 旧的 release):只追加 asset,不动 release body
           # - release 不存在:用下面的 body 创建一个简易版,用户可后续到网页编辑补全
@@ -100,9 +214,15 @@ jobs:
 
             ### 📦 Windows 下载
 
-            - 文件名:`${{ steps.pack.outputs.asset_name }}`
-            - 大小:${{ steps.pack.outputs.size }} bytes
-            - SHA256:`${{ steps.pack.outputs.sha256 }}`
+            - 文件名:`${{ needs.build-windows.outputs.asset_name }}`
+            - 大小:${{ needs.build-windows.outputs.size }} bytes
+            - SHA256:`${{ needs.build-windows.outputs.sha256 }}`
+
+            ### 🍎 macOS 下载
+
+            - 文件名:`${{ needs.build-macos.outputs.asset_name }}`
+            - 大小:${{ needs.build-macos.outputs.size }} bytes
+            - SHA256:`${{ needs.build-macos.outputs.sha256 }}`
 
             > Cloudflare Worker 会在 5 分钟内开始向老版本客户端推送本次更新。
             > 在 release notes 里加 `[critical]` 标记可触发客户端的关键更新提示。
