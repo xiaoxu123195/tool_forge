@@ -179,6 +179,9 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 
 	scanner := newSSEScanner(resp.Body)
 	var block *anthropicBlock
+	// Anthropic 会在 HTTP 200 的流中间推 error 事件,不看流内容根本发现不了
+	var streamErr string
+	var probe streamProbe
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -191,6 +194,11 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 			continue
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		probe.record(payload)
+		if msg := parseAnthropicStreamError(payload); msg != "" {
+			streamErr = msg
+			continue
+		}
 
 		var ev anthropicEvent
 		if err := json.Unmarshal([]byte(payload), &ev); err == nil {
@@ -210,6 +218,7 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 				switch ev.Delta.Type {
 				case "text_delta":
 					cb.onText(ev.Delta.Text)
+					probe.mark()
 				case "thinking_delta":
 					cb.onThinking(ev.Delta.Thinking)
 					if block != nil {
@@ -246,6 +255,14 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 	}
 	if err := scanner.Err(); err != nil {
 		cb.onError(fmt.Errorf("读取流失败: %w", err))
+		return
+	}
+	if streamErr != "" {
+		cb.onError(fmt.Errorf("%s", streamErr))
+		return
+	}
+	if err := probe.err(emptyReplyReason); err != nil {
+		cb.onError(err)
 		return
 	}
 	cb.onDone()

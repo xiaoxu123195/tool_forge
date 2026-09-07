@@ -269,10 +269,8 @@ func streamOpenAI(ctx context.Context, req chatRequest, useResponses bool, cb st
 	// seed-oss 用 <seed:think>),按模型 ID 选。仅对 chat completions 启用,
 	// /responses 已经按事件类型分开了。
 	splitter := newThinkSplitter(conv.ModelID)
-	// 兜底:跟踪是否输出了任何文本/图片;
-	// 跑完全程仍是 0 → 把最后几帧原始 payload 拼进错误信息便于排查
-	emitted := false
-	recentPayloads := make([]string, 0, 8)
+	// 兜底:跟踪是否输出了任何文本/图片;跑完全程一个都没有 → 把最后几帧原始响应一起抛出(见 diagnose.go)
+	var probe streamProbe
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -288,11 +286,7 @@ func streamOpenAI(ctx context.Context, req chatRequest, useResponses bool, cb st
 		if payload == "[DONE]" {
 			break
 		}
-		// 留档最近 8 帧;空响应兜底时把它们打进错误消息
-		recentPayloads = append(recentPayloads, payload)
-		if len(recentPayloads) > 8 {
-			recentPayloads = recentPayloads[1:]
-		}
+		probe.record(payload)
 		var text, thinking string
 		var images []ImageBlock
 		var citations []Citation
@@ -340,11 +334,11 @@ func streamOpenAI(ctx context.Context, req chatRequest, useResponses bool, cb st
 		}
 		if text != "" {
 			cb.onText(text)
-			emitted = true
+			probe.mark()
 		}
 		for _, img := range images {
 			cb.onImage(img)
-			emitted = true
+			probe.mark()
 		}
 		for _, c := range citations {
 			cb.onCitation(c)
@@ -354,17 +348,8 @@ func streamOpenAI(ctx context.Context, req chatRequest, useResponses bool, cb st
 		cb.onError(fmt.Errorf("读取流失败: %w", err))
 		return
 	}
-	if !emitted {
-		// 流跑完了但没有任何 text/image 输出 — 多半是非标准格式没解析到。
-		// 把最后几帧原始 payload 一起返回,方便用户/我们对照适配。
-		dump := strings.Join(recentPayloads, "\n")
-		if len(dump) > 1500 {
-			dump = dump[len(dump)-1500:]
-		}
-		if dump == "" {
-			dump = "(无任何 SSE 数据)"
-		}
-		cb.onError(fmt.Errorf("模型未返回可识别的文本或图片\n\n最后 %d 帧原始响应:\n%s", len(recentPayloads), dump))
+	if err := probe.err(emptyReplyReason); err != nil {
+		cb.onError(err)
 		return
 	}
 	cb.onDone()

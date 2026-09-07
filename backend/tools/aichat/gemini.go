@@ -125,6 +125,10 @@ func streamGemini(ctx context.Context, req chatRequest, cb streamCallbacks) {
 	}
 
 	scanner := newSSEScanner(resp.Body)
+	// Gemini 的安全拦截同样走 HTTP 200,表现就是"回复是空的";
+	// 不把 blockReason / finishReason 翻出来,用户完全不知道发生了什么
+	var blocked string
+	var probe streamProbe
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -137,18 +141,24 @@ func streamGemini(ctx context.Context, req chatRequest, cb streamCallbacks) {
 			continue
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		probe.record(payload)
+		if r := parseGeminiBlock(payload); r != "" {
+			blocked = r
+		}
 		text, thinking := parseGeminiDelta(payload)
 		if thinking != "" {
 			cb.onThinking(thinking)
 		}
 		if text != "" {
 			cb.onText(text)
+			probe.mark()
 		}
 		if u := parseGeminiUsage(payload); u != nil {
 			cb.onUsage(*u)
 		}
 		for _, img := range parseGeminiImages(payload) {
 			cb.onImage(img)
+			probe.mark()
 		}
 		for _, c := range parseGeminiCitations(payload) {
 			cb.onCitation(c)
@@ -158,7 +168,20 @@ func streamGemini(ctx context.Context, req chatRequest, cb streamCallbacks) {
 		cb.onError(fmt.Errorf("读取流失败: %w", err))
 		return
 	}
+	// 有内容就照常结束 —— MAX_TOKENS 这类"截断"也算正常产出,不该报错
+	if err := probe.err(geminiEmptyReason(blocked)); err != nil {
+		cb.onError(err)
+		return
+	}
 	cb.onDone()
+}
+
+// geminiEmptyReason 空回复时优先报具体的拦截 / 中断原因,没有再回落到通用说明
+func geminiEmptyReason(blocked string) string {
+	if blocked != "" {
+		return blocked
+	}
+	return emptyReplyReason
 }
 
 // parseGeminiUsage 从 streamGenerateContent 的 chunk 里抠 usageMetadata。
