@@ -155,17 +155,18 @@ func (s *Service) UpdateConversationMeta(id string, m ConversationMeta) error {
 	return saveConversation(c)
 }
 
-// UpdateConversationOptions 更新会话的思考档位 / 联网开关。
+// UpdateConversationOptions 更新会话的思考档位 / 联网 / 工具开关。
 //
 // 这两个是发消息时的即时开关(在输入栏上,不在"编辑会话"对话框里),所以单独一个方法。
 // 不动 UpdatedAt —— 它们是偏好而不是活动,拨一下开关就把会话顶到列表最前面太吵。
-func (s *Service) UpdateConversationOptions(id, reasoningEffort string, webSearch bool) error {
+func (s *Service) UpdateConversationOptions(id, reasoningEffort string, webSearch, tools bool) error {
 	c, err := loadConversation(id)
 	if err != nil {
 		return err
 	}
 	c.ReasoningEffort = reasoningEffort
 	c.WebSearch = webSearch
+	c.Tools = tools
 	return saveConversation(c)
 }
 

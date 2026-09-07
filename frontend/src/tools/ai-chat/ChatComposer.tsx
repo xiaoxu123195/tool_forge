@@ -8,6 +8,7 @@ import {
   Eraser,
   Paperclip,
   Globe,
+  Wrench,
   X,
 } from 'lucide-react'
 import { formatFileSize, imageSrc, MAX_FILES_PER_MESSAGE } from './file-parsers'
@@ -44,7 +45,9 @@ export function ChatComposer({
   effortOptions,
   canTuneReasoning,
   canWebSearch,
+  canUseTools,
   webSearch,
+  toolsOn,
   textareaRef,
   onSend,
   onStop,
@@ -67,13 +70,15 @@ export function ChatComposer({
   effortOptions: ReasoningEffort[]
   canTuneReasoning: boolean
   canWebSearch: boolean
+  canUseTools: boolean
   webSearch: boolean
+  toolsOn: boolean
   textareaRef: React.RefObject<HTMLTextAreaElement>
   onSend: () => void
   onStop: () => void
   onClearContext: () => void
   onOpenPicker: () => void
-  onSetOptions: (effort: string, webSearch: boolean) => void
+  onSetOptions: (effort: string, webSearch: boolean, tools: boolean) => void
   onPreviewImage: (img: ImageBlock) => void
   onPreviewFile: (f: FileBlock) => void
 }) {
@@ -251,7 +256,7 @@ export function ChatComposer({
                             type="button"
                             onClick={() => {
                               setEffortOpen(false)
-                              onSetOptions(e, webSearch)
+                              onSetOptions(e, webSearch, toolsOn)
                             }}
                             className={cn(
                               'flex w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-secondary',
@@ -271,7 +276,7 @@ export function ChatComposer({
                 <button
                   type="button"
                   onClick={() =>
-                    onSetOptions(currentEffort, !webSearch)
+                    onSetOptions(currentEffort, !webSearch, toolsOn)
                   }
                   className={cn(
                     'flex h-7 items-center gap-1 rounded-md px-2 text-xs transition-colors',
@@ -283,6 +288,23 @@ export function ChatComposer({
                 >
                   <Globe className="h-3.5 w-3.5" />
                   联网
+                </button>
+              )}
+
+              {canUseTools && (
+                <button
+                  type="button"
+                  onClick={() => onSetOptions(currentEffort, webSearch, !toolsOn)}
+                  className={cn(
+                    'flex h-7 items-center gap-1 rounded-md px-2 text-xs transition-colors',
+                    toolsOn
+                      ? 'bg-info/10 text-info'
+                      : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+                  )}
+                  title="允许模型调用本地工具(如查询当前时间);调用过程会显示在回复里"
+                >
+                  <Wrench className="h-3.5 w-3.5" />
+                  工具
                 </button>
               )}
             </div>

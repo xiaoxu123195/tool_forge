@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -83,9 +84,14 @@ func fetchAnthropicModels(p Provider) FetchModelsResult {
 // anthropicEvent 一帧 SSE 的并集视图。Anthropic 的事件类型多但字段稀疏,
 // 用一个结构体全接住比每种事件解一次省事。
 type anthropicEvent struct {
-	Type         string `json:"type"`
+	Type string `json:"type"`
+	// Index content block 的序号;工具参数分片靠它对应回所属的块
+	Index        int `json:"index"`
 	ContentBlock struct {
 		Type string `json:"type"`
+		// ID / Name 仅 tool_use 块有
+		ID   string `json:"id"`
+		Name string `json:"name"`
 		// Data redacted_thinking 的密文
 		Data string `json:"data"`
 		// Content web_search_tool_result 的搜索结果条目
@@ -100,6 +106,8 @@ type anthropicEvent struct {
 		Text      string `json:"text"`
 		Thinking  string `json:"thinking"`
 		Signature string `json:"signature"`
+		// PartialJSON tool_use 的参数分片
+		PartialJSON string `json:"partial_json"`
 		Citation  struct {
 			URL       string `json:"url"`
 			Title     string `json:"title"`
@@ -115,6 +123,7 @@ type anthropicEvent struct {
 // 下一轮原样回传,否则开着 thinking 的请求会被拒。
 type anthropicBlock struct {
 	kind      string
+	index     int
 	text      strings.Builder
 	signature string
 	redacted  string
@@ -150,6 +159,9 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 	if conv.WebSearch {
 		applyWebSearchPatch(body, buildWebSearchPatch(spec))
 	}
+	if conv.Tools && spec.Has(CapTools) {
+		appendTools(body, anthropicToolDecls())
+	}
 	// 提示词缓存:只对原厂域名发。cache_control 是 Anthropic 专有字段,
 	// 中转不认的话整个请求会 400,而缓存只是省钱、不是功能,不值得冒这个险。
 	if spec.family == familyAnthropic {
@@ -182,6 +194,7 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 	// Anthropic 会在 HTTP 200 的流中间推 error 事件,不看流内容根本发现不了
 	var streamErr string
 	var probe streamProbe
+	tools := newToolCallAccumulator()
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -204,9 +217,15 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 		if err := json.Unmarshal([]byte(payload), &ev); err == nil {
 			switch ev.Type {
 			case "content_block_start":
-				block = &anthropicBlock{kind: ev.ContentBlock.Type}
+				block = &anthropicBlock{kind: ev.ContentBlock.Type, index: ev.Index}
 				if ev.ContentBlock.Type == "redacted_thinking" {
 					block.redacted = ev.ContentBlock.Data
+				}
+				if ev.ContentBlock.Type == "tool_use" {
+					// 参数随后由 input_json_delta 分片补齐,先把 id / name 记下
+					c := tools.at(strconv.Itoa(ev.Index))
+					c.ID = ev.ContentBlock.ID
+					c.Name = ev.ContentBlock.Name
 				}
 				// 联网搜索结果整块到达(不是增量),直接抽引用
 				for _, c := range ev.ContentBlock.Content {
@@ -227,6 +246,10 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 				case "signature_delta":
 					if block != nil {
 						block.signature += ev.Delta.Signature
+					}
+				case "input_json_delta":
+					if block != nil && block.kind == "tool_use" {
+						tools.at(strconv.Itoa(block.index)).Arguments += ev.Delta.PartialJSON
 					}
 				case "citations_delta":
 					if ev.Delta.Citation.URL != "" {
@@ -259,6 +282,14 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 	}
 	if streamErr != "" {
 		cb.onError(fmt.Errorf("%s", streamErr))
+		return
+	}
+	// 请求了工具就不算空回复 —— 模型这一轮的产出就是"我要调用 X"
+	if calls := tools.done(); len(calls) > 0 {
+		for _, c := range calls {
+			cb.onToolCall(c)
+		}
+		cb.onDone()
 		return
 	}
 	if err := probe.err(emptyReplyReason); err != nil {
@@ -369,6 +400,15 @@ func buildAnthropicMessages(req chatRequest, includeThinking bool) []map[string]
 	out := make([]map[string]any, 0, len(msgs))
 	for _, m := range msgs {
 		if m.Role == "system" || m.Role == RoleClear {
+			continue
+		}
+		// 工具调用挂在 assistant 上,结果必须单独作为一条 user 消息回传
+		if m.Role == RoleTool {
+			out = append(out, map[string]any{"role": "user", "content": buildAnthropicToolBlocks(m)})
+			continue
+		}
+		if len(m.ToolCalls) > 0 {
+			out = append(out, map[string]any{"role": "assistant", "content": buildAnthropicToolBlocks(m)})
 			continue
 		}
 		if m.Role == "assistant" && m.Content == "" {

@@ -259,6 +259,7 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
           content: '',
           thinking: [],
           citations: undefined,
+          toolCalls: undefined,
           model: prev.modelId,
         }
       }
@@ -357,9 +358,11 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
   const canWebSearch = !!spec?.capabilities?.includes('webSearch')
   const currentEffort = (conv.reasoningEffort || 'default') as ReasoningEffort
 
-  const setOptions = async (effort: string, webSearch: boolean) => {
-    setConv((prev) => (prev ? { ...prev, reasoningEffort: effort, webSearch } : prev))
-    await UpdateAIConversationOptions(conv.id, effort, webSearch)
+  const canUseTools = !!spec?.capabilities?.includes('tools')
+
+  const setOptions = async (effort: string, webSearch: boolean, tools: boolean) => {
+    setConv((prev) => (prev ? { ...prev, reasoningEffort: effort, webSearch, tools } : prev))
+    await UpdateAIConversationOptions(conv.id, effort, webSearch, tools)
   }
 
   const visibleMessages = conv.messages.filter((m) => m.role !== 'system')
@@ -464,13 +467,17 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
         effortOptions={effortOptions}
         canTuneReasoning={canTuneReasoning}
         canWebSearch={canWebSearch}
+        canUseTools={canUseTools}
         webSearch={!!conv.webSearch}
+        toolsOn={!!conv.tools}
         textareaRef={textareaRef}
         onSend={() => void onSend()}
         onStop={() => void onStop()}
         onClearContext={() => void onClearContext()}
         onOpenPicker={() => setPickerOpen(true)}
-        onSetOptions={(effort: string, web: boolean) => void setOptions(effort, web)}
+        onSetOptions={(effort: string, web: boolean, tools: boolean) =>
+          void setOptions(effort, web, tools)
+        }
         onPreviewImage={setPreviewImage}
         onPreviewFile={setPreviewFile}
       />

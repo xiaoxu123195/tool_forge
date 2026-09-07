@@ -28,9 +28,12 @@ type streamCallbacks struct {
 	onThinkingBlock func(ThinkingBlock)
 	onImage         func(ImageBlock) // 模型生成的图片(DALL-E / Gemini imagen / grok-imagine 等)
 	onCitation      func(Citation)   // 联网搜索引用到的来源
-	onUsage         func(Usage)      // 各协议在拿到 usage 时(可能多次)调用,runStream 取最新非零值
-	onDone          func()
-	onError         func(error)
+	// onToolCall 模型请求调用一个本地工具。协议层在流结束时一次性抛出(参数是分片到达的,
+	// 拼完才知道完整形态);runStream 收齐后执行,再带着结果发下一轮
+	onToolCall func(ToolCall)
+	onUsage    func(Usage) // 各协议在拿到 usage 时(可能多次)调用,runStream 取最新非零值
+	onDone     func()
+	onError    func(error)
 }
 
 // withDefaults 把没设置的回调补成空实现。协议层可以无脑调用而不用逐个判空,
@@ -51,6 +54,9 @@ func (c streamCallbacks) withDefaults() streamCallbacks {
 	if c.onCitation == nil {
 		c.onCitation = func(Citation) {}
 	}
+	if c.onToolCall == nil {
+		c.onToolCall = func(ToolCall) {}
+	}
 	if c.onUsage == nil {
 		c.onUsage = func(Usage) {}
 	}
@@ -69,6 +75,7 @@ const (
 	EventThinkingPrefix = "ai-chat:thinking:" // 思考增量(deepseek-r1 / o1 / claude extended)
 	EventImagePrefix    = "ai-chat:image:"    // 模型生成的图片(payload = ImageBlock)
 	EventCitationPrefix = "ai-chat:citation:" // 联网引用来源(payload = Citation)
+	EventToolPrefix     = "ai-chat:tool:"     // 工具调用及其结果(payload = ToolCall)
 	EventDonePrefix     = "ai-chat:done:"
 	EventErrorPrefix    = "ai-chat:error:"
 )
@@ -320,6 +327,10 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 	var accumImages []ImageBlock
 	var accumThinking []ThinkingBlock
 	var accumCitations []Citation
+	// roundCalls 本轮模型请求的工具调用;每轮开始前清空
+	var roundCalls []ToolCall
+	// accumToolCalls 整次提问里所有轮次的调用+结果,落盘用
+	var accumToolCalls []ToolCall
 	// finalThinking 落盘用的思考块。协议层能给出带 signature 的完整块时以它为准;
 	// 给不出(多数协议只有纯文本增量)就把累加的文本合成一个块,保证不丢内容。
 	finalThinking := func() []ThinkingBlock {
@@ -379,6 +390,9 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 				wailsruntime.EventsEmit(s.ctx, EventImagePrefix+conv.ID, img)
 			}
 		},
+		onToolCall: func(tc ToolCall) {
+			roundCalls = append(roundCalls, tc)
+		},
 		onCitation: func(c Citation) {
 			if c.URL == "" {
 				return
@@ -417,6 +431,7 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 				Thinking:  finalThinking(),
 				Images:    accumImages,
 				Citations: accumCitations,
+				ToolCalls: accumToolCalls,
 			})
 			writeUsage()
 			if s.ctx != nil {
@@ -429,6 +444,7 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 				Thinking:  finalThinking(),
 				Images:    accumImages,
 				Citations: accumCitations,
+				ToolCalls: accumToolCalls,
 				Truncated: true,
 			}
 			// 用户主动取消(StopAIChat):保留已收到的内容并加截断标记,
@@ -449,17 +465,70 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 		},
 	}
 
-	// 按端点协议分发,而不是按供应商 —— 同一家可能有多个端点,端点才决定请求体形状
-	switch spec.Endpoint {
-	case EndpointGemini:
-		streamGemini(ctx, req, cb)
-	case EndpointAnthropic:
-		streamAnthropic(ctx, req, cb)
-	case EndpointOpenAIChat:
-		streamOpenAI(ctx, req, false, cb)
-	default:
-		streamOpenAI(ctx, req, true, cb)
+	// 工具调用循环。
+	//
+	// 一轮 = 发一次请求、把流读完。模型这一轮如果只是回答,循环就此结束;如果它请求调工具,
+	// 就在本地执行,把「调用 + 结果」追加进消息列表再发下一轮,直到它不再要工具。
+	//
+	// 之所以能这么写,是因为 streamXxx 是同步的 —— 它读完整条流才返回。
+	// 中间轮次的 onDone / onError 要拦下来:onDone 不能提前告诉前端"结束了",
+	// onError 则要立刻中止整个循环。正文、思考、用量这些照常往外抛,
+	// 用户能看到模型在调工具前说的话。
+	for round := 0; ; round++ {
+		roundCalls = nil
+		var roundErr error
+		roundCB := cb
+		roundCB.onDone = func() {}
+		roundCB.onError = func(err error) { roundErr = err }
+
+		switch spec.Endpoint {
+		case EndpointGemini:
+			streamGemini(ctx, req, roundCB)
+		case EndpointAnthropic:
+			streamAnthropic(ctx, req, roundCB)
+		case EndpointOpenAIChat:
+			streamOpenAI(ctx, req, false, roundCB)
+		default:
+			streamOpenAI(ctx, req, true, roundCB)
+		}
+
+		if roundErr != nil {
+			cb.onError(roundErr)
+			return
+		}
+		if len(roundCalls) == 0 {
+			break
+		}
+		if round+1 >= maxToolRounds {
+			// 到这儿说明模型停不下来了。已经拿到的正文照常保留,只是不再让它接着调。
+			cb.onError(fmt.Errorf("模型连续请求了 %d 轮工具调用仍未给出回答,已中止", maxToolRounds))
+			return
+		}
+
+		// 执行并把这一轮的调用 + 结果接进对话,下一轮模型就能看到结果了
+		executed := executeToolCalls(ctx, roundCalls)
+		accumToolCalls = append(accumToolCalls, executed...)
+		for _, c := range executed {
+			if s.ctx != nil {
+				wailsruntime.EventsEmit(s.ctx, EventToolPrefix+conv.ID, c)
+			}
+		}
+		req.Conv.Messages = append(req.Conv.Messages,
+			Message{
+				Role:      RoleAssistant,
+				Content:   bText.String(),
+				Thinking:  finalThinking(),
+				ToolCalls: executed,
+			},
+			Message{Role: RoleTool, ToolCalls: executed},
+		)
+		// 下一轮的正文要接着写,思考块则各轮独立,不重复回传
+		accumThinking = nil
+		bThink.Reset()
 	}
+
+	// 循环里各轮的 onDone 被拦掉了,真正的结束在这里发
+	cb.onDone()
 }
 
 // assistantResult 一次流跑完(或中断)后要落盘的 assistant 消息内容
@@ -468,6 +537,7 @@ type assistantResult struct {
 	Thinking  []ThinkingBlock
 	Images    []ImageBlock
 	Citations []Citation
+	ToolCalls []ToolCall
 	// Truncated 流被中断(用户取消 / 出错),正文尾部加省略号标记
 	Truncated bool
 }
@@ -487,6 +557,9 @@ func (s *Service) persistAssistant(convID, msgID string, res assistantResult) {
 			}
 			if len(res.Citations) > 0 {
 				c.Messages[i].Citations = dedupeCitations(res.Citations)
+			}
+			if len(res.ToolCalls) > 0 {
+				c.Messages[i].ToolCalls = res.ToolCalls
 			}
 			if res.Truncated {
 				c.Messages[i].Content += " …" // 标记中断
@@ -532,8 +605,13 @@ func contextMessages(conv Conversation) []Message {
 		}
 	}
 	n := conv.ContextCount
-	if n <= 0 || len(msgs) <= n {
-		return msgs
+	if n > 0 && len(msgs) > n {
+		msgs = msgs[len(msgs)-n:]
 	}
-	return msgs[len(msgs)-n:]
+	// 截断可能把「模型请求调工具」和「工具结果」拆散,只留下后半截。
+	// 各家都要求结果消息前面必须有对应的调用,落单的结果会让整个请求被拒 —— 直接丢掉。
+	for len(msgs) > 0 && msgs[0].Role == RoleTool {
+		msgs = msgs[1:]
+	}
+	return msgs
 }

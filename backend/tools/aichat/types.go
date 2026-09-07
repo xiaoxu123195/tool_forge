@@ -94,6 +94,9 @@ const (
 	RoleAssistant = "assistant"
 	RoleSystem    = "system"
 	RoleClear     = "clear"
+	// RoleTool 一条"工具执行结果"消息。它不是用户也不是模型说的话,
+	// 各协议对它的形状要求差别很大(见各 build 函数),所以单独一个角色
+	RoleTool = "tool"
 )
 
 // ImageBlock 一张图(base64 或远程 URL),作为消息的多模态附件。
@@ -133,6 +136,23 @@ type ThinkingBlock struct {
 	Redacted string `json:"redacted,omitempty"`
 }
 
+// ToolCall 模型请求的一次工具调用,以及执行结果。
+//
+// 请求和结果放在同一个结构里,是因为回传给模型时这两半必须配对出现
+// (每家都要求结果带上对应的调用 ID),拆开存反而容易对不上。
+type ToolCall struct {
+	// ID 协议侧的调用 ID,回传结果时必须原样带上
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Arguments 模型给的参数,JSON 字符串。不解析直接透传给工具,
+	// 因为各家给的字段顺序 / 空白不一致,解析再序列化会变形
+	Arguments string `json:"arguments,omitempty"`
+	// Result 执行成功时的返回内容
+	Result string `json:"result,omitempty"`
+	// Error 执行失败时的说明;它同样会回传给模型,让它有机会换个参数重试
+	Error string `json:"error,omitempty"`
+}
+
 // Citation 联网搜索引用的一条来源
 type Citation struct {
 	URL     string `json:"url"`
@@ -153,6 +173,9 @@ type Message struct {
 	Thinking []ThinkingBlock `json:"thinking,omitempty"`
 	// Citations 联网搜索引用到的来源(仅 assistant 有意义)
 	Citations []Citation `json:"citations,omitempty"`
+	// ToolCalls assistant 消息上是"模型请求调用的工具",
+	// RoleTool 消息上是"这批调用的执行结果"
+	ToolCalls []ToolCall `json:"toolCalls,omitempty"`
 	// Model 这条消息使用的模型 ID(仅 assistant 有意义)
 	Model     string `json:"model,omitempty"`
 	CreatedAt int64  `json:"createdAt"`
@@ -214,6 +237,8 @@ type Conversation struct {
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 	// WebSearch 是否启用供应商内置联网搜索;模型不支持时忽略
 	WebSearch bool `json:"webSearch,omitempty"`
+	// Tools 是否允许模型调用本地工具(function calling);模型不支持时忽略
+	Tools bool `json:"tools,omitempty"`
 	// Temperature / TopP 采样参数。用指针是为了区分"没设"和"设成 0" ——
 	// 0 是合法取值(完全确定性输出),不能拿零值当未设置
 	Temperature *float64 `json:"temperature,omitempty"`

@@ -240,6 +240,9 @@ func streamOpenAI(ctx context.Context, req chatRequest, useResponses bool, cb st
 	if conv.WebSearch {
 		applyWebSearchPatch(body, buildWebSearchPatch(spec))
 	}
+	if conv.Tools && spec.Has(CapTools) {
+		appendTools(body, openAIToolDecls(useResponses))
+	}
 	bodyBytes, _ := json.Marshal(body)
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
@@ -271,6 +274,8 @@ func streamOpenAI(ctx context.Context, req chatRequest, useResponses bool, cb st
 	splitter := newThinkSplitter(conv.ModelID)
 	// 兜底:跟踪是否输出了任何文本/图片;跑完全程一个都没有 → 把最后几帧原始响应一起抛出(见 diagnose.go)
 	var probe streamProbe
+	// 工具调用的参数是分片到达的,得按序号 / item id 拼起来(见 toolCallAccumulator)
+	tools := newToolCallAccumulator()
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -293,6 +298,7 @@ func streamOpenAI(ctx context.Context, req chatRequest, useResponses bool, cb st
 		if useResponses {
 			text, thinking = parseOpenAIResponsesDelta(payload)
 			citations = parseOpenAIResponsesCitations(payload)
+			collectResponsesToolCalls(payload, tools)
 			// 中转(如 chatgpt2api 的 gpt-image)把生图结果以 markdown data:image
 			// 形式塞进正文,这里抽到图片通道,避免几 MB base64 当正文渲染/落盘
 			if text != "" {
@@ -307,6 +313,7 @@ func streamOpenAI(ctx context.Context, req chatRequest, useResponses bool, cb st
 		} else {
 			text, thinking = parseOpenAIChatDelta(payload)
 			citations = parseOpenAIChatCitations(payload)
+			collectChatToolCalls(payload, tools)
 			// 同上:把内联在 delta.content 里的 base64 图片抽到图片通道
 			if text != "" {
 				var inlineImgs []ImageBlock
@@ -348,6 +355,14 @@ func streamOpenAI(ctx context.Context, req chatRequest, useResponses bool, cb st
 		cb.onError(fmt.Errorf("读取流失败: %w", err))
 		return
 	}
+	// 请求了工具就不算空回复 —— 模型这一轮的产出就是"我要调用 X"
+	if calls := tools.done(); len(calls) > 0 {
+		for _, c := range calls {
+			cb.onToolCall(c)
+		}
+		cb.onDone()
+		return
+	}
 	if err := probe.err(emptyReplyReason); err != nil {
 		cb.onError(err)
 		return
@@ -368,6 +383,11 @@ func buildOpenAIResponsesInput(req chatRequest) []map[string]any {
 	}
 	for _, m := range msgs {
 		if m.Role == RoleClear {
+			continue
+		}
+		// 工具调用与结果在 Responses 里是平铺的 input 项,不裹在消息里
+		if m.Role == RoleTool || len(m.ToolCalls) > 0 {
+			out = append(out, buildOpenAIResponsesToolItems(m)...)
 			continue
 		}
 		if m.Role == "assistant" && m.Content == "" {
@@ -420,6 +440,10 @@ func buildOpenAIChatMessages(req chatRequest) []map[string]any {
 	}
 	for _, m := range msgs {
 		if m.Role == RoleClear {
+			continue
+		}
+		if m.Role == RoleTool || len(m.ToolCalls) > 0 {
+			out = append(out, buildOpenAIChatToolMessages(m)...)
 			continue
 		}
 		if m.Role == "assistant" && m.Content == "" {

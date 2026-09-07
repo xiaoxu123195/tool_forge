@@ -123,6 +123,7 @@ const (
 	CapPDF       Capability = "pdf"       // 能原生吃 PDF(不用后端先抽文本)
 	CapReasoning Capability = "reasoning" // 会思考(会思考 ≠ 能调档,能否调档看 ReasoningSpec)
 	CapWebSearch Capability = "webSearch" // 支持供应商内置联网搜索
+	CapTools     Capability = "tools"     // 支持工具调用(function calling)
 	CapImageGen  Capability = "imageGen"  // 能生图
 )
 
@@ -349,6 +350,7 @@ func removeCap(caps []Capability, c Capability) []Capability {
 // applyClaudeSpec Claude:思考走 token 预算制,max_tokens 必须显式带且要大于预算
 func applyClaudeSpec(s *ModelSpec, id string) {
 	s.Capabilities = appendCap(s.Capabilities, CapVision)
+	s.Capabilities = appendCap(s.Capabilities, CapTools)
 	s.Sampling = cappedSampling()
 	switch {
 	case hasAny(id, "opus-4"):
@@ -385,6 +387,7 @@ func applyClaudeSpec(s *ModelSpec, id string) {
 // applyGeminiSpec Gemini:2.x 用 thinkingBudget(token 数),3.x 换成 thinkingLevel(档位词)
 func applyGeminiSpec(s *ModelSpec, id string) {
 	s.Capabilities = appendCap(s.Capabilities, CapVision)
+	s.Capabilities = appendCap(s.Capabilities, CapTools)
 	s.MaxOutput = 8192
 
 	switch {
@@ -428,6 +431,7 @@ func applyGeminiSpec(s *ModelSpec, id string) {
 // applyGrokSpec Grok:走 Responses 端点;联网是 web_search + x_search 两个内置工具
 func applyGrokSpec(s *ModelSpec, id string) {
 	s.Capabilities = appendCap(s.Capabilities, CapVision)
+	s.Capabilities = appendCap(s.Capabilities, CapTools)
 	s.MaxOutput = 32768
 	s.family = familyXAI
 	switch {
@@ -455,6 +459,11 @@ func applyGrokSpec(s *ModelSpec, id string) {
 // applyOpenAISpec GPT / o 系列
 func applyOpenAISpec(s *ModelSpec, id string) {
 	s.MaxOutput = 16384
+
+	// gpt-3.5 那批虽然也有 function calling,但表现很差、经常乱调,不给
+	if hasAnyPrefix(id, "gpt-4", "gpt-5", "o1", "o3", "o4", "chatgpt") {
+		s.Capabilities = appendCap(s.Capabilities, CapTools)
+	}
 
 	if hasAnyPrefix(id, "gpt-4o", "gpt-4.1", "gpt-4-1", "gpt-5", "o3", "o4", "chatgpt") {
 		s.Capabilities = appendCap(s.Capabilities, CapVision)
@@ -497,6 +506,7 @@ func applyDeepSeekSpec(s *ModelSpec, id string) {
 		s.Reasoning = &ReasoningSpec{}
 	case hasAny(id, "v3.2", "v3-2", "v4", "chat"):
 		s.Capabilities = appendCap(s.Capabilities, CapReasoning)
+		s.Capabilities = appendCap(s.Capabilities, CapTools)
 		s.dialect = dialectThinkingToggle
 		s.Reasoning = &ReasoningSpec{
 			Efforts: []Effort{EffortNone, EffortHigh},
@@ -520,6 +530,7 @@ func applyQwenSpec(s *ModelSpec, id string) {
 		s.Reasoning = &ReasoningSpec{}
 		return
 	}
+	s.Capabilities = appendCap(s.Capabilities, CapTools)
 	if hasAny(id, "qwen3", "qwen-plus", "qwen-max", "qwen-turbo", "qwen-flash") {
 		s.Capabilities = appendCap(s.Capabilities, CapReasoning)
 		s.dialect = dialectQwenToggle
@@ -549,11 +560,13 @@ func applyZhipuSpec(s *ModelSpec, id string) {
 		}
 	}
 	s.Capabilities = appendCap(s.Capabilities, CapWebSearch)
+	s.Capabilities = appendCap(s.Capabilities, CapTools)
 }
 
 // applyMoonshotSpec Kimi:K2 thinking 走 reasoning_effort
 func applyMoonshotSpec(s *ModelSpec, id string) {
 	s.MaxOutput = 8192
+	s.Capabilities = appendCap(s.Capabilities, CapTools)
 	// K2.5 起采样参数被锁死,发过去会报错;更早的型号上限是 1
 	if hasAny(id, "k2.5", "k2-5", "k3") {
 		s.Sampling = fixedSampling()

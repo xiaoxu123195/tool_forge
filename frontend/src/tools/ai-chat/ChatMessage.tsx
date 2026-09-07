@@ -12,12 +12,20 @@ import {
   RotateCcw,
   Trash2,
   User,
+  Wrench,
   X,
 } from 'lucide-react'
 import { BrowserOpenURL } from '../../../wailsjs/runtime/runtime'
 import { formatFileSize, imageSrc } from './file-parsers'
 import { MarkdownPreview } from '@/components/tool/MarkdownPreview'
-import { thinkingText, type Citation, type FileBlock, type ImageBlock, type Message } from './types'
+import {
+  thinkingText,
+  type Citation,
+  type FileBlock,
+  type ImageBlock,
+  type Message,
+  type ToolCall,
+} from './types'
 import { fileIcon } from './chat-utils'
 import { cn } from '@/lib/utils'
 
@@ -114,6 +122,10 @@ export function MessageItem({
             content={thinkingText(message)}
             streaming={!!streaming && !message.content}
           />
+        )}
+
+        {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
+          <ToolCallList list={message.toolCalls} />
         )}
 
         {message.images && message.images.length > 0 && (
@@ -280,6 +292,62 @@ export function MessageItem({
         )}
       </div>
     </li>
+  )
+}
+
+/**
+ * 模型调用了哪些本地工具。默认折叠,点开能看到入参和返回值。
+ *
+ * 展开的价值在于排查:模型答得不对时,先看它到底调了什么、传了什么参数、拿回了什么,
+ * 比对着最终回复猜要快得多。
+ */
+function ToolCallList({ list }: { list: ToolCall[] }) {
+  const [open, setOpen] = useState(false)
+  const failed = list.filter((c) => c.error).length
+  return (
+    <div className="rounded-lg border border-border bg-secondary/20">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-secondary/40"
+      >
+        <Wrench className="h-3.5 w-3.5" />
+        <span className="font-medium">调用了工具</span>
+        <span className="text-[10px] opacity-60">
+          ({list.map((c) => c.name).join(', ')})
+        </span>
+        {failed > 0 && (
+          <span className="rounded bg-destructive/15 px-1.5 text-[10px] text-destructive">
+            {failed} 个失败
+          </span>
+        )}
+        <ChevronDown
+          className={cn('ml-auto h-3.5 w-3.5 transition-transform', open ? 'rotate-180' : '')}
+        />
+      </button>
+      {open && (
+        <div className="space-y-2 border-t border-border/50 px-3 py-2">
+          {list.map((c, i) => (
+            <div key={c.id + i} className="space-y-1 text-xs">
+              <div className="font-mono font-medium">{c.name}</div>
+              {c.arguments && c.arguments !== '{}' && (
+                <div className="whitespace-pre-wrap break-all font-mono text-[11px] text-muted-foreground">
+                  入参 {c.arguments}
+                </div>
+              )}
+              <div
+                className={cn(
+                  'whitespace-pre-wrap break-words font-mono text-[11px]',
+                  c.error ? 'text-destructive' : 'text-muted-foreground',
+                )}
+              >
+                {c.error ? '失败:' + c.error : (c.result ?? '(执行中...)')}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 

@@ -102,6 +102,9 @@ func streamGemini(ctx context.Context, req chatRequest, cb streamCallbacks) {
 	if conv.WebSearch {
 		applyWebSearchPatch(body, buildWebSearchPatch(spec))
 	}
+	if conv.Tools && spec.Has(CapTools) {
+		appendTools(body, geminiToolDecls())
+	}
 	bodyBytes, _ := json.Marshal(body)
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
@@ -129,6 +132,7 @@ func streamGemini(ctx context.Context, req chatRequest, cb streamCallbacks) {
 	// 不把 blockReason / finishReason 翻出来,用户完全不知道发生了什么
 	var blocked string
 	var probe streamProbe
+	var toolCalls []ToolCall
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -163,9 +167,18 @@ func streamGemini(ctx context.Context, req chatRequest, cb streamCallbacks) {
 		for _, c := range parseGeminiCitations(payload) {
 			cb.onCitation(c)
 		}
+		toolCalls = append(toolCalls, parseGeminiToolCalls(payload)...)
 	}
 	if err := scanner.Err(); err != nil {
 		cb.onError(fmt.Errorf("读取流失败: %w", err))
+		return
+	}
+	// 请求了工具就不算空回复 —— 模型这一轮的产出就是"我要调用 X"
+	if len(toolCalls) > 0 {
+		for _, c := range toolCalls {
+			cb.onToolCall(c)
+		}
+		cb.onDone()
 		return
 	}
 	// 有内容就照常结束 —— MAX_TOKENS 这类"截断"也算正常产出,不该报错
@@ -222,6 +235,15 @@ func buildGeminiContents(req chatRequest) []map[string]any {
 	out := make([]map[string]any, 0, len(msgs))
 	for _, m := range msgs {
 		if m.Role == "system" || m.Role == RoleClear {
+			continue
+		}
+		// 工具结果以 user 身份回传,调用本身挂在 model 身上
+		if m.Role == RoleTool {
+			out = append(out, map[string]any{"role": "user", "parts": buildGeminiToolParts(m)})
+			continue
+		}
+		if len(m.ToolCalls) > 0 {
+			out = append(out, map[string]any{"role": "model", "parts": buildGeminiToolParts(m)})
 			continue
 		}
 		if m.Role == "assistant" && m.Content == "" {

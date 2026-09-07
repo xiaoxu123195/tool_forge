@@ -1268,12 +1268,12 @@ func (a *App) UpdateAIConversationContext(id string, count int) string {
 	return ""
 }
 
-// UpdateAIConversationOptions 更新会话的思考档位与联网开关(输入栏上的即时开关)
-func (a *App) UpdateAIConversationOptions(id, reasoningEffort string, webSearch bool) string {
+// UpdateAIConversationOptions 更新会话的思考档位 / 联网 / 工具开关(输入栏上的即时开关)
+func (a *App) UpdateAIConversationOptions(id, reasoningEffort string, webSearch, tools bool) string {
 	if a.aichat == nil {
 		return "AI 服务未初始化"
 	}
-	if err := a.aichat.UpdateConversationOptions(id, reasoningEffort, webSearch); err != nil {
+	if err := a.aichat.UpdateConversationOptions(id, reasoningEffort, webSearch, tools); err != nil {
 		return err.Error()
 	}
 	return ""

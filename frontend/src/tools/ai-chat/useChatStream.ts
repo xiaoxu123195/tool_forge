@@ -5,11 +5,13 @@ import {
   EV_THINKING_PREFIX,
   EV_IMAGE_PREFIX,
   EV_CITATION_PREFIX,
+  EV_TOOL_PREFIX,
   EV_DONE_PREFIX,
   EV_ERROR_PREFIX,
   type Citation,
   type Conversation,
   type ImageBlock,
+  type ToolCall,
 } from './types'
 
 /**
@@ -102,6 +104,24 @@ export function useChatStream({
         return prev
       })
     })
+    // 工具执行完才推,所以每条都是"调用 + 结果"的完整形态;
+    // 同一次提问可能连调多轮,按 id 覆盖而不是无脑追加
+    const offTool = EventsOn(EV_TOOL_PREFIX + conversationId, (tc: ToolCall) => {
+      if (!tc?.id) return
+      setConv((prev) => {
+        if (!prev) return prev
+        const msgs = [...prev.messages]
+        const last = msgs[msgs.length - 1]
+        if (last?.role === 'assistant') {
+          const list = last.toolCalls ?? []
+          const idx = list.findIndex((x) => x.id === tc.id && x.name === tc.name)
+          const next = idx >= 0 ? list.map((x, i) => (i === idx ? tc : x)) : [...list, tc]
+          msgs[msgs.length - 1] = { ...last, toolCalls: next }
+          return { ...prev, messages: msgs }
+        }
+        return prev
+      })
+    })
     const offDone = EventsOn(EV_DONE_PREFIX + conversationId, (final: string) => {
       onStreamEnd()
       setConv((prev) => {
@@ -125,6 +145,7 @@ export function useChatStream({
       offChunk()
       offThinking()
       offCitation()
+      offTool()
       offImage()
       offDone()
       offError()

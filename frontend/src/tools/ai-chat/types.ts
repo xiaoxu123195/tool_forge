@@ -88,6 +88,18 @@ export interface ThinkingBlock {
   redacted?: string
 }
 
+/** 模型请求的一次工具调用,以及执行结果 */
+export interface ToolCall {
+  id: string
+  name: string
+  /** 模型给的参数,JSON 字符串 */
+  arguments?: string
+  /** 执行成功时的返回内容 */
+  result?: string
+  /** 执行失败时的说明(同样会回传给模型) */
+  error?: string
+}
+
 /** 联网搜索引用的一条来源 */
 export interface Citation {
   url: string
@@ -106,6 +118,8 @@ export interface Message {
   thinking?: ThinkingBlock[]
   /** 联网搜索引用到的来源 */
   citations?: Citation[]
+  /** assistant 上是模型请求的工具调用(含执行结果) */
+  toolCalls?: ToolCall[]
   /** 这条 assistant 消息使用的模型 ID */
   model?: string
   createdAt: number
@@ -128,6 +142,8 @@ export interface Conversation {
   reasoningEffort?: string
   /** 是否启用供应商内置联网搜索 */
   webSearch?: boolean
+  /** 是否允许模型调用本地工具 */
+  tools?: boolean
   /** 采样温度;undefined = 不指定,由模型自己决定(0 是合法取值) */
   temperature?: number
   topP?: number
@@ -174,7 +190,13 @@ export const EFFORT_LABELS: Record<ReasoningEffort, string> = {
 }
 
 /** 模型能力标签,与后端 catalog.go 的 Capability 对齐 */
-export type Capability = 'vision' | 'pdf' | 'reasoning' | 'webSearch' | 'imageGen'
+export type Capability =
+  | 'vision'
+  | 'pdf'
+  | 'reasoning'
+  | 'webSearch'
+  | 'imageGen'
+  | 'tools'
 
 export interface ReasoningSpec {
   efforts: ReasoningEffort[]
@@ -206,5 +228,6 @@ export const EV_CHUNK_PREFIX = 'ai-chat:chunk:'
 export const EV_THINKING_PREFIX = 'ai-chat:thinking:'
 export const EV_IMAGE_PREFIX = 'ai-chat:image:'
 export const EV_CITATION_PREFIX = 'ai-chat:citation:'
+export const EV_TOOL_PREFIX = 'ai-chat:tool:'
 export const EV_DONE_PREFIX = 'ai-chat:done:'
 export const EV_ERROR_PREFIX = 'ai-chat:error:'
