@@ -32,6 +32,22 @@ const (
 	TypeXAI          ProviderType = "xai"
 )
 
+// ModelOverride 用户对某个模型能力推断结果的手动修正。
+//
+// 能力目录是按模型 ID 前缀猜的。中转把 claude-sonnet-4-5 挂成 my-claude-pro 之后就猜不出来,
+// 思考档位和联网开关会凭空消失,而界面上不会说明为什么 —— 这里是那种情况的逃生舱。
+type ModelOverride struct {
+	// AliasOf 这个模型实际对应的标准模型 ID。填它最省事:按标准 ID 推断能一次拿到
+	// 正确的思考方言、预算区间、输出上限,不用一项项手勾。
+	AliasOf string `json:"aliasOf,omitempty"`
+	// CapabilitiesSet 为 true 时 Capabilities 是权威值(允许显式设成空集,
+	// 用来关掉推断错了的能力);false 时忽略 Capabilities,沿用推断结果。
+	CapabilitiesSet bool         `json:"capabilitiesSet,omitempty"`
+	Capabilities    []Capability `json:"capabilities,omitempty"`
+	// MaxOutput > 0 时覆盖推断出的单次回复 token 上限
+	MaxOutput int `json:"maxOutput,omitempty"`
+}
+
 // Provider 用户配置的一个 AI 供应商
 type Provider struct {
 	ID        string       `json:"id"`
@@ -43,8 +59,10 @@ type Provider struct {
 	Enabled   bool         `json:"enabled"`  // 总开关;关闭后不在模型选择器里出现
 	Models    []string     `json:"models"`   // 用户从 /v1/models 选进来的 model id
 	IsSystem  bool         `json:"isSystem"` // 系统内置预设(可改但删除会重新注入)
-	CreatedAt int64        `json:"createdAt"`
-	UpdatedAt int64        `json:"updatedAt"`
+	// ModelOverrides 按模型 ID 索引的能力修正;能力推断不准时由用户手动纠正
+	ModelOverrides map[string]ModelOverride `json:"modelOverrides,omitempty"`
+	CreatedAt      int64                    `json:"createdAt"`
+	UpdatedAt      int64                    `json:"updatedAt"`
 }
 
 // ModelInfo 从 /v1/models 拉到的一条

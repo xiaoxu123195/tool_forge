@@ -90,10 +90,14 @@ func TestResolveReasoningOpenAIResponses(t *testing.T) {
 	}
 }
 
-// 第三方 Responses 中转不认 reasoning.summary,带上会 400
+// 第三方 Responses 中转不认 reasoning.summary,带上会 400。
+// 注意类型选的仍是 "openai" —— "类型选 OpenAI、地址填中转"是最常见的配置,
+// 家族判断必须看主机名而不是看用户选的类型,否则这里就会误发原厂专有字段。
 func TestResolveReasoningThirdPartyResponsesOmitsSummary(t *testing.T) {
 	spec := specFor(t, TypeOpenAI, "https://my-relay.example.com/v1", "gpt-5")
-	spec.family = familyGeneric // 显式模拟"猜不出家族"的中转
+	if spec.family == familyOpenAI {
+		t.Fatal("中转地址不该被认成原厂")
+	}
 	got := emissionMap(resolveReasoning(EffortHigh, spec, spec.MaxOutput))
 	if got["reasoning.effort"] != EffortHigh {
 		t.Errorf("reasoning.effort = %v, want high", got["reasoning.effort"])

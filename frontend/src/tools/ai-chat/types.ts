@@ -6,6 +6,17 @@ export type ProviderType =
   | 'anthropic'
   | 'xai'
 
+/** 用户对某个模型能力推断结果的手动修正(推断不准时的逃生舱) */
+export interface ModelOverride {
+  /** 这个模型实际对应的标准模型 ID;中转改过名时填它最省事 */
+  aliasOf?: string
+  /** true 时 capabilities 为权威值(允许空集,用来关掉推断错的能力) */
+  capabilitiesSet?: boolean
+  capabilities?: Capability[]
+  /** > 0 时覆盖推断的单次回复 token 上限 */
+  maxOutput?: number
+}
+
 export interface Provider {
   id: string
   name: string
@@ -18,6 +29,8 @@ export interface Provider {
   models: string[]
   /** 系统内置预设 */
   isSystem: boolean
+  /** 按模型 ID 索引的能力修正 */
+  modelOverrides?: Record<string, ModelOverride>
   createdAt: number
   updatedAt: number
 }

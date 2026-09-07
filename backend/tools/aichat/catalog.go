@@ -79,9 +79,30 @@ var hostFamilies = []struct {
 	{"generativelanguage.googleapis.com", familyGoogle},
 }
 
-// inferFamily 先看 Provider.Type(显式选了厂商就以它为准),再退到 baseURL 主机名
+// inferFamily 判断这个供应商是不是"原厂"。
+//
+// 只认 baseURL 主机名,不认用户在下拉框里选的类型 —— "类型选 OpenAI、地址填中转"是最常见的
+// 配置,那种情况必须按中转处理:原厂专有字段(reasoning.summary、Anthropic 的 cache_control)
+// 发给中转经常直接 400。baseURL 为空时才按类型的默认端点算,那是真的原厂。
 func inferFamily(p Provider) providerFamily {
-	switch p.Type {
+	host := ""
+	if u, err := url.Parse(strings.TrimSpace(p.BaseURL)); err == nil {
+		host = strings.ToLower(u.Hostname())
+	}
+	if host == "" {
+		return defaultFamilyFor(p.Type)
+	}
+	for _, hf := range hostFamilies {
+		if host == hf.host || strings.HasSuffix(host, "."+hf.host) {
+			return hf.family
+		}
+	}
+	return familyGeneric
+}
+
+// defaultFamilyFor 没填 baseURL 时,各协议类型走的是自家默认端点
+func defaultFamilyFor(t ProviderType) providerFamily {
+	switch t {
 	case TypeAnthropic:
 		return familyAnthropic
 	case TypeGemini:
@@ -90,18 +111,6 @@ func inferFamily(p Provider) providerFamily {
 		return familyXAI
 	case TypeOpenAI:
 		return familyOpenAI
-	}
-	host := ""
-	if u, err := url.Parse(p.BaseURL); err == nil {
-		host = strings.ToLower(u.Hostname())
-	}
-	if host == "" {
-		return familyGeneric
-	}
-	for _, hf := range hostFamilies {
-		if host == hf.host || strings.HasSuffix(host, "."+hf.host) {
-			return hf.family
-		}
 	}
 	return familyGeneric
 }
@@ -224,9 +233,17 @@ func hasAny(s string, subs ...string) bool {
 	return false
 }
 
-// InferModelSpec 推断一个模型在给定供应商下的能力画像
+// InferModelSpec 推断一个模型在给定供应商下的能力画像。
+// 最后会套用用户在 Provider.ModelOverrides 里的手动修正 —— 用户的判断优先于我们的猜测。
 func InferModelSpec(p Provider, modelID string) ModelSpec {
-	id := normalizeModelID(modelID)
+	ov, hasOverride := p.ModelOverrides[modelID]
+	// 别名:中转给模型改了名时,按用户指定的标准 ID 推断,
+	// 一次拿到正确的思考方言 / 预算区间 / 输出上限,不用一项项手勾
+	inferID := modelID
+	if hasOverride && ov.AliasOf != "" {
+		inferID = ov.AliasOf
+	}
+	id := normalizeModelID(inferID)
 	spec := ModelSpec{
 		ID:           modelID,
 		Endpoint:     endpointFor(p.Type),
@@ -271,7 +288,36 @@ func InferModelSpec(p Provider, modelID string) ModelSpec {
 	if spec.Has(CapWebSearch) && !endpointSupportsWebSearch(spec.Endpoint, spec.family, id) {
 		spec.Capabilities = removeCap(spec.Capabilities, CapWebSearch)
 	}
+	// 用户的手动修正放在最后 —— 包括上面那些保守的兜底,他说了算。
+	// 用户比我们更清楚自己那个中转到底支持什么。
+	if hasOverride {
+		applyModelOverride(&spec, ov)
+	}
 	return spec
+}
+
+// applyModelOverride 把用户的手动修正盖到推断结果上
+func applyModelOverride(s *ModelSpec, ov ModelOverride) {
+	if ov.CapabilitiesSet {
+		s.Capabilities = append([]Capability{}, ov.Capabilities...)
+		switch {
+		case !s.Has(CapReasoning):
+			// 手动关掉思考:旋钮一并收掉,免得留一个按了没反应的开关
+			s.Reasoning = nil
+			s.dialect = dialectNone
+		case s.Reasoning == nil:
+			// 手动打开思考但我们推不出方言:思考内容仍能靠 <think> 标签
+			// 或 reasoning_content 字段收到,但没有可发的档位参数
+			s.Reasoning = &ReasoningSpec{}
+		}
+	}
+	if ov.MaxOutput > 0 {
+		s.MaxOutput = ov.MaxOutput
+		// 思考预算不能超过输出上限,跟着一起压下来
+		if s.Reasoning != nil && s.Reasoning.BudgetMax > ov.MaxOutput {
+			s.Reasoning.BudgetMax = ov.MaxOutput
+		}
+	}
 }
 
 func appendCap(caps []Capability, c Capability) []Capability {

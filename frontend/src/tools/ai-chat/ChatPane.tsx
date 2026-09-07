@@ -367,9 +367,16 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
     const newImages: ImageBlock[] = []
     const newFiles: FileBlock[] = []
     const errors: string[] = []
+    // 图片要模型本身支持才有意义;文本类附件最终是拼进 prompt 的纯文本,任何模型都吃得下。
+    // spec 还没拉到时不拦 —— 宁可让请求去撞错误,也别因为一次没拉到能力就挡住用户。
+    const visionOK = !spec || spec.capabilities.includes('vision')
     for (const f of list) {
       try {
         if (isImageFile(f)) {
+          if (!visionOK) {
+            errors.push(`「${f.name}」当前模型 ${conv?.modelId ?? ''} 不支持图片输入`)
+            continue
+          }
           if (f.size > MAX_IMAGE_BYTES) {
             errors.push(`「${f.name}」超过 5 MB`)
             continue
@@ -793,7 +800,13 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
                     pendingImages.length + pendingFiles.length >= MAX_FILES_PER_MESSAGE
                   }
                   className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50"
-                  title={`添加附件(最多 ${MAX_FILES_PER_MESSAGE} 个 · 图片≤5MB · PDF≤20MB · docx/xlsx/pptx≤15MB)`}
+                  title={
+                    `添加附件(最多 ${MAX_FILES_PER_MESSAGE} 个 · 图片≤5MB · PDF≤20MB · docx/xlsx/pptx≤15MB)` +
+                    (spec && !spec.capabilities.includes('vision')
+                      ? `
+当前模型不支持图片输入,只能传文档 / 代码`
+                      : '')
+                  }
                 >
                   <Paperclip className="h-3.5 w-3.5" />
                 </button>

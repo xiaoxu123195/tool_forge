@@ -151,6 +151,11 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 	if conv.WebSearch {
 		applyWebSearchPatch(body, buildWebSearchPatch(spec))
 	}
+	// 提示词缓存:只对原厂域名发。cache_control 是 Anthropic 专有字段,
+	// 中转不认的话整个请求会 400,而缓存只是省钱、不是功能,不值得冒这个险。
+	if spec.family == familyAnthropic {
+		applyAnthropicCache(body)
+	}
 	bodyBytes, _ := json.Marshal(body)
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
@@ -245,6 +250,53 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 		return
 	}
 	cb.onDone()
+}
+
+// applyAnthropicCache 给请求打上提示词缓存断点。
+//
+// Anthropic 缓存的是"到断点为止的整段前缀",命中后这部分输入按约 1/10 计价。
+// 长对话里省得非常可观 —— 每多一轮,前面所有轮次都能走缓存。
+//
+// 打两个断点(上限是 4 个):
+//   - system 提示词:全程不变,最稳定的一段
+//   - 倒数第二条消息(上一轮的 assistant 回复):它之前的内容下一轮还会原样再发一次
+//
+// 前缀不够长(约 1024 token)时 Anthropic 会直接忽略断点,不报错也不计费,所以不用自己判长度;
+// 只跳过消息太少、明显缓存不起来的短对话,省掉无谓的缓存写。
+func applyAnthropicCache(body map[string]any) {
+	if s, ok := body["system"].(string); ok && s != "" {
+		body["system"] = []map[string]any{{
+			"type":          "text",
+			"text":          s,
+			"cache_control": map[string]any{"type": "ephemeral"},
+		}}
+	}
+	msgs, ok := body["messages"].([]map[string]any)
+	if !ok || len(msgs) < 3 {
+		return
+	}
+	markAnthropicCache(msgs[len(msgs)-2])
+}
+
+// markAnthropicCache 给一条消息的最后一个 content 块打缓存断点。
+// content 是裸字符串时先转成块数组 —— cache_control 只能挂在块上。
+func markAnthropicCache(msg map[string]any) {
+	switch c := msg["content"].(type) {
+	case string:
+		if c == "" {
+			return
+		}
+		msg["content"] = []map[string]any{{
+			"type":          "text",
+			"text":          c,
+			"cache_control": map[string]any{"type": "ephemeral"},
+		}}
+	case []map[string]any:
+		if len(c) == 0 {
+			return
+		}
+		c[len(c)-1]["cache_control"] = map[string]any{"type": "ephemeral"}
+	}
 }
 
 // parseAnthropicUsage 从 message_start / message_delta 中抠 usage。
