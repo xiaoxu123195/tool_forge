@@ -233,7 +233,9 @@ func streamOpenAI(ctx context.Context, req chatRequest, useResponses bool, cb st
 	}
 	// 思考档位:由 reasoning.go 按模型 + 端点翻译成各家自己的字段;
 	// 模型不支持调档或用户没选时,resolveReasoning 返回空,请求体一个字段都不多带
-	applyEmissions(body, resolveReasoning(conv.ReasoningEffort, spec, spec.MaxOutput).Emissions)
+	reasoning := resolveReasoning(conv.ReasoningEffort, spec, effectiveMaxTokens(conv, spec))
+	applyEmissions(body, reasoning.Emissions)
+	applySampling(body, conv, spec, reasoning.Enabled())
 	// 供应商内置联网搜索
 	if conv.WebSearch {
 		applyWebSearchPatch(body, buildWebSearchPatch(spec))

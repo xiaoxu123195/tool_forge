@@ -213,7 +213,13 @@ type Conversation struct {
 	// minimal/low/medium/high 由各协议翻译成自己的 wire 字段(见 reasoning.go)
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 	// WebSearch 是否启用供应商内置联网搜索;模型不支持时忽略
-	WebSearch bool      `json:"webSearch,omitempty"`
+	WebSearch bool `json:"webSearch,omitempty"`
+	// Temperature / TopP 采样参数。用指针是为了区分"没设"和"设成 0" ——
+	// 0 是合法取值(完全确定性输出),不能拿零值当未设置
+	Temperature *float64 `json:"temperature,omitempty"`
+	TopP        *float64 `json:"topP,omitempty"`
+	// MaxTokens 单次回复的 token 上限;0 = 不指定,由模型自己决定
+	MaxTokens int       `json:"maxTokens,omitempty"`
 	Messages  []Message `json:"messages"`
 	CreatedAt int64     `json:"createdAt"`
 	UpdatedAt int64     `json:"updatedAt"`

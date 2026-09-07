@@ -96,7 +96,9 @@ func streamGemini(ctx context.Context, req chatRequest, cb streamCallbacks) {
 	}
 	// 思考控制:2.x 写 thinkingConfig.thinkingBudget(token 数),3.x 写 thinkingLevel(档位词)。
 	// 注意 includeThoughts 不打开的话,思考文本一个字都不会回传。
-	applyEmissions(body, resolveReasoning(conv.ReasoningEffort, spec, spec.MaxOutput).Emissions)
+	reasoning := resolveReasoning(conv.ReasoningEffort, spec, effectiveMaxTokens(conv, spec))
+	applyEmissions(body, reasoning.Emissions)
+	applySampling(body, conv, spec, reasoning.Enabled())
 	if conv.WebSearch {
 		applyWebSearchPatch(body, buildWebSearchPatch(spec))
 	}

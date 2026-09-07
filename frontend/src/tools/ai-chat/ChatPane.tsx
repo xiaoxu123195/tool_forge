@@ -73,7 +73,7 @@ import { useConfirm } from '@/components/ui/confirm'
 import { MarkdownPreview } from '@/components/tool/MarkdownPreview'
 import { ChatModelPicker } from './ChatModelPicker'
 import { ProviderAvatar } from './ProviderAvatar'
-import { ConversationDialog } from './ConversationDialog'
+import { ConversationDialog, type ConversationDraft } from './ConversationDialog'
 import { cn } from '@/lib/utils'
 
 interface Props {
@@ -505,15 +505,17 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
     }
   }
 
-  const onSaveMeta = async (draft: { title: string; system: string; contextCount: number }) => {
+  const onSaveMeta = async (draft: ConversationDraft) => {
     if (!conv) return
     const err =
-      ((await UpdateAIConversationMeta(
-        conv.id,
-        draft.title || conv.title,
-        draft.system,
-        draft.contextCount,
-      )) as string) || ''
+      ((await UpdateAIConversationMeta(conv.id, {
+        title: draft.title || conv.title,
+        system: draft.system,
+        contextCount: draft.contextCount,
+        temperature: draft.temperature,
+        topP: draft.topP,
+        maxTokens: draft.maxTokens ?? 0,
+      } as never)) as string) || ''
     if (err) {
       await dialog({ title: '保存失败', message: err, confirmLabel: '知道了' })
       return
@@ -525,6 +527,9 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
             title: draft.title || prev.title,
             system: draft.system,
             contextCount: draft.contextCount,
+            temperature: draft.temperature,
+            topP: draft.topP,
+            maxTokens: draft.maxTokens ?? 0,
           }
         : prev,
     )
@@ -927,10 +932,14 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
       {systemOpen && (
         <ConversationDialog
           mode="edit"
+          spec={spec}
           initial={{
             title: conv.title,
             system: conv.system ?? '',
             contextCount: conv.contextCount ?? 0,
+            temperature: conv.temperature,
+            topP: conv.topP,
+            maxTokens: conv.maxTokens ?? 0,
           }}
           onClose={() => setSystemOpen(false)}
           onSave={(d) => void onSaveMeta(d)}

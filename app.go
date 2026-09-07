@@ -1246,12 +1246,12 @@ func (a *App) CreateAIConversation(providerID, modelID, title, system string, co
 	return *c, ""
 }
 
-// UpdateAIConversationMeta 一次性更新会话标题/系统提示/上下文条数
-func (a *App) UpdateAIConversationMeta(id, title, system string, contextCount int) string {
+// UpdateAIConversationMeta 一次性更新会话标题 / 系统提示 / 上下文条数 / 采样参数
+func (a *App) UpdateAIConversationMeta(id string, meta aichat.ConversationMeta) string {
 	if a.aichat == nil {
 		return "AI 服务未初始化"
 	}
-	if err := a.aichat.UpdateConversationMeta(id, title, system, contextCount); err != nil {
+	if err := a.aichat.UpdateConversationMeta(id, meta); err != nil {
 		return err.Error()
 	}
 	return ""

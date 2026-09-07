@@ -129,11 +129,9 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 		return
 	}
 
-	// max_tokens 是必填项。按模型上限来 —— 以前写死 4096,Claude 4 系列能出 64k 却被截死。
-	maxTokens := spec.MaxOutput
-	if maxTokens <= 0 {
-		maxTokens = defaultMaxOutput
-	}
+	// max_tokens 是必填项(这也是 Anthropic 和其他端点不同的地方:别家不填就由模型自己决定)。
+	// 用户在会话里设过就用他的,否则按模型上限来 —— 以前写死 4096,Claude 4 系列能出 64k 却被截死。
+	maxTokens := effectiveMaxTokens(conv, spec)
 	// 思考预算必须严格小于 max_tokens,resolveReasoning 内部会按这个上限夹一次
 	reasoning := resolveReasoning(conv.ReasoningEffort, spec, maxTokens)
 
@@ -148,6 +146,7 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 		body["system"] = conv.System
 	}
 	applyEmissions(body, reasoning.Emissions)
+	applySampling(body, conv, spec, reasoning.Enabled())
 	if conv.WebSearch {
 		applyWebSearchPatch(body, buildWebSearchPatch(spec))
 	}

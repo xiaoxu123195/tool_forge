@@ -177,12 +177,16 @@ type ModelSpec struct {
 	Endpoint     EndpointType   `json:"endpoint"`
 	Capabilities []Capability   `json:"capabilities"`
 	Reasoning    *ReasoningSpec `json:"reasoning,omitempty"`
+	// Sampling 这个模型接受哪些采样参数(见 sampling.go)
+	Sampling SamplingSpec `json:"sampling"`
 	// MaxOutput 单次回复的最大 token 数;Anthropic 必须显式带,其余协议用来给思考预算封顶
 	MaxOutput int `json:"maxOutput"`
 
 	// 以下为包内路由用,不出前端
 	family  providerFamily
 	dialect reasoningDialect
+	// useMaxCompletionTokens chat-completions 端点上该发 max_completion_tokens 而不是 max_tokens
+	useMaxCompletionTokens bool
 }
 
 // Has 是否具备某项能力
@@ -248,6 +252,7 @@ func InferModelSpec(p Provider, modelID string) ModelSpec {
 		ID:           modelID,
 		Endpoint:     endpointFor(p.Type),
 		Capabilities: []Capability{},
+		Sampling:     defaultSampling(),
 		MaxOutput:    defaultMaxOutput,
 		family:       inferFamily(p),
 	}
@@ -344,6 +349,7 @@ func removeCap(caps []Capability, c Capability) []Capability {
 // applyClaudeSpec Claude:思考走 token 预算制,max_tokens 必须显式带且要大于预算
 func applyClaudeSpec(s *ModelSpec, id string) {
 	s.Capabilities = appendCap(s.Capabilities, CapVision)
+	s.Sampling = cappedSampling()
 	switch {
 	case hasAny(id, "opus-4"):
 		s.MaxOutput = 32000
@@ -467,6 +473,9 @@ func applyOpenAISpec(s *ModelSpec, id string) {
 		}
 		s.Reasoning = &ReasoningSpec{Efforts: efforts, Default: EffortMedium}
 		s.MaxOutput = 100000
+		// o 系列 / gpt-5 拒收 temperature 和 top_p,也只认 max_completion_tokens
+		s.Sampling = fixedSampling()
+		s.useMaxCompletionTokens = true
 	}
 	if hasAny(id, "image") {
 		s.Capabilities = appendCap(s.Capabilities, CapImageGen)
@@ -527,6 +536,7 @@ func applyQwenSpec(s *ModelSpec, id string) {
 func applyZhipuSpec(s *ModelSpec, id string) {
 	s.MaxOutput = 8192
 	s.family = familyZhipu
+	s.Sampling = cappedSampling()
 	if hasAny(id, "4v", "-v-") {
 		s.Capabilities = appendCap(s.Capabilities, CapVision)
 	}
@@ -544,6 +554,12 @@ func applyZhipuSpec(s *ModelSpec, id string) {
 // applyMoonshotSpec Kimi:K2 thinking 走 reasoning_effort
 func applyMoonshotSpec(s *ModelSpec, id string) {
 	s.MaxOutput = 8192
+	// K2.5 起采样参数被锁死,发过去会报错;更早的型号上限是 1
+	if hasAny(id, "k2.5", "k2-5", "k3") {
+		s.Sampling = fixedSampling()
+	} else {
+		s.Sampling = cappedSampling()
+	}
 	if hasAny(id, "vision", "vl") {
 		s.Capabilities = appendCap(s.Capabilities, CapVision)
 	}

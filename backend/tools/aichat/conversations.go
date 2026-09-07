@@ -119,20 +119,38 @@ func (s *Service) InsertClearMarker(id string) error {
 	return saveConversation(c)
 }
 
-// UpdateConversationMeta 更新会话元信息(标题/系统提示词/上下文条数)
-func (s *Service) UpdateConversationMeta(id, title, system string, contextCount int) error {
+// ConversationMeta 「会话设置」对话框一次提交的全部字段。
+// 用结构体而不是一长串位置参数,是因为这里以后还会继续加(采样参数就是这么加进来的)。
+type ConversationMeta struct {
+	Title        string `json:"title"`
+	System       string `json:"system"`
+	ContextCount int    `json:"contextCount"`
+	// Temperature / TopP 为 nil 表示不指定,由模型自己决定;0 是合法取值,不能拿零值当未设置
+	Temperature *float64 `json:"temperature,omitempty"`
+	TopP        *float64 `json:"topP,omitempty"`
+	MaxTokens   int      `json:"maxTokens,omitempty"`
+}
+
+// UpdateConversationMeta 更新会话元信息(标题 / 系统提示词 / 上下文条数 / 采样参数)
+func (s *Service) UpdateConversationMeta(id string, m ConversationMeta) error {
 	c, err := loadConversation(id)
 	if err != nil {
 		return err
 	}
-	if t := strings.TrimSpace(title); t != "" {
+	if t := strings.TrimSpace(m.Title); t != "" {
 		c.Title = t
 	}
-	c.System = system
-	if contextCount < 0 {
-		contextCount = 0
+	c.System = m.System
+	if m.ContextCount < 0 {
+		m.ContextCount = 0
 	}
-	c.ContextCount = contextCount
+	c.ContextCount = m.ContextCount
+	c.Temperature = m.Temperature
+	c.TopP = m.TopP
+	if m.MaxTokens < 0 {
+		m.MaxTokens = 0
+	}
+	c.MaxTokens = m.MaxTokens
 	c.UpdatedAt = time.Now().UnixMilli()
 	return saveConversation(c)
 }

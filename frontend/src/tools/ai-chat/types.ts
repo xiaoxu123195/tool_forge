@@ -128,6 +128,11 @@ export interface Conversation {
   reasoningEffort?: string
   /** 是否启用供应商内置联网搜索 */
   webSearch?: boolean
+  /** 采样温度;undefined = 不指定,由模型自己决定(0 是合法取值) */
+  temperature?: number
+  topP?: number
+  /** 单次回复 token 上限;0/缺省 = 不指定 */
+  maxTokens?: number
   messages: Message[]
   createdAt: number
   updatedAt: number
@@ -178,12 +183,21 @@ export interface ReasoningSpec {
   budgetMax?: number
 }
 
+/** 模型接受哪些采样参数。会思考的模型经常把这些锁死 */
+export interface SamplingSpec {
+  temperature: boolean
+  topP: boolean
+  /** temperature 的上限:OpenAI 是 2,Claude / GLM / Kimi 是 1 */
+  maxTemp: number
+}
+
 /** 模型能力画像;由后端按模型 ID 推断,前端据此决定给哪些开关 */
 export interface ModelSpec {
   id: string
   endpoint: string
   capabilities: Capability[]
   reasoning?: ReasoningSpec
+  sampling: SamplingSpec
   maxOutput: number
 }
 

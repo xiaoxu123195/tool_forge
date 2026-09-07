@@ -99,6 +99,9 @@ export default function AIChat() {
         title: conv.title,
         system: conv.system ?? '',
         contextCount: conv.contextCount ?? 0,
+        temperature: conv.temperature,
+        topP: conv.topP,
+        maxTokens: conv.maxTokens ?? 0,
       },
     })
   }
@@ -134,12 +137,14 @@ export default function AIChat() {
       if (created?.id) setActiveId(created.id)
     } else {
       const err =
-        ((await UpdateAIConversationMeta(
-          dialogState.convId,
-          draft.title || '新对话',
-          draft.system,
-          draft.contextCount,
-        )) as string) || ''
+        ((await UpdateAIConversationMeta(dialogState.convId, {
+          title: draft.title || '新对话',
+          system: draft.system,
+          contextCount: draft.contextCount,
+          temperature: draft.temperature,
+          topP: draft.topP,
+          maxTokens: draft.maxTokens ?? 0,
+        } as never)) as string) || ''
       if (err) {
         await dialog({ title: '保存失败', message: err, confirmLabel: '知道了' })
         return
