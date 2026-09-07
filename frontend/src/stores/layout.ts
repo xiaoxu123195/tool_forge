@@ -55,7 +55,7 @@ export function applyAppearance(
   } else {
     root.setAttribute('data-style', styleId)
   }
-  // Glass:把用户自定义壁纸注入到 CSS 变量;空字符串 → 让 CSS 走 fallback (cherry 默认图)
+  // Glass:把用户自定义壁纸注入到 CSS 变量;空字符串 → 让 CSS 走 fallback(内置默认图)
   if (glassWallpaperLight) {
     root.style.setProperty('--glass-wallpaper-light', `url("${glassWallpaperLight}")`)
   } else {

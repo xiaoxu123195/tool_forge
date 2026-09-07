@@ -13,7 +13,7 @@ interface Props {
   onPick: (providerId: string, modelId: string) => void
 }
 
-/** 仿 cherry-studio 的 SelectModelPopup:居中模态框 + 搜索 + 按 provider 分组 */
+/** 模型选择弹窗:居中模态框 + 搜索 + 按 provider 分组 */
 export function ChatModelPicker({ current, onClose, onPick }: Props) {
   const [providers, setProviders] = useState<Provider[]>([])
   const [search, setSearch] = useState('')

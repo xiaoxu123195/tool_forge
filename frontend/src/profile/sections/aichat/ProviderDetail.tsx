@@ -11,6 +11,7 @@ const DEFAULT_BASE_URL_BY_TYPE: Record<ProviderType, string> = {
   'openai-compatible': 'https://api.openai.com/v1',
   gemini: 'https://generativelanguage.googleapis.com',
   anthropic: 'https://api.anthropic.com',
+  xai: 'https://api.x.ai/v1',
 }
 
 const TYPE_LABEL: Record<ProviderType, string> = {
@@ -18,6 +19,7 @@ const TYPE_LABEL: Record<ProviderType, string> = {
   'openai-compatible': 'OpenAI 兼容(/chat/completions)',
   gemini: 'Gemini',
   anthropic: 'Anthropic',
+  xai: 'xAI Grok(/responses)',
 }
 
 function effectiveEndpoint(type: ProviderType, baseUrl: string): string {
@@ -30,6 +32,7 @@ function effectiveEndpoint(type: ProviderType, baseUrl: string): string {
     case 'openai-compatible':
       return `${url}/chat/completions`
     case 'openai':
+    case 'xai':
     default:
       return `${url}/responses`
   }

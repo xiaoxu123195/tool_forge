@@ -80,33 +80,88 @@ func fetchAnthropicModels(p Provider) FetchModelsResult {
 	return FetchModelsResult{OK: true, Models: out}
 }
 
+// anthropicEvent 一帧 SSE 的并集视图。Anthropic 的事件类型多但字段稀疏,
+// 用一个结构体全接住比每种事件解一次省事。
+type anthropicEvent struct {
+	Type         string `json:"type"`
+	ContentBlock struct {
+		Type string `json:"type"`
+		// Data redacted_thinking 的密文
+		Data string `json:"data"`
+		// Content web_search_tool_result 的搜索结果条目
+		Content []struct {
+			Type  string `json:"type"`
+			URL   string `json:"url"`
+			Title string `json:"title"`
+		} `json:"content"`
+	} `json:"content_block"`
+	Delta struct {
+		Type      string `json:"type"`
+		Text      string `json:"text"`
+		Thinking  string `json:"thinking"`
+		Signature string `json:"signature"`
+		Citation  struct {
+			URL       string `json:"url"`
+			Title     string `json:"title"`
+			CitedText string `json:"cited_text"`
+		} `json:"citation"`
+	} `json:"delta"`
+}
+
+// anthropicBlock 正在接收中的一个 content block。
+//
+// 思考块是 content_block_start → 若干 thinking_delta → 一个 signature_delta →
+// content_block_stop 这样一组事件;signature 必须和思考文本绑在一起落盘,
+// 下一轮原样回传,否则开着 thinking 的请求会被拒。
+type anthropicBlock struct {
+	kind      string
+	text      strings.Builder
+	signature string
+	redacted  string
+}
+
 // streamAnthropic 走 Anthropic /v1/messages 流;system 用顶层 system 字段
-func streamAnthropic(ctx context.Context, p Provider, conv Conversation, cb streamCallbacks) {
+func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
+	cb = cb.withDefaults()
+	p, conv, spec := req.Provider, req.Conv, req.Spec
 	if p.APIKey == "" {
 		cb.onError(fmt.Errorf("API Key 不能为空"))
 		return
 	}
+
+	// max_tokens 是必填项。按模型上限来 —— 以前写死 4096,Claude 4 系列能出 64k 却被截死。
+	maxTokens := spec.MaxOutput
+	if maxTokens <= 0 {
+		maxTokens = defaultMaxOutput
+	}
+	// 思考预算必须严格小于 max_tokens,resolveReasoning 内部会按这个上限夹一次
+	reasoning := resolveReasoning(conv.ReasoningEffort, spec, maxTokens)
+
 	url := anthropicBase(p) + "/v1/messages"
 	body := map[string]any{
 		"model":      conv.ModelID,
-		"max_tokens": 4096,
+		"max_tokens": maxTokens,
 		"stream":     true,
-		"messages":   buildAnthropicMessages(conv),
+		"messages":   buildAnthropicMessages(req, reasoning.Enabled()),
 	}
 	if conv.System != "" {
 		body["system"] = conv.System
 	}
+	applyEmissions(body, reasoning.Emissions)
+	if conv.WebSearch {
+		applyWebSearchPatch(body, buildWebSearchPatch(spec))
+	}
 	bodyBytes, _ := json.Marshal(body)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		cb.onError(fmt.Errorf("构造请求失败: %w", err))
 		return
 	}
-	applyAnthropicHeaders(req, p.APIKey)
-	req.Header.Set("Accept", "text/event-stream")
+	applyAnthropicHeaders(httpReq, p.APIKey)
+	httpReq.Header.Set("Accept", "text/event-stream")
 
-	resp, err := streamClient.Do(req)
+	resp, err := streamClient.Do(httpReq)
 	if err != nil {
 		cb.onError(fmt.Errorf("%s", prettifyNetErr(err)))
 		return
@@ -119,6 +174,7 @@ func streamAnthropic(ctx context.Context, p Provider, conv Conversation, cb stre
 	}
 
 	scanner := newSSEScanner(resp.Body)
+	var block *anthropicBlock
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -131,13 +187,55 @@ func streamAnthropic(ctx context.Context, p Provider, conv Conversation, cb stre
 			continue
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		text, thinking := parseAnthropicDelta(payload)
-		if thinking != "" {
-			cb.onThinking(thinking)
+
+		var ev anthropicEvent
+		if err := json.Unmarshal([]byte(payload), &ev); err == nil {
+			switch ev.Type {
+			case "content_block_start":
+				block = &anthropicBlock{kind: ev.ContentBlock.Type}
+				if ev.ContentBlock.Type == "redacted_thinking" {
+					block.redacted = ev.ContentBlock.Data
+				}
+				// 联网搜索结果整块到达(不是增量),直接抽引用
+				for _, c := range ev.ContentBlock.Content {
+					if c.URL != "" {
+						cb.onCitation(Citation{URL: c.URL, Title: c.Title})
+					}
+				}
+			case "content_block_delta":
+				switch ev.Delta.Type {
+				case "text_delta":
+					cb.onText(ev.Delta.Text)
+				case "thinking_delta":
+					cb.onThinking(ev.Delta.Thinking)
+					if block != nil {
+						block.text.WriteString(ev.Delta.Thinking)
+					}
+				case "signature_delta":
+					if block != nil {
+						block.signature += ev.Delta.Signature
+					}
+				case "citations_delta":
+					if ev.Delta.Citation.URL != "" {
+						cb.onCitation(Citation{
+							URL:     ev.Delta.Citation.URL,
+							Title:   ev.Delta.Citation.Title,
+							Snippet: ev.Delta.Citation.CitedText,
+						})
+					}
+				}
+			case "content_block_stop":
+				if block != nil && (block.kind == "thinking" || block.kind == "redacted_thinking") {
+					cb.onThinkingBlock(ThinkingBlock{
+						Text:      block.text.String(),
+						Signature: block.signature,
+						Redacted:  block.redacted,
+					})
+				}
+				block = nil
+			}
 		}
-		if text != "" {
-			cb.onText(text)
-		}
+
 		if u := parseAnthropicUsage(payload); u != nil {
 			cb.onUsage(*u)
 		}
@@ -195,7 +293,10 @@ func parseAnthropicUsage(payload string) *Usage {
 // buildAnthropicMessages 只能是 user/assistant 交替,system 走外层字段
 //
 //	带图片时 content 是 [{type:"image",source:{...}}, {type:"text",text}] 数组
-func buildAnthropicMessages(conv Conversation) []map[string]any {
+//	includeThinking=true 时,assistant 消息要把上一轮的思考块连同 signature 原样带回去
+func buildAnthropicMessages(req chatRequest, includeThinking bool) []map[string]any {
+	conv := req.Conv
+	supportsPDF := req.Spec.Has(CapPDF)
 	msgs := contextMessages(conv)
 	out := make([]map[string]any, 0, len(msgs))
 	for _, m := range msgs {
@@ -205,8 +306,33 @@ func buildAnthropicMessages(conv Conversation) []map[string]any {
 		if m.Role == "assistant" && m.Content == "" {
 			continue
 		}
+		if m.Role == "assistant" && includeThinking && len(m.Thinking) > 0 {
+			// thinking 块必须排在 text 前面,且 signature 一个字都不能改
+			parts := make([]map[string]any, 0, len(m.Thinking)+1)
+			for _, t := range m.Thinking {
+				if t.Redacted != "" {
+					parts = append(parts, map[string]any{"type": "redacted_thinking", "data": t.Redacted})
+					continue
+				}
+				// 没有 signature 的思考块是历史遗留(旧版本只存了纯文本),
+				// 发回去会被拒 —— 直接跳过,让这一轮少一点上下文总比整个请求失败好
+				if t.Signature == "" {
+					continue
+				}
+				parts = append(parts, map[string]any{
+					"type":      "thinking",
+					"thinking":  t.Text,
+					"signature": t.Signature,
+				})
+			}
+			if len(parts) > 0 {
+				parts = append(parts, map[string]any{"type": "text", "text": m.Content})
+				out = append(out, map[string]any{"role": m.Role, "content": parts})
+				continue
+			}
+		}
 		if m.Role == "user" && (len(m.Images) > 0 || len(m.Files) > 0) {
-			textFiles, binaryFiles := partitionFiles(m.Files, true)
+			textFiles, binaryFiles := partitionFiles(m.Files, supportsPDF)
 			text := userContentWithFileText(m.Content, textFiles)
 			parts := []map[string]any{}
 			for _, img := range m.Images {
@@ -249,34 +375,6 @@ func buildAnthropicMessages(conv Conversation) []map[string]any {
 		out = append(out, map[string]any{"role": m.Role, "content": m.Content})
 	}
 	return out
-}
-
-// parseAnthropicDelta 解 (text, thinking)
-//
-//	text     = content_block_delta + delta.type=text_delta
-//	thinking = content_block_delta + delta.type=thinking_delta(extended thinking)
-func parseAnthropicDelta(payload string) (text, thinking string) {
-	var ev struct {
-		Type  string `json:"type"`
-		Delta struct {
-			Type     string `json:"type"`
-			Text     string `json:"text"`
-			Thinking string `json:"thinking"`
-		} `json:"delta"`
-	}
-	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
-		return "", ""
-	}
-	if ev.Type != "content_block_delta" {
-		return "", ""
-	}
-	switch ev.Delta.Type {
-	case "text_delta":
-		return ev.Delta.Text, ""
-	case "thinking_delta":
-		return "", ev.Delta.Thinking
-	}
-	return "", ""
 }
 
 func testAnthropicModel(p Provider, modelID string) TestResult {

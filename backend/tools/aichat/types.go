@@ -10,12 +10,18 @@
 //	conversations/{id}.json 单条对话(消息列表)
 package aichat
 
+import (
+	"bytes"
+	"encoding/json"
+)
+
 // ProviderType 供应商协议类型;决定走哪套 API
 //
 //	"openai"             OpenAI 新版 Responses API(POST /v1/responses)
 //	"openai-compatible"  OpenAI 兼容旧 API(POST /v1/chat/completions),如 SiliconFlow / DeepSeek / 中转
 //	"gemini"             Google Gemini(generativelanguage.googleapis.com)
 //	"anthropic"          Anthropic Claude(api.anthropic.com,/v1/messages)
+//	"xai"                xAI Grok(api.x.ai,走 Responses 端点 + web_search/x_search 内置工具)
 type ProviderType = string
 
 const (
@@ -23,6 +29,7 @@ const (
 	TypeOpenAICompat ProviderType = "openai-compatible"
 	TypeGemini       ProviderType = "gemini"
 	TypeAnthropic    ProviderType = "anthropic"
+	TypeXAI          ProviderType = "xai"
 )
 
 // Provider 用户配置的一个 AI 供应商
@@ -95,6 +102,26 @@ type FileBlock struct {
 	SizeBytes int    `json:"sizeBytes,omitempty"`
 }
 
+// ThinkingBlock 模型的一段"思考"。
+//
+// 之所以不是一个大字符串:Anthropic 的 extended thinking 会给每个 thinking block 附一个
+// signature,多轮对话里必须把 (thinking, signature) 原样回传,否则请求会被拒。
+// 其余协议只有 Text,Signature 留空。
+type ThinkingBlock struct {
+	Text      string `json:"text,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	// Redacted 被服务端加密隐藏的思考块(Anthropic redacted_thinking);
+	// 内容不可读,但同样必须原样回传
+	Redacted string `json:"redacted,omitempty"`
+}
+
+// Citation 联网搜索引用的一条来源
+type Citation struct {
+	URL     string `json:"url"`
+	Title   string `json:"title,omitempty"`
+	Snippet string `json:"snippet,omitempty"`
+}
+
 // Message 对话里的一条消息
 type Message struct {
 	ID      string `json:"id"`
@@ -105,10 +132,54 @@ type Message struct {
 	// Files 非图附件(用户上传:PDF / docx / xlsx / pptx / 文本 / 代码)
 	Files []FileBlock `json:"files,omitempty"`
 	// Thinking 模型的"思考"内容(deepseek-r1 / o1 / o3 / claude extended thinking)
-	Thinking string `json:"thinking,omitempty"`
+	Thinking []ThinkingBlock `json:"thinking,omitempty"`
+	// Citations 联网搜索引用到的来源(仅 assistant 有意义)
+	Citations []Citation `json:"citations,omitempty"`
 	// Model 这条消息使用的模型 ID(仅 assistant 有意义)
 	Model     string `json:"model,omitempty"`
 	CreatedAt int64  `json:"createdAt"`
+}
+
+// UnmarshalJSON 兼容旧会话文件:早期 thinking 是单个字符串,现在是带 signature 的块数组。
+// 读到字符串就升格成单元素数组;不做破坏性迁移 —— 会话下次写盘时自然变成新格式。
+func (m *Message) UnmarshalJSON(data []byte) error {
+	// plain 去掉方法集,避免 Unmarshal 递归调用自己
+	type plain Message
+	aux := struct {
+		Thinking json.RawMessage `json:"thinking"`
+		*plain
+	}{plain: (*plain)(m)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	m.Thinking = nil
+	raw := bytes.TrimSpace(aux.Thinking)
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	if raw[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return err
+		}
+		if s != "" {
+			m.Thinking = []ThinkingBlock{{Text: s}}
+		}
+		return nil
+	}
+	return json.Unmarshal(raw, &m.Thinking)
+}
+
+// ThinkingText 把所有思考块拼成一段可展示的文本
+func (m Message) ThinkingText() string {
+	if len(m.Thinking) == 0 {
+		return ""
+	}
+	var sb bytes.Buffer
+	for _, b := range m.Thinking {
+		sb.WriteString(b.Text)
+	}
+	return sb.String()
 }
 
 // Conversation 一个对话(多轮)
@@ -119,10 +190,15 @@ type Conversation struct {
 	ModelID    string    `json:"modelId"`    // 当前对话用的模型
 	System     string    `json:"system,omitempty"`
 	// ContextCount 发给模型时保留的最近 user/assistant 消息条数;0 = 不限
-	ContextCount int       `json:"contextCount,omitempty"`
-	Messages     []Message `json:"messages"`
-	CreatedAt    int64     `json:"createdAt"`
-	UpdatedAt    int64     `json:"updatedAt"`
+	ContextCount int `json:"contextCount,omitempty"`
+	// ReasoningEffort 思考档位:"" / "default" 不干预由供应商决定,"none" 显式关闭,
+	// minimal/low/medium/high 由各协议翻译成自己的 wire 字段(见 reasoning.go)
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	// WebSearch 是否启用供应商内置联网搜索;模型不支持时忽略
+	WebSearch bool      `json:"webSearch,omitempty"`
+	Messages  []Message `json:"messages"`
+	CreatedAt int64     `json:"createdAt"`
+	UpdatedAt int64     `json:"updatedAt"`
 }
 
 // ConversationSummary 列表展示用,不含 messages

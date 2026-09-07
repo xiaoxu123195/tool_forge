@@ -1268,6 +1268,30 @@ func (a *App) UpdateAIConversationContext(id string, count int) string {
 	return ""
 }
 
+// UpdateAIConversationOptions 更新会话的思考档位与联网开关(输入栏上的即时开关)
+func (a *App) UpdateAIConversationOptions(id, reasoningEffort string, webSearch bool) string {
+	if a.aichat == nil {
+		return "AI 服务未初始化"
+	}
+	if err := a.aichat.UpdateConversationOptions(id, reasoningEffort, webSearch); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// GetAIModelSpec 某个模型的能力画像:能不能看图 / 传 PDF / 调思考档位 / 内置联网。
+// 前端据此决定输入栏上给哪些开关。
+func (a *App) GetAIModelSpec(providerID, modelID string) (aichat.ModelSpec, string) {
+	if a.aichat == nil {
+		return aichat.ModelSpec{}, "AI 服务未初始化"
+	}
+	spec, err := a.aichat.ModelSpec(providerID, modelID)
+	if err != nil {
+		return aichat.ModelSpec{}, err.Error()
+	}
+	return spec, ""
+}
+
 // InsertAIClearMarker 在会话末尾插入"清除上下文"分隔标记
 func (a *App) InsertAIClearMarker(id string) string {
 	if a.aichat == nil {

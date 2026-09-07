@@ -33,6 +33,12 @@ const TYPES: { value: ProviderType; label: string; defaultBaseUrl: string; hint:
     defaultBaseUrl: 'https://api.anthropic.com',
     hint: 'POST {baseUrl}/v1/messages',
   },
+  {
+    value: 'xai',
+    label: 'xAI Grok',
+    defaultBaseUrl: 'https://api.x.ai/v1',
+    hint: 'POST {baseUrl}/responses · 支持 web_search / x_search 内置联网',
+  },
 ]
 
 const MAX_LOGO_BYTES = 1024 * 1024 // 1MB

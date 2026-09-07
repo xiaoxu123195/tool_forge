@@ -12,14 +12,55 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+// chatRequest 一次流式请求的全部输入。协议层只认这个结构,不再各自去猜模型能力。
+type chatRequest struct {
+	Provider Provider
+	Conv     Conversation
+	Spec     ModelSpec
+}
+
 // streamCallbacks 各协议实现统一通过这个回调向上推数据
 type streamCallbacks struct {
 	onText     func(string)
-	onThinking func(string)
-	onImage    func(ImageBlock) // 模型生成的图片(DALL-E / Gemini imagen / grok-imagine 等)
-	onUsage    func(Usage)      // 各协议在拿到 usage 时(可能多次)调用,runStream 取最新非零值
-	onDone     func()
-	onError    func(error)
+	onThinking func(string) // 思考增量,只用于前端实时渲染
+	// onThinkingBlock 一个完整思考块结束时调用。与 onThinking 是两条独立的路:
+	// 前者给前端看,这里的块要连同 signature 一起落盘,下一轮原样回传给模型。
+	onThinkingBlock func(ThinkingBlock)
+	onImage         func(ImageBlock) // 模型生成的图片(DALL-E / Gemini imagen / grok-imagine 等)
+	onCitation      func(Citation)   // 联网搜索引用到的来源
+	onUsage         func(Usage)      // 各协议在拿到 usage 时(可能多次)调用,runStream 取最新非零值
+	onDone          func()
+	onError         func(error)
+}
+
+// withDefaults 把没设置的回调补成空实现。协议层可以无脑调用而不用逐个判空,
+// 以后再加回调也不会让老调用方(如翻译工具)因为漏设一个而 panic。
+func (c streamCallbacks) withDefaults() streamCallbacks {
+	if c.onText == nil {
+		c.onText = func(string) {}
+	}
+	if c.onThinking == nil {
+		c.onThinking = func(string) {}
+	}
+	if c.onThinkingBlock == nil {
+		c.onThinkingBlock = func(ThinkingBlock) {}
+	}
+	if c.onImage == nil {
+		c.onImage = func(ImageBlock) {}
+	}
+	if c.onCitation == nil {
+		c.onCitation = func(Citation) {}
+	}
+	if c.onUsage == nil {
+		c.onUsage = func(Usage) {}
+	}
+	if c.onDone == nil {
+		c.onDone = func() {}
+	}
+	if c.onError == nil {
+		c.onError = func(error) {}
+	}
+	return c
 }
 
 // 事件名前缀(前端按 conversation id 拼后缀订阅)
@@ -27,6 +68,7 @@ const (
 	EventChunkPrefix    = "ai-chat:chunk:"    // 正文增量
 	EventThinkingPrefix = "ai-chat:thinking:" // 思考增量(deepseek-r1 / o1 / claude extended)
 	EventImagePrefix    = "ai-chat:image:"    // 模型生成的图片(payload = ImageBlock)
+	EventCitationPrefix = "ai-chat:citation:" // 联网引用来源(payload = Citation)
 	EventDonePrefix     = "ai-chat:done:"
 	EventErrorPrefix    = "ai-chat:error:"
 )
@@ -105,8 +147,8 @@ func (s *Service) SendChat(ctx context.Context, convID, userContent string, user
 		return nil, fmt.Errorf("消息不能为空")
 	}
 
-	// PDF 后端兜底:openai-compat 协议没有原生文件入参,把 PDF 二进制当场提取成文本附进 Files.Text
-	userFiles = ensureFileText(prov.Type, userFiles)
+	// PDF 后端兜底:chat-completions 端点没有原生文件入参,把 PDF 二进制当场提取成文本附进 Files.Text
+	userFiles = ensureFileText(endpointFor(prov.Type), userFiles)
 
 	now := time.Now().UnixMilli()
 	userMsg := Message{
@@ -175,7 +217,8 @@ func (s *Service) RegenerateLast(ctx context.Context, convID string) (*Conversat
 
 	now := time.Now().UnixMilli()
 	last.Content = ""
-	last.Thinking = ""
+	last.Thinking = nil
+	last.Citations = nil
 	last.Model = c.ModelID
 	last.CreatedAt = now
 	c.UpdatedAt = now
@@ -268,10 +311,26 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 	defer s.streams.clear(conv.ID)
 	defer cancel()
 
+	spec := InferModelSpec(prov, conv.ModelID)
+	req := chatRequest{Provider: prov, Conv: conv, Spec: spec}
+
 	startTime := time.Now()
 	var bText, bThink strings.Builder
 	var accumUsage Usage
 	var accumImages []ImageBlock
+	var accumThinking []ThinkingBlock
+	var accumCitations []Citation
+	// finalThinking 落盘用的思考块。协议层能给出带 signature 的完整块时以它为准;
+	// 给不出(多数协议只有纯文本增量)就把累加的文本合成一个块,保证不丢内容。
+	finalThinking := func() []ThinkingBlock {
+		if len(accumThinking) > 0 {
+			return accumThinking
+		}
+		if t := bThink.String(); t != "" {
+			return []ThinkingBlock{{Text: t}}
+		}
+		return nil
+	}
 	writeUsage := func() {
 		_ = appendUsageRecord(UsageRecord{
 			Ts:              time.Now().UnixMilli(),
@@ -305,6 +364,12 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 				wailsruntime.EventsEmit(s.ctx, EventThinkingPrefix+conv.ID, d)
 			}
 		},
+		onThinkingBlock: func(b ThinkingBlock) {
+			if b.Text == "" && b.Signature == "" && b.Redacted == "" {
+				return
+			}
+			accumThinking = append(accumThinking, b)
+		},
 		onImage: func(img ImageBlock) {
 			if img.Data == "" && img.URL == "" {
 				return
@@ -312,6 +377,22 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 			accumImages = append(accumImages, img)
 			if s.ctx != nil {
 				wailsruntime.EventsEmit(s.ctx, EventImagePrefix+conv.ID, img)
+			}
+		},
+		onCitation: func(c Citation) {
+			if c.URL == "" {
+				return
+			}
+			// 同一条来源在流里会被反复推送(每引用一次一条),这里先去重再往前端发,
+			// 免得引用列表里全是重复项
+			for _, exist := range accumCitations {
+				if exist.URL == c.URL {
+					return
+				}
+			}
+			accumCitations = append(accumCitations, c)
+			if s.ctx != nil {
+				wailsruntime.EventsEmit(s.ctx, EventCitationPrefix+conv.ID, c)
 			}
 		},
 		onUsage: func(u Usage) {
@@ -331,24 +412,36 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 			}
 		},
 		onDone: func() {
-			s.persistAssistant(conv.ID, asstMsgID, bText.String(), bThink.String(), accumImages, false)
+			s.persistAssistant(conv.ID, asstMsgID, assistantResult{
+				Content:   bText.String(),
+				Thinking:  finalThinking(),
+				Images:    accumImages,
+				Citations: accumCitations,
+			})
 			writeUsage()
 			if s.ctx != nil {
 				wailsruntime.EventsEmit(s.ctx, EventDonePrefix+conv.ID, bText.String())
 			}
 		},
 		onError: func(err error) {
+			res := assistantResult{
+				Content:   bText.String(),
+				Thinking:  finalThinking(),
+				Images:    accumImages,
+				Citations: accumCitations,
+				Truncated: true,
+			}
 			// 用户主动取消(StopAIChat):保留已收到的内容并加截断标记,
 			// 不弹错误对话框 — 改走 done 通道
 			if ctx.Err() != nil || isCanceledErr(err) {
-				s.persistAssistant(conv.ID, asstMsgID, bText.String(), bThink.String(), accumImages, true)
+				s.persistAssistant(conv.ID, asstMsgID, res)
 				writeUsage()
 				if s.ctx != nil {
 					wailsruntime.EventsEmit(s.ctx, EventDonePrefix+conv.ID, bText.String())
 				}
 				return
 			}
-			s.persistAssistant(conv.ID, asstMsgID, bText.String(), bThink.String(), accumImages, true)
+			s.persistAssistant(conv.ID, asstMsgID, res)
 			writeUsage()
 			if s.ctx != nil {
 				wailsruntime.EventsEmit(s.ctx, EventErrorPrefix+conv.ID, err.Error())
@@ -356,33 +449,46 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 		},
 	}
 
-	switch prov.Type {
-	case TypeGemini:
-		streamGemini(ctx, prov, conv, cb)
-	case TypeAnthropic:
-		streamAnthropic(ctx, prov, conv, cb)
-	case TypeOpenAICompat:
-		streamOpenAI(ctx, prov, conv, false, cb)
+	// 按端点协议分发,而不是按供应商 —— 同一家可能有多个端点,端点才决定请求体形状
+	switch spec.Endpoint {
+	case EndpointGemini:
+		streamGemini(ctx, req, cb)
+	case EndpointAnthropic:
+		streamAnthropic(ctx, req, cb)
+	case EndpointOpenAIChat:
+		streamOpenAI(ctx, req, false, cb)
 	default:
-		// "openai" 默认走新版 Responses API
-		streamOpenAI(ctx, prov, conv, true, cb)
+		streamOpenAI(ctx, req, true, cb)
 	}
 }
 
-// persistAssistant 流结束时把 assistant 消息(正文 + 思考 + 图片)写回磁盘
-func (s *Service) persistAssistant(convID, msgID, content, thinking string, images []ImageBlock, truncated bool) {
+// assistantResult 一次流跑完(或中断)后要落盘的 assistant 消息内容
+type assistantResult struct {
+	Content   string
+	Thinking  []ThinkingBlock
+	Images    []ImageBlock
+	Citations []Citation
+	// Truncated 流被中断(用户取消 / 出错),正文尾部加省略号标记
+	Truncated bool
+}
+
+// persistAssistant 流结束时把 assistant 消息写回磁盘
+func (s *Service) persistAssistant(convID, msgID string, res assistantResult) {
 	c, err := loadConversation(convID)
 	if err != nil {
 		return
 	}
 	for i := range c.Messages {
 		if c.Messages[i].ID == msgID {
-			c.Messages[i].Content = content
-			c.Messages[i].Thinking = thinking
-			if len(images) > 0 {
-				c.Messages[i].Images = images
+			c.Messages[i].Content = res.Content
+			c.Messages[i].Thinking = res.Thinking
+			if len(res.Images) > 0 {
+				c.Messages[i].Images = res.Images
 			}
-			if truncated {
+			if len(res.Citations) > 0 {
+				c.Messages[i].Citations = dedupeCitations(res.Citations)
+			}
+			if res.Truncated {
 				c.Messages[i].Content += " …" // 标记中断
 			}
 			break

@@ -76,7 +76,9 @@ func fetchGeminiModels(p Provider) FetchModelsResult {
 }
 
 // streamGemini 走 Gemini 协议的实际聊天流;system 走 systemInstruction 字段
-func streamGemini(ctx context.Context, p Provider, conv Conversation, cb streamCallbacks) {
+func streamGemini(ctx context.Context, req chatRequest, cb streamCallbacks) {
+	cb = cb.withDefaults()
+	p, conv, spec := req.Provider, req.Conv, req.Spec
 	if p.APIKey == "" {
 		cb.onError(fmt.Errorf("API Key 不能为空"))
 		return
@@ -85,24 +87,30 @@ func streamGemini(ctx context.Context, p Provider, conv Conversation, cb streamC
 		geminiBase(p), conv.ModelID, p.APIKey)
 
 	body := map[string]any{
-		"contents": buildGeminiContents(conv),
+		"contents": buildGeminiContents(req),
 	}
 	if conv.System != "" {
 		body["systemInstruction"] = map[string]any{
 			"parts": []map[string]string{{"text": conv.System}},
 		}
 	}
+	// 思考控制:2.x 写 thinkingConfig.thinkingBudget(token 数),3.x 写 thinkingLevel(档位词)。
+	// 注意 includeThoughts 不打开的话,思考文本一个字都不会回传。
+	applyEmissions(body, resolveReasoning(conv.ReasoningEffort, spec, spec.MaxOutput).Emissions)
+	if conv.WebSearch {
+		applyWebSearchPatch(body, buildWebSearchPatch(spec))
+	}
 	bodyBytes, _ := json.Marshal(body)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		cb.onError(fmt.Errorf("构造请求失败: %w", err))
 		return
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
 
-	resp, err := streamClient.Do(req)
+	resp, err := streamClient.Do(httpReq)
 	if err != nil {
 		cb.onError(fmt.Errorf("%s", prettifyNetErr(err)))
 		return
@@ -139,6 +147,9 @@ func streamGemini(ctx context.Context, p Provider, conv Conversation, cb streamC
 		}
 		for _, img := range parseGeminiImages(payload) {
 			cb.onImage(img)
+		}
+		for _, c := range parseGeminiCitations(payload) {
+			cb.onCitation(c)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -179,7 +190,9 @@ func parseGeminiUsage(payload string) *Usage {
 // buildGeminiContents Gemini 用 user/model 角色,system 走单独字段
 //
 //	带图片时 parts 含 {inlineData:{mimeType,data}}(仅 base64,Gemini 不直接吃远程 URL)
-func buildGeminiContents(conv Conversation) []map[string]any {
+func buildGeminiContents(req chatRequest) []map[string]any {
+	conv := req.Conv
+	supportsPDF := req.Spec.Has(CapPDF)
 	msgs := contextMessages(conv)
 	out := make([]map[string]any, 0, len(msgs))
 	for _, m := range msgs {
@@ -196,7 +209,7 @@ func buildGeminiContents(conv Conversation) []map[string]any {
 		parts := []map[string]any{}
 		text := m.Content
 		if m.Role == "user" {
-			textFiles, binaryFiles := partitionFiles(m.Files, true)
+			textFiles, binaryFiles := partitionFiles(m.Files, supportsPDF)
 			text = userContentWithFileText(m.Content, textFiles)
 			if text != "" {
 				parts = append(parts, map[string]any{"text": text})
@@ -270,6 +283,35 @@ func parseGeminiDelta(payload string) (text, thinking string) {
 		}
 	}
 	return sbText.String(), sbThink.String()
+}
+
+// parseGeminiCitations 从 groundingMetadata 里抠联网搜索引用到的来源。
+// google_search 工具的结果不会出现在正文里,只挂在 candidates[].groundingMetadata 上。
+func parseGeminiCitations(payload string) []Citation {
+	var ev struct {
+		Candidates []struct {
+			GroundingMetadata struct {
+				GroundingChunks []struct {
+					Web *struct {
+						URI   string `json:"uri"`
+						Title string `json:"title"`
+					} `json:"web"`
+				} `json:"groundingChunks"`
+			} `json:"groundingMetadata"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+		return nil
+	}
+	var out []Citation
+	for _, c := range ev.Candidates {
+		for _, chunk := range c.GroundingMetadata.GroundingChunks {
+			if chunk.Web != nil && chunk.Web.URI != "" {
+				out = append(out, Citation{URL: chunk.Web.URI, Title: chunk.Web.Title})
+			}
+		}
+	}
+	return out
 }
 
 // parseGeminiImages 从 chunk 中抠 inlineData(模型生成的图)

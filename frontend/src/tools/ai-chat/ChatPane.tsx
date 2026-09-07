@@ -16,6 +16,8 @@ import {
   Trash2,
   X,
   Paperclip,
+  Globe,
+  Link2,
   Download,
   FileText,
   FileSpreadsheet,
@@ -27,6 +29,7 @@ import {
   DeleteAIChatMessage,
   EditAndResendAIChat,
   GetAIConversation,
+  GetAIModelSpec,
   InsertAIClearMarker,
   ListAIProviders,
   RegenerateAILastChat,
@@ -34,19 +37,26 @@ import {
   StopAIChat,
   UpdateAIConversationMeta,
   UpdateAIConversationModel,
+  UpdateAIConversationOptions,
 } from '../../../wailsjs/go/main/App'
-import { EventsOn } from '../../../wailsjs/runtime/runtime'
+import { BrowserOpenURL, EventsOn } from '../../../wailsjs/runtime/runtime'
 import {
+  EFFORT_LABELS,
   EV_CHUNK_PREFIX,
   EV_THINKING_PREFIX,
   EV_IMAGE_PREFIX,
+  EV_CITATION_PREFIX,
   EV_DONE_PREFIX,
   EV_ERROR_PREFIX,
+  thinkingText,
+  type Citation,
   type Conversation,
   type FileBlock,
   type ImageBlock,
   type Message,
+  type ModelSpec,
   type Provider,
+  type ReasoningEffort,
 } from './types'
 import {
   detectFileKind,
@@ -102,6 +112,9 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
   const [pendingFiles, setPendingFiles] = useState<FileBlock[]>([])
   const [previewImage, setPreviewImage] = useState<ImageBlock | null>(null)
   const [previewFile, setPreviewFile] = useState<FileBlock | null>(null)
+  // 当前模型的能力画像:决定输入栏上给不给思考档位、联网开关
+  const [spec, setSpec] = useState<ModelSpec | null>(null)
+  const [effortOpen, setEffortOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -129,7 +142,8 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
   const programmaticScrollRef = useRef(false)
 
   const lastMsg = conv?.messages[conv.messages.length - 1]
-  const lastLen = (lastMsg?.content.length ?? 0) + (lastMsg?.thinking?.length ?? 0)
+  const lastLen =
+    (lastMsg?.content.length ?? 0) + (lastMsg ? thinkingText(lastMsg).length : 0)
   useEffect(() => {
     const el = scrollRef.current
     if (!el || !stickToBottom) return
@@ -153,6 +167,26 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
   }
+
+  // 换会话或换模型时重新拉一次能力画像(后端按模型 ID 推断,很便宜)
+  useEffect(() => {
+    const providerId = conv?.providerId
+    const modelId = conv?.modelId
+    if (!providerId || !modelId) {
+      setSpec(null)
+      return
+    }
+    let alive = true
+    void (async () => {
+      const r = (await GetAIModelSpec(providerId, modelId)) as any
+      if (!alive) return
+      const got = pickFirst(r) as ModelSpec | null
+      setSpec(got && got.id ? got : null)
+    })()
+    return () => {
+      alive = false
+    }
+  }, [conv?.providerId, conv?.modelId])
 
   // 订阅事件:chunk / done / error;用 EventsOn 返回的 cancel 函数,避免误伤同名监听
   useEffect(() => {
@@ -186,6 +220,8 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
         return prev
       })
     })
+    // 思考增量只用于实时渲染,统一累到第一个块上;
+    // 带 signature 的结构化块由后端在流结束时落盘,下次 load 会带回来
     const offThinking = EventsOn(EV_THINKING_PREFIX + conversationId, (delta: string) => {
       if (!delta) return
       setConv((prev) => {
@@ -193,10 +229,27 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
         const msgs = [...prev.messages]
         const last = msgs[msgs.length - 1]
         if (last?.role === 'assistant') {
+          const blocks = last.thinking ?? []
+          const head = blocks[0] ?? {}
           msgs[msgs.length - 1] = {
             ...last,
-            thinking: (last.thinking ?? '') + delta,
+            thinking: [{ ...head, text: (head.text ?? '') + delta }, ...blocks.slice(1)],
           }
+          return { ...prev, messages: msgs }
+        }
+        return prev
+      })
+    })
+    const offCitation = EventsOn(EV_CITATION_PREFIX + conversationId, (c: Citation) => {
+      if (!c?.url) return
+      setConv((prev) => {
+        if (!prev) return prev
+        const msgs = [...prev.messages]
+        const last = msgs[msgs.length - 1]
+        if (last?.role === 'assistant') {
+          const list = last.citations ?? []
+          if (list.some((x) => x.url === c.url)) return prev
+          msgs[msgs.length - 1] = { ...last, citations: [...list, c] }
           return { ...prev, messages: msgs }
         }
         return prev
@@ -225,6 +278,7 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
     return () => {
       offChunk()
       offThinking()
+      offCitation()
       offImage()
       offDone()
       offError()
@@ -263,7 +317,7 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
       id: 'tmp-a-' + now,
       role: 'assistant',
       content: '',
-      thinking: '',
+      thinking: [],
       model: conv.modelId,
       createdAt: now + 1,
     }
@@ -401,7 +455,7 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
         id: 'tmp-edit-' + Date.now(),
         role: 'assistant',
         content: '',
-        thinking: '',
+        thinking: [],
         model: prev.modelId,
         createdAt: Date.now(),
       }
@@ -425,7 +479,13 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
       const msgs = [...prev.messages]
       const last = msgs[msgs.length - 1]
       if (last?.role === 'assistant') {
-        msgs[msgs.length - 1] = { ...last, content: '', thinking: '', model: prev.modelId }
+        msgs[msgs.length - 1] = {
+          ...last,
+          content: '',
+          thinking: [],
+          citations: undefined,
+          model: prev.modelId,
+        }
       }
       return { ...prev, messages: msgs }
     })
@@ -509,6 +569,17 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
         加载中...
       </div>
     )
+  }
+
+  // 输入栏上的两个开关只在模型真的支持时出现 —— 给一个发出去必然被拒的开关不如不给
+  const effortOptions = (spec?.reasoning?.efforts ?? []) as ReasoningEffort[]
+  const canTuneReasoning = effortOptions.length > 0
+  const canWebSearch = !!spec?.capabilities?.includes('webSearch')
+  const currentEffort = (conv.reasoningEffort || 'default') as ReasoningEffort
+
+  const setOptions = async (effort: string, webSearch: boolean) => {
+    setConv((prev) => (prev ? { ...prev, reasoningEffort: effort, webSearch } : prev))
+    await UpdateAIConversationOptions(conv.id, effort, webSearch)
   }
 
   const visibleMessages = conv.messages.filter((m) => m.role !== 'system')
@@ -734,6 +805,70 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
                   hidden
                   onChange={onPickFiles}
                 />
+
+                {canTuneReasoning && (
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setEffortOpen((v) => !v)}
+                      className={cn(
+                        'flex h-7 items-center gap-1 rounded-md px-2 text-xs transition-colors',
+                        currentEffort !== 'default'
+                          ? 'bg-info/10 text-info'
+                          : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+                      )}
+                      title="思考档位:控制模型在回答前花多少算力推理"
+                    >
+                      <Brain className="h-3.5 w-3.5" />
+                      {EFFORT_LABELS[currentEffort] ?? '默认'}
+                    </button>
+                    {effortOpen && (
+                      <>
+                        <div
+                          className="fixed inset-0 z-10"
+                          onClick={() => setEffortOpen(false)}
+                        />
+                        <div className="absolute bottom-8 left-0 z-20 min-w-[120px] overflow-hidden rounded-md border border-border bg-card py-1 shadow-lg">
+                          {(['default', ...effortOptions] as ReasoningEffort[]).map((e) => (
+                            <button
+                              key={e}
+                              type="button"
+                              onClick={() => {
+                                setEffortOpen(false)
+                                void setOptions(e, !!conv.webSearch)
+                              }}
+                              className={cn(
+                                'flex w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-secondary',
+                                e === currentEffort ? 'text-info' : 'text-foreground',
+                              )}
+                            >
+                              {EFFORT_LABELS[e] ?? e}
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {canWebSearch && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void setOptions(conv.reasoningEffort || 'default', !conv.webSearch)
+                    }
+                    className={cn(
+                      'flex h-7 items-center gap-1 rounded-md px-2 text-xs transition-colors',
+                      conv.webSearch
+                        ? 'bg-info/10 text-info'
+                        : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+                    )}
+                    title="供应商内置联网搜索:由模型服务商自己检索,结果会附引用来源"
+                  >
+                    <Globe className="h-3.5 w-3.5" />
+                    联网
+                  </button>
+                )}
               </div>
 
               {streaming ? (
@@ -1037,8 +1172,11 @@ function MessageItem({
           {label}
         </div>
 
-        {!isUser && message.thinking && (
-          <ThinkingBlock content={message.thinking} streaming={!!streaming && !message.content} />
+        {!isUser && thinkingText(message) && (
+          <ThinkingBlock
+            content={thinkingText(message)}
+            streaming={!!streaming && !message.content}
+          />
         )}
 
         {message.images && message.images.length > 0 && (
@@ -1137,7 +1275,7 @@ function MessageItem({
             <div className="rounded-lg border border-border bg-card px-3 py-2">
               <MarkdownPreview value={message.content} className="markdown-preview text-sm" />
             </div>
-          ) : !message.thinking &&
+          ) : !thinkingText(message) &&
             (!message.images || message.images.length === 0) &&
             (!message.files || message.files.length === 0) ? (
             <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
@@ -1146,6 +1284,9 @@ function MessageItem({
             </div>
           ) : null}
         </div>
+        {!isUser && message.citations && message.citations.length > 0 && (
+          <CitationList list={message.citations} />
+        )}
         {message.content && !streaming && !editing && (
           <div className="flex items-center gap-3 opacity-0 transition-opacity group-hover/msg:opacity-100">
             <button
@@ -1205,7 +1346,46 @@ function MessageItem({
   )
 }
 
-/** 仿 cherry-studio 的折叠思考块:streaming 时默认展开,完成后默认折叠 */
+/** 联网搜索引用到的来源;默认折叠,点开是可跳转的链接列表 */
+function CitationList({ list }: { list: Citation[] }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="rounded-lg border border-border bg-secondary/20">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-secondary/40"
+      >
+        <Globe className="h-3.5 w-3.5" />
+        <span className="font-medium">引用来源</span>
+        <span className="text-[10px] opacity-60">({list.length})</span>
+        <ChevronDown
+          className={cn('ml-auto h-3.5 w-3.5 transition-transform', open ? 'rotate-180' : '')}
+        />
+      </button>
+      {open && (
+        <ol className="space-y-1.5 border-t border-border/50 px-3 py-2">
+          {list.map((c, i) => (
+            <li key={c.url + i} className="flex gap-2 text-xs">
+              <span className="shrink-0 text-muted-foreground">{i + 1}.</span>
+              <button
+                type="button"
+                onClick={() => BrowserOpenURL(c.url)}
+                className="flex min-w-0 items-start gap-1 text-left text-info hover:underline"
+                title={c.url}
+              >
+                <Link2 className="mt-0.5 h-3 w-3 shrink-0" />
+                <span className="min-w-0 break-all">{c.title || c.url}</span>
+              </button>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  )
+}
+
+/** 折叠思考块:streaming 时默认展开,完成后默认折叠 */
 function ThinkingBlock({
   content,
   streaming,

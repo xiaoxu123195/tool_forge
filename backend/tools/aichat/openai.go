@@ -49,14 +49,18 @@ var streamClient = &http.Client{
 	},
 }
 
-// applyOpenAIHeaders 复刻 Cherry-studio 实测有效的请求头组合(对 OpenAI 官方 / 部分中转都生效)
+// openAIUserAgent 请求 UA。不少中转按 UA 做白名单,空 UA 或陌生 UA 会被直接挡掉,
+// 所以固定成一个常见的 SDK 形态而不是留空。
+const openAIUserAgent = "ai-sdk/openai/3.0.53"
+
+// applyOpenAIHeaders OpenAI 协议族的通用请求头。
+//
+// Authorization 与 X-Api-Key 两个都带:官方只认前者,部分中转只认后者,同时带最省事。
 func applyOpenAIHeaders(req *http.Request, apiKey string) {
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("X-Api-Key", apiKey) // Cherry 给 openai 类 provider 必带这个头
+	req.Header.Set("X-Api-Key", apiKey)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("HTTP-Referer", "https://cherry-ai.com")
-	req.Header.Set("X-Title", "Cherry Studio")
-	req.Header.Set("User-Agent", "ai-sdk/openai/3.0.53")
+	req.Header.Set("User-Agent", openAIUserAgent)
 }
 
 // 协议路径常量
@@ -129,10 +133,9 @@ func testModel(p Provider, modelID string, useResponses bool) TestResult {
 			},
 			"stream": true,
 		}
-		if isReasoningModel(modelID) {
-			body["reasoning_effort"] = "medium"
-		}
 	}
+	// 连通性检测只验"能不能通",不带任何思考 / 联网参数 —— 那些字段各家挑剔,
+	// 带上反而会把一个本来正常的供应商测成失败
 	bodyBytes, _ := json.Marshal(body)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -201,7 +204,9 @@ func testModel(p Provider, modelID string, useResponses bool) TestResult {
 }
 
 // streamOpenAI 走 OpenAI 协议的实际聊天流;按 useResponses 选择端点
-func streamOpenAI(ctx context.Context, p Provider, conv Conversation, useResponses bool, cb streamCallbacks) {
+func streamOpenAI(ctx context.Context, req chatRequest, useResponses bool, cb streamCallbacks) {
+	cb = cb.withDefaults()
+	p, conv, spec := req.Provider, req.Conv, req.Spec
 	baseURL := strings.TrimRight(p.BaseURL, "/")
 	if baseURL == "" {
 		baseURL = "https://api.openai.com/v1"
@@ -213,33 +218,37 @@ func streamOpenAI(ctx context.Context, p Provider, conv Conversation, useRespons
 		url = baseURL + pathResponses
 		body = map[string]any{
 			"model":  conv.ModelID,
-			"input":  buildOpenAIResponsesInput(conv),
+			"input":  buildOpenAIResponsesInput(req),
 			"stream": true,
 		}
 	} else {
 		url = baseURL + pathChatCompl
 		body = map[string]any{
 			"model":    conv.ModelID,
-			"messages": buildOpenAIChatMessages(conv),
+			"messages": buildOpenAIChatMessages(req),
 			"stream":   true,
 			// stream_options.include_usage:让 chat-completions 在最后一帧返回 usage
 			"stream_options": map[string]any{"include_usage": true},
 		}
-		if isReasoningModel(conv.ModelID) {
-			body["reasoning_effort"] = "medium"
-		}
+	}
+	// 思考档位:由 reasoning.go 按模型 + 端点翻译成各家自己的字段;
+	// 模型不支持调档或用户没选时,resolveReasoning 返回空,请求体一个字段都不多带
+	applyEmissions(body, resolveReasoning(conv.ReasoningEffort, spec, spec.MaxOutput).Emissions)
+	// 供应商内置联网搜索
+	if conv.WebSearch {
+		applyWebSearchPatch(body, buildWebSearchPatch(spec))
 	}
 	bodyBytes, _ := json.Marshal(body)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		cb.onError(fmt.Errorf("构造请求失败: %w", err))
 		return
 	}
-	applyOpenAIHeaders(req, p.APIKey)
-	req.Header.Set("Accept", "text/event-stream")
+	applyOpenAIHeaders(httpReq, p.APIKey)
+	httpReq.Header.Set("Accept", "text/event-stream")
 
-	resp, err := streamClient.Do(req)
+	resp, err := streamClient.Do(httpReq)
 	if err != nil {
 		cb.onError(fmt.Errorf("%s", prettifyNetErr(err)))
 		return
@@ -253,10 +262,11 @@ func streamOpenAI(ctx context.Context, p Provider, conv Conversation, useRespons
 	}
 
 	scanner := newSSEScanner(resp.Body)
-	// 部分中转/Grok 代理把思考内容嵌在 delta.content 的 <think>...</think> 里;
-	// 用一个状态机把它拆出来路由到 thinking 通道。仅对 chat completions 启用,
+	// 部分中转/开源模型把思考内容嵌在 delta.content 的 <think>...</think> 里;
+	// 用一个状态机把它拆出来路由到 thinking 通道。标签名各家不同(gpt-oss 用 <reasoning>,
+	// seed-oss 用 <seed:think>),按模型 ID 选。仅对 chat completions 启用,
 	// /responses 已经按事件类型分开了。
-	var splitter thinkSplitter
+	splitter := newThinkSplitter(conv.ModelID)
 	// 兜底:跟踪是否输出了任何文本/图片;
 	// 跑完全程仍是 0 → 把最后几帧原始 payload 拼进错误信息便于排查
 	emitted := false
@@ -283,8 +293,10 @@ func streamOpenAI(ctx context.Context, p Provider, conv Conversation, useRespons
 		}
 		var text, thinking string
 		var images []ImageBlock
+		var citations []Citation
 		if useResponses {
 			text, thinking = parseOpenAIResponsesDelta(payload)
+			citations = parseOpenAIResponsesCitations(payload)
 			// 中转(如 chatgpt2api 的 gpt-image)把生图结果以 markdown data:image
 			// 形式塞进正文,这里抽到图片通道,避免几 MB base64 当正文渲染/落盘
 			if text != "" {
@@ -298,6 +310,7 @@ func streamOpenAI(ctx context.Context, p Provider, conv Conversation, useRespons
 			images = append(images, parseOpenAIResponsesImages(payload)...)
 		} else {
 			text, thinking = parseOpenAIChatDelta(payload)
+			citations = parseOpenAIChatCitations(payload)
 			// 同上:把内联在 delta.content 里的 base64 图片抽到图片通道
 			if text != "" {
 				var inlineImgs []ImageBlock
@@ -331,6 +344,9 @@ func streamOpenAI(ctx context.Context, p Provider, conv Conversation, useRespons
 			cb.onImage(img)
 			emitted = true
 		}
+		for _, c := range citations {
+			cb.onCitation(c)
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		cb.onError(fmt.Errorf("读取流失败: %w", err))
@@ -355,7 +371,9 @@ func streamOpenAI(ctx context.Context, p Provider, conv Conversation, useRespons
 // buildOpenAIResponsesInput Responses API 的 input 字段
 //
 //	带图片时 content 是 [{type:"input_text",text}, {type:"input_image",image_url}] 数组
-func buildOpenAIResponsesInput(conv Conversation) []map[string]any {
+func buildOpenAIResponsesInput(req chatRequest) []map[string]any {
+	conv := req.Conv
+	supportsPDF := req.Spec.Has(CapPDF)
 	msgs := contextMessages(conv)
 	out := make([]map[string]any, 0, len(msgs)+1)
 	if conv.System != "" {
@@ -369,7 +387,7 @@ func buildOpenAIResponsesInput(conv Conversation) []map[string]any {
 			continue
 		}
 		if m.Role == "user" && (len(m.Images) > 0 || len(m.Files) > 0) {
-			textFiles, binaryFiles := partitionFiles(m.Files, true)
+			textFiles, binaryFiles := partitionFiles(m.Files, supportsPDF)
 			text := userContentWithFileText(m.Content, textFiles)
 			parts := []map[string]any{}
 			if text != "" {
@@ -406,7 +424,8 @@ func buildOpenAIResponsesInput(conv Conversation) []map[string]any {
 //
 //	带图片时 content 是 [{type:"text",text}, {type:"image_url",image_url:{url}}] 数组
 //	chat-completions 不支持原生 PDF,文件全部走文本拼接(ensureFileText 已确保 Text 存在)
-func buildOpenAIChatMessages(conv Conversation) []map[string]any {
+func buildOpenAIChatMessages(req chatRequest) []map[string]any {
+	conv := req.Conv
 	msgs := contextMessages(conv)
 	out := make([]map[string]any, 0, len(msgs)+1)
 	if conv.System != "" {
@@ -569,6 +588,123 @@ func parseOpenAIResponsesUsage(payload string) *Usage {
 		CachedTokens:    ev.Response.Usage.InputTokensDetails.CachedTokens,
 		ReasoningTokens: ev.Response.Usage.OutputTokensDetails.ReasoningTokens,
 	}
+}
+
+// parseOpenAIResponsesCitations 从 /v1/responses 事件里抠联网搜索的引用来源。
+//
+//	增量:response.output_text.annotation.added → annotation{type:"url_citation", url, title}
+//	收尾:response.completed → response.output[].content[].annotations[]
+//
+// 两条路都收:部分中转只在收尾那一帧给全量 annotations,不发增量事件。
+func parseOpenAIResponsesCitations(payload string) []Citation {
+	var ev struct {
+		Type       string `json:"type"`
+		Annotation *struct {
+			Type  string `json:"type"`
+			URL   string `json:"url"`
+			Title string `json:"title"`
+		} `json:"annotation"`
+		Response struct {
+			Output []struct {
+				Content []struct {
+					Annotations []struct {
+						Type  string `json:"type"`
+						URL   string `json:"url"`
+						Title string `json:"title"`
+					} `json:"annotations"`
+				} `json:"content"`
+			} `json:"output"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+		return nil
+	}
+	var out []Citation
+	if a := ev.Annotation; a != nil && a.URL != "" {
+		out = append(out, Citation{URL: a.URL, Title: a.Title})
+	}
+	for _, item := range ev.Response.Output {
+		for _, c := range item.Content {
+			for _, a := range c.Annotations {
+				if a.URL != "" {
+					out = append(out, Citation{URL: a.URL, Title: a.Title})
+				}
+			}
+		}
+	}
+	return out
+}
+
+// parseOpenAIChatCitations 从 chat-completions chunk 抠联网引用。各家写法差异很大:
+//
+//	OpenAI search-preview  delta.annotations[].url_citation{url,title}
+//	智谱 GLM               web_search[]{title,link,content}
+//	阿里百炼               search_info.search_results[]{title,url,site_name}
+//	Perplexity 风格中转     citations[] 直接是一串 URL 字符串
+func parseOpenAIChatCitations(payload string) []Citation {
+	var ev struct {
+		Choices []struct {
+			Delta struct {
+				Annotations []struct {
+					Type        string `json:"type"`
+					URLCitation struct {
+						URL   string `json:"url"`
+						Title string `json:"title"`
+					} `json:"url_citation"`
+				} `json:"annotations"`
+			} `json:"delta"`
+		} `json:"choices"`
+		WebSearch []struct {
+			Title   string `json:"title"`
+			Link    string `json:"link"`
+			URL     string `json:"url"`
+			Content string `json:"content"`
+		} `json:"web_search"`
+		SearchInfo struct {
+			SearchResults []struct {
+				Title    string `json:"title"`
+				URL      string `json:"url"`
+				SiteName string `json:"site_name"`
+			} `json:"search_results"`
+		} `json:"search_info"`
+		Citations []string `json:"citations"`
+	}
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+		return nil
+	}
+	var out []Citation
+	for _, ch := range ev.Choices {
+		for _, a := range ch.Delta.Annotations {
+			if a.URLCitation.URL != "" {
+				out = append(out, Citation{URL: a.URLCitation.URL, Title: a.URLCitation.Title})
+			}
+		}
+	}
+	for _, w := range ev.WebSearch {
+		url := w.Link
+		if url == "" {
+			url = w.URL
+		}
+		if url != "" {
+			out = append(out, Citation{URL: url, Title: w.Title, Snippet: w.Content})
+		}
+	}
+	for _, r := range ev.SearchInfo.SearchResults {
+		if r.URL == "" {
+			continue
+		}
+		title := r.Title
+		if title == "" {
+			title = r.SiteName
+		}
+		out = append(out, Citation{URL: r.URL, Title: title})
+	}
+	for _, u := range ev.Citations {
+		if strings.HasPrefix(u, "http") {
+			out = append(out, Citation{URL: u})
+		}
+	}
+	return out
 }
 
 // parseOpenAIChatImages 从 chat-completions chunk 抠模型返回的图片。
@@ -860,32 +996,21 @@ func extractErrorMessage(body []byte) string {
 	return s
 }
 
-// isReasoningModel 识别 gpt-5 / o1 / o3 / o4 这类带 reasoning 的模型
-func isReasoningModel(modelID string) bool {
-	m := strings.ToLower(modelID)
-	if strings.HasPrefix(m, "gpt-5") {
-		return true
-	}
-	for _, p := range []string{"o1", "o3", "o4"} {
-		if m == p || strings.HasPrefix(m, p+"-") {
-			return true
-		}
-	}
-	return false
-}
-
-// thinkSplitter 增量识别 <think>...</think>,把里面内容路由到 thinking。
+// thinkSplitter 增量识别内联思考标签(<think>…</think> 之类),把里面内容路由到 thinking。
 // 标签可能被 chunk 切断(比如一个 chunk 是 "<thi" 下一个是 "nk>"),所以需要
 // 维护跨 chunk 的 pending 缓冲。
 type thinkSplitter struct {
-	inThink bool
-	pending string // 上一次 feed 末尾可能是开闭标签前缀的部分,留到下一次拼接再判断
+	openTag  string
+	closeTag string
+	inThink  bool
+	pending  string // 上一次 feed 末尾可能是开闭标签前缀的部分,留到下一次拼接再判断
 }
 
-const (
-	thinkOpenTag  = "<think>"
-	thinkCloseTag = "</think>"
-)
+// newThinkSplitter 按模型 ID 选标签名(gpt-oss 用 <reasoning>,seed-oss 用 <seed:think>,其余 <think>)
+func newThinkSplitter(modelID string) thinkSplitter {
+	tag := reasoningTagName(modelID)
+	return thinkSplitter{openTag: "<" + tag + ">", closeTag: "</" + tag + ">"}
+}
 
 // feed 输入一段文本,返回 (正文, 思考) 增量
 func (s *thinkSplitter) feed(chunk string) (text, thinking string) {
@@ -896,10 +1021,10 @@ func (s *thinkSplitter) feed(chunk string) (text, thinking string) {
 	i := 0
 	for i < len(input) {
 		if s.inThink {
-			idx := strings.Index(input[i:], thinkCloseTag)
+			idx := strings.Index(input[i:], s.closeTag)
 			if idx == -1 {
 				rem := input[i:]
-				if k := suffixPrefixOverlap(rem, thinkCloseTag); k > 0 {
+				if k := suffixPrefixOverlap(rem, s.closeTag); k > 0 {
 					kb.WriteString(rem[:len(rem)-k])
 					s.pending = rem[len(rem)-k:]
 				} else {
@@ -908,13 +1033,13 @@ func (s *thinkSplitter) feed(chunk string) (text, thinking string) {
 				break
 			}
 			kb.WriteString(input[i : i+idx])
-			i += idx + len(thinkCloseTag)
+			i += idx + len(s.closeTag)
 			s.inThink = false
 		} else {
-			idx := strings.Index(input[i:], thinkOpenTag)
+			idx := strings.Index(input[i:], s.openTag)
 			if idx == -1 {
 				rem := input[i:]
-				if k := suffixPrefixOverlap(rem, thinkOpenTag); k > 0 {
+				if k := suffixPrefixOverlap(rem, s.openTag); k > 0 {
 					tb.WriteString(rem[:len(rem)-k])
 					s.pending = rem[len(rem)-k:]
 				} else {
@@ -923,7 +1048,7 @@ func (s *thinkSplitter) feed(chunk string) (text, thinking string) {
 				break
 			}
 			tb.WriteString(input[i : i+idx])
-			i += idx + len(thinkOpenTag)
+			i += idx + len(s.openTag)
 			s.inThink = true
 		}
 	}

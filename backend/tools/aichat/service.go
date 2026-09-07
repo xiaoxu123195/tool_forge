@@ -122,6 +122,32 @@ func defaultProviders() []Provider {
 			CreatedAt: now,
 			UpdatedAt: now - 2,
 		},
+		{
+			ID:        "system-anthropic",
+			Name:      "Anthropic",
+			Type:      TypeAnthropic,
+			Logo:      "anthropic",
+			BaseURL:   "https://api.anthropic.com",
+			APIKey:    "",
+			Enabled:   false,
+			Models:    []string{},
+			IsSystem:  true,
+			CreatedAt: now,
+			UpdatedAt: now - 3,
+		},
+		{
+			ID:        "system-xai",
+			Name:      "xAI Grok",
+			Type:      TypeXAI,
+			Logo:      "xai",
+			BaseURL:   "https://api.x.ai/v1",
+			APIKey:    "",
+			Enabled:   false,
+			Models:    []string{},
+			IsSystem:  true,
+			CreatedAt: now,
+			UpdatedAt: now - 4,
+		},
 	}
 }
 
@@ -245,7 +271,7 @@ func (s *Service) FetchModels(providerID string) FetchModelsResult {
 	case TypeAnthropic:
 		return fetchAnthropicModels(provider)
 	default:
-		// openai 与 openai-compatible 都走 /v1/models
+		// openai / openai-compatible / xai 都走 /v1/models
 		return fetchModels(provider)
 	}
 }
@@ -264,17 +290,32 @@ func (s *Service) TestProviderModel(providerID, modelID string) TestResult {
 	}
 	provider := *p
 	s.mu.Unlock()
-	switch provider.Type {
-	case TypeGemini:
+	switch endpointFor(provider.Type) {
+	case EndpointGemini:
 		return testGeminiModel(provider, modelID)
-	case TypeAnthropic:
+	case EndpointAnthropic:
 		return testAnthropicModel(provider, modelID)
-	case TypeOpenAICompat:
+	case EndpointOpenAIChat:
 		return testModel(provider, modelID, false)
 	default:
-		// "openai" 默认走新版 Responses API
+		// openai / xai 都走新版 Responses API
 		return testModel(provider, modelID, true)
 	}
+}
+
+// ModelSpec 返回某个模型在指定供应商下的能力画像。
+// 前端据此决定给不给思考档位选择器、联网开关,以及能不能拖图 / 传 PDF。
+func (s *Service) ModelSpec(providerID, modelID string) (ModelSpec, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureLoaded(); err != nil {
+		return ModelSpec{}, err
+	}
+	p, idx := s.getProviderLocked(providerID)
+	if idx < 0 {
+		return ModelSpec{}, fmt.Errorf("供应商不存在: %s", providerID)
+	}
+	return InferModelSpec(*p, modelID), nil
 }
 
 // ================ Config ================

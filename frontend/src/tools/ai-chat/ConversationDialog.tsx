@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 
-/** 用于"新建会话"和"编辑会话"两个场景;字段对齐 cherry-studio 的助手设置 */
+/** 用于"新建会话"和"编辑会话"两个场景 */
 export interface ConversationDraft {
   title: string
   system: string

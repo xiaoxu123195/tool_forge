@@ -9,14 +9,14 @@ import (
 	"github.com/ledongthuc/pdf"
 )
 
-// ensureFileText 给"原生不支持文件"的协议(openai-compat)提供文本兜底:
+// ensureFileText 给"原生不支持文件"的端点(chat-completions)提供文本兜底:
 //   - 如果 file 已有 Text(前端已经解析了 docx/xlsx/pptx/txt 等)→ 不动
 //   - 如果只有 PDF base64 → 在后端用 ledongthuc/pdf 提取文本
 //
-// 其他协议(openai-responses / anthropic / gemini)能原生吃 PDF base64,
-// 不在这里转换 — 让协议层自己用 multimodal 字段发过去
-func ensureFileText(providerType ProviderType, files []FileBlock) []FileBlock {
-	if providerType != TypeOpenAICompat {
+// 其他端点(openai-responses / anthropic-messages / google-generate-content)能原生吃
+// PDF base64,不在这里转换 — 让协议层自己用 multimodal 字段发过去
+func ensureFileText(endpoint EndpointType, files []FileBlock) []FileBlock {
+	if endpoint != EndpointOpenAIChat {
 		return files
 	}
 	out := make([]FileBlock, len(files))

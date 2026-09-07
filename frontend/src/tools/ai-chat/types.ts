@@ -1,5 +1,10 @@
 // 跟后端 backend/tools/aichat/types.go 对齐
-export type ProviderType = 'openai' | 'openai-compatible' | 'gemini' | 'anthropic'
+export type ProviderType =
+  | 'openai'
+  | 'openai-compatible'
+  | 'gemini'
+  | 'anthropic'
+  | 'xai'
 
 export interface Provider {
   id: string
@@ -63,6 +68,20 @@ export interface FileBlock {
   sizeBytes?: number
 }
 
+/** 模型的一段「思考」。Anthropic 的 signature 必须原样回传,所以不是一个大字符串 */
+export interface ThinkingBlock {
+  text?: string
+  signature?: string
+  redacted?: string
+}
+
+/** 联网搜索引用的一条来源 */
+export interface Citation {
+  url: string
+  title?: string
+  snippet?: string
+}
+
 export interface Message {
   id: string
   /** 'clear' 是前端"清除上下文"分隔标记,只用于渲染,不发给模型 */
@@ -71,10 +90,17 @@ export interface Message {
   images?: ImageBlock[]
   files?: FileBlock[]
   /** 模型的「思考」内容(deepseek-r1 / o1 / claude extended) */
-  thinking?: string
+  thinking?: ThinkingBlock[]
+  /** 联网搜索引用到的来源 */
+  citations?: Citation[]
   /** 这条 assistant 消息使用的模型 ID */
   model?: string
   createdAt: number
+}
+
+/** 把思考块拼成可展示的一段文本 */
+export function thinkingText(m: Pick<Message, 'thinking'>): string {
+  return (m.thinking ?? []).map((b) => b.text ?? '').join('')
 }
 
 export interface Conversation {
@@ -85,6 +111,10 @@ export interface Conversation {
   system?: string
   /** 发给模型时保留的最近 user/assistant 消息条数;0/缺省 = 不限 */
   contextCount?: number
+  /** 思考档位:'' / 'default' 不干预,'none' 关闭,其余见 ReasoningEffort */
+  reasoningEffort?: string
+  /** 是否启用供应商内置联网搜索 */
+  webSearch?: boolean
   messages: Message[]
   createdAt: number
   updatedAt: number
@@ -113,9 +143,41 @@ export interface UsageRecord {
   durationMs: number
 }
 
+/** 思考档位。后端 reasoning.go 负责把它翻译成各家自己的 wire 字段 */
+export type ReasoningEffort = 'default' | 'none' | 'minimal' | 'low' | 'medium' | 'high'
+
+export const EFFORT_LABELS: Record<ReasoningEffort, string> = {
+  default: '默认',
+  none: '关闭思考',
+  minimal: '极简',
+  low: '低',
+  medium: '中',
+  high: '高',
+}
+
+/** 模型能力标签,与后端 catalog.go 的 Capability 对齐 */
+export type Capability = 'vision' | 'pdf' | 'reasoning' | 'webSearch' | 'imageGen'
+
+export interface ReasoningSpec {
+  efforts: ReasoningEffort[]
+  default?: ReasoningEffort
+  budgetMin?: number
+  budgetMax?: number
+}
+
+/** 模型能力画像;由后端按模型 ID 推断,前端据此决定给哪些开关 */
+export interface ModelSpec {
+  id: string
+  endpoint: string
+  capabilities: Capability[]
+  reasoning?: ReasoningSpec
+  maxOutput: number
+}
+
 /** Wails 事件名常量 */
 export const EV_CHUNK_PREFIX = 'ai-chat:chunk:'
 export const EV_THINKING_PREFIX = 'ai-chat:thinking:'
 export const EV_IMAGE_PREFIX = 'ai-chat:image:'
+export const EV_CITATION_PREFIX = 'ai-chat:citation:'
 export const EV_DONE_PREFIX = 'ai-chat:done:'
 export const EV_ERROR_PREFIX = 'ai-chat:error:'
