@@ -27,6 +27,7 @@ import (
 	"tool_forge/backend/tools/forensic"
 	"tool_forge/backend/tools/httptest"
 	"tool_forge/backend/tools/llmproxy"
+	"tool_forge/backend/tools/mcp"
 	"tool_forge/backend/tools/netenvcheck"
 	"tool_forge/backend/tools/netscan"
 	"tool_forge/backend/tools/outlookmail"
@@ -61,6 +62,7 @@ type App struct {
 	outlook   *outlookmail.Service
 	filehash  *filehash.Service
 	llmproxy  *llmproxy.Server
+	mcp       *mcp.Service
 
 	// windowShown:启动时窗口 StartHidden;首帧后由前端 ShowWindow 显示,后端 5s 兜底显示。
 	// 两者用这个原子标记去重,保证只有一方真正执行,避免重复显示/抢焦点。
@@ -101,6 +103,9 @@ func NewApp() *App {
 	outlk, _ := outlookmail.New()
 	// LLM 透明代理 + 日志:打开 SQLite 存储,读配置(startup 里按配置决定是否监听)
 	lp, _ := llmproxy.New()
+	// MCP 客户端:只读配置,连接是懒建的(第一次要用工具时才连)
+	mcpSvc := mcp.New()
+	aichat.SetMCPService(mcpSvc)
 	return &App{
 		forensic:  fns,
 		appsearch: apsearch,
@@ -113,6 +118,7 @@ func NewApp() *App {
 		outlook:   outlk,
 		filehash:  filehash.New(),
 		llmproxy:  lp,
+		mcp:       mcpSvc,
 	}
 }
 
@@ -148,6 +154,10 @@ func (a *App) startup(ctx context.Context) {
 	// 文件哈希:持有 wails ctx 用于推送进度事件
 	if a.filehash != nil {
 		a.filehash.SetContext(ctx)
+	}
+	// MCP:后台预热已启用的服务器。不阻塞启动,也不阻塞第一条聊天消息
+	if a.mcp != nil {
+		a.mcp.Warm(ctx)
 	}
 	// LLM 代理:按持久化配置决定是否启动监听
 	if a.llmproxy != nil {
@@ -191,6 +201,10 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.llmproxy != nil {
 		_ = a.llmproxy.Shutdown()
+	}
+	// 把起的 MCP 服务器进程一并收掉,否则退出后它们会留在进程表里
+	if a.mcp != nil {
+		a.mcp.Shutdown()
 	}
 }
 
@@ -1274,6 +1288,101 @@ func (a *App) UpdateAIConversationOptions(id, reasoningEffort string, webSearch,
 		return "AI 服务未初始化"
 	}
 	if err := a.aichat.UpdateConversationOptions(id, reasoningEffort, webSearch, tools); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// ================ MCP ================
+
+// ListMCPServers 所有已配置的 MCP 服务器
+func (a *App) ListMCPServers() []mcp.Server {
+	if a.mcp == nil {
+		return []mcp.Server{}
+	}
+	list, _ := a.mcp.ListServers()
+	if list == nil {
+		return []mcp.Server{}
+	}
+	return list
+}
+
+// SaveMCPServer 新增或更新一个 MCP 服务器
+func (a *App) SaveMCPServer(s mcp.Server) (mcp.Server, string) {
+	if a.mcp == nil {
+		return mcp.Server{}, "MCP 客户端未初始化"
+	}
+	saved, err := a.mcp.SaveServer(s)
+	if err != nil {
+		return mcp.Server{}, err.Error()
+	}
+	a.mcp.Warm(a.ctx)
+	return saved, ""
+}
+
+// DeleteMCPServer 删除一个 MCP 服务器(会断开连接)
+func (a *App) DeleteMCPServer(id string) string {
+	if a.mcp == nil {
+		return "MCP 客户端未初始化"
+	}
+	if err := a.mcp.DeleteServer(id); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// ToggleMCPServer 启用 / 停用
+func (a *App) ToggleMCPServer(id string, enabled bool) string {
+	if a.mcp == nil {
+		return "MCP 客户端未初始化"
+	}
+	if err := a.mcp.ToggleServer(id, enabled); err != nil {
+		return err.Error()
+	}
+	if enabled {
+		a.mcp.Warm(a.ctx)
+	}
+	return ""
+}
+
+// ListMCPStatus 各服务器的连接状态
+func (a *App) ListMCPStatus() []mcp.Status {
+	if a.mcp == nil {
+		return []mcp.Status{}
+	}
+	list := a.mcp.ListStatus()
+	if list == nil {
+		return []mcp.Status{}
+	}
+	return list
+}
+
+// ListMCPTools 当前所有可用的 MCP 工具(会按需建连接)
+func (a *App) ListMCPTools() []mcp.ToolInfo {
+	if a.mcp == nil {
+		return []mcp.ToolInfo{}
+	}
+	list := a.mcp.Tools(a.ctx)
+	if list == nil {
+		return []mcp.ToolInfo{}
+	}
+	return list
+}
+
+// TestMCPServer 连一次试试,不影响常驻连接
+func (a *App) TestMCPServer(s mcp.Server) mcp.TestResult {
+	if a.mcp == nil {
+		return mcp.TestResult{OK: false, Message: "MCP 客户端未初始化"}
+	}
+	return a.mcp.TestServer(a.ctx, s)
+}
+
+// ReconnectMCPServer 断开重连(改完配置或服务器重启后用)
+func (a *App) ReconnectMCPServer(id string) string {
+	if a.mcp == nil {
+		return "MCP 客户端未初始化"
+	}
+	if err := a.mcp.Reconnect(a.ctx, id); err != nil {
 		return err.Error()
 	}
 	return ""

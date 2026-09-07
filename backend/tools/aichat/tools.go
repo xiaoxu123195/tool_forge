@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
+
+	"tool_forge/backend/tools/mcp"
 )
 
 // 工具调用(function calling)。
@@ -33,8 +36,28 @@ type Tool struct {
 	Handler func(ctx context.Context, args string) (string, error)
 }
 
-// builtinTools 内置工具表。目前只有一个 —— 先把协议链路跑通,
-// 之后接 MCP 时这张表会换成"内置 + MCP 服务器暴露的"合集。
+// mcpService 外部注入的 MCP 客户端。为 nil 时只有内置工具可用 ——
+// 用包级变量而不是往 Tool 里传,是因为工具解析发生在协议层深处,
+// 一路把 service 传下去要改四个协议的十几个函数签名。
+var (
+	mcpMu      sync.RWMutex
+	mcpService *mcp.Service
+)
+
+// SetMCPService 注入 MCP 客户端(由 app.go 在启动时调用)
+func SetMCPService(s *mcp.Service) {
+	mcpMu.Lock()
+	defer mcpMu.Unlock()
+	mcpService = s
+}
+
+func currentMCP() *mcp.Service {
+	mcpMu.RLock()
+	defer mcpMu.RUnlock()
+	return mcpService
+}
+
+// builtinTools 内置工具表。MCP 服务器提供的工具在 listTools 里与它合并。
 var builtinTools = map[string]Tool{
 	"get_current_time": {
 		Name: "get_current_time",
@@ -54,21 +77,60 @@ var builtinTools = map[string]Tool{
 	},
 }
 
-// listTools 返回启用的工具,按名字排序保证请求体稳定(否则每次请求的 tools 顺序不同,
-// 会白白打断供应商侧的提示词缓存)
+// listTools 内置工具 + 所有已启用 MCP 服务器提供的工具。
+//
+// 按名字排序保证请求体稳定 —— 否则每次请求的 tools 顺序都不同,会白白打断
+// 供应商侧的提示词缓存。MCP 服务器连不上不影响这里:它自己会把错误记进 status,
+// 返回的列表里就是少了它那几个工具而已。
 func listTools() []Tool {
-	out := make([]Tool, 0, len(builtinTools))
+	out := make([]Tool, 0, len(builtinTools)+8)
 	for _, t := range builtinTools {
 		out = append(out, t)
+	}
+	// 只取已连好的:这里在聊天请求的关键路径上,不能为了连一个冷服务器把消息卡住。
+	// 预热由 Service.Warm 在启动和配置变更时做。
+	if svc := currentMCP(); svc != nil {
+		for _, info := range svc.CachedTools() {
+			out = append(out, mcpTool(info))
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
-// findTool 按名字取工具
+// findTool 按名字取工具。内置优先 —— 内置名字是我们自己定的,不会和 MCP 撞
+// (MCP 的名字都带服务器前缀)。
 func findTool(name string) (Tool, bool) {
-	t, ok := builtinTools[name]
-	return t, ok
+	if t, ok := builtinTools[name]; ok {
+		return t, true
+	}
+	svc := currentMCP()
+	if svc == nil {
+		return Tool{}, false
+	}
+	for _, info := range svc.CachedTools() {
+		if info.QualifiedName == name {
+			return mcpTool(info), true
+		}
+	}
+	return Tool{}, false
+}
+
+// mcpTool 把一个 MCP 工具包成本地 Tool。
+// 描述前面缀上服务器名,模型在有多个来源时能分清工具属于谁。
+func mcpTool(info mcp.ToolInfo) Tool {
+	return Tool{
+		Name:        info.QualifiedName,
+		Description: "[" + info.ServerName + "] " + info.Description,
+		Parameters:  info.InputSchema,
+		Handler: func(ctx context.Context, args string) (string, error) {
+			svc := currentMCP()
+			if svc == nil {
+				return "", fmt.Errorf("MCP 客户端未初始化")
+			}
+			return svc.CallTool(ctx, info.QualifiedName, decodeToolArgs(args))
+		},
+	}
 }
 
 // executeToolCalls 依次执行模型请求的这一批调用,把结果 / 错误写回每一条。
