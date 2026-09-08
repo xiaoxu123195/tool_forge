@@ -28,6 +28,9 @@ type streamCallbacks struct {
 	onThinkingBlock func(ThinkingBlock)
 	onImage         func(ImageBlock) // 模型生成的图片(DALL-E / Gemini imagen / grok-imagine 等)
 	onCitation      func(Citation)   // 联网搜索引用到的来源
+	// onSearch 供应商内置联网搜索发出了一次检索。同一个 Query 会推两次:
+	// 发出时 Status=running,拿到结果后再推一次 done —— 前端据此把"正在搜索"变成"已搜索"
+	onSearch func(SearchQuery)
 	// onToolCall 模型请求调用一个本地工具。协议层在流结束时一次性抛出(参数是分片到达的,
 	// 拼完才知道完整形态);runStream 收齐后执行,再带着结果发下一轮
 	onToolCall func(ToolCall)
@@ -54,6 +57,9 @@ func (c streamCallbacks) withDefaults() streamCallbacks {
 	if c.onCitation == nil {
 		c.onCitation = func(Citation) {}
 	}
+	if c.onSearch == nil {
+		c.onSearch = func(SearchQuery) {}
+	}
 	if c.onToolCall == nil {
 		c.onToolCall = func(ToolCall) {}
 	}
@@ -75,6 +81,7 @@ const (
 	EventThinkingPrefix = "ai-chat:thinking:" // 思考增量(deepseek-r1 / o1 / claude extended)
 	EventImagePrefix    = "ai-chat:image:"    // 模型生成的图片(payload = ImageBlock)
 	EventCitationPrefix = "ai-chat:citation:" // 联网引用来源(payload = Citation)
+	EventSearchPrefix   = "ai-chat:search:"   // 供应商联网检索词(payload = SearchQuery)
 	EventToolPrefix     = "ai-chat:tool:"     // 工具调用及其结果(payload = ToolCall)
 	EventDonePrefix     = "ai-chat:done:"
 	EventErrorPrefix    = "ai-chat:error:"
@@ -226,6 +233,8 @@ func (s *Service) RegenerateLast(ctx context.Context, convID string) (*Conversat
 	last.Content = ""
 	last.Thinking = nil
 	last.Citations = nil
+	last.Searches = nil
+	last.ToolCalls = nil
 	last.Model = c.ModelID
 	last.CreatedAt = now
 	c.UpdatedAt = now
@@ -327,6 +336,8 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 	var accumImages []ImageBlock
 	var accumThinking []ThinkingBlock
 	var accumCitations []Citation
+	// accumSearches 供应商内置联网搜索发出过的检索词;按 Query 去重后落盘
+	var accumSearches []SearchQuery
 	// roundCalls 本轮模型请求的工具调用;每轮开始前清空
 	var roundCalls []ToolCall
 	// accumToolCalls 整次提问里所有轮次的调用+结果,落盘用
@@ -409,6 +420,27 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 				wailsruntime.EventsEmit(s.ctx, EventCitationPrefix+conv.ID, c)
 			}
 		},
+		onSearch: func(q SearchQuery) {
+			if strings.TrimSpace(q.Query) == "" {
+				return
+			}
+			// 同一个检索词会推两次(running → done),按 Query 找到原来那条就地更新;
+			// 只追加的话前端会看到两条一模一样的"正在搜索"
+			found := false
+			for i := range accumSearches {
+				if accumSearches[i].Query == q.Query {
+					accumSearches[i] = q
+					found = true
+					break
+				}
+			}
+			if !found {
+				accumSearches = append(accumSearches, q)
+			}
+			if s.ctx != nil {
+				wailsruntime.EventsEmit(s.ctx, EventSearchPrefix+conv.ID, q)
+			}
+		},
 		onUsage: func(u Usage) {
 			// 同一次请求 usage 可能多次到达(Anthropic message_start 给 input、
 			// message_delta 给 output);取每个字段的最新非零值即可
@@ -431,6 +463,7 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 				Thinking:  finalThinking(),
 				Images:    accumImages,
 				Citations: accumCitations,
+				Searches:  accumSearches,
 				ToolCalls: accumToolCalls,
 			})
 			writeUsage()
@@ -444,6 +477,7 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 				Thinking:  finalThinking(),
 				Images:    accumImages,
 				Citations: accumCitations,
+				Searches:  accumSearches,
 				ToolCalls: accumToolCalls,
 				Truncated: true,
 			}
@@ -474,22 +508,47 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 	// 中间轮次的 onDone / onError 要拦下来:onDone 不能提前告诉前端"结束了",
 	// onError 则要立刻中止整个循环。正文、思考、用量这些照常往外抛,
 	// 用户能看到模型在调工具前说的话。
+	// 密钥池:第一把由轮转游标选出,其余的作为失败后的备选(见 keys.go)
+	attempts := keyAttempts(prov)
+	keyIdx := 0
+	req.Provider = withKey(prov, attempts[0].Key)
+
 	for round := 0; ; round++ {
-		roundCalls = nil
 		var roundErr error
 		roundCB := cb
 		roundCB.onDone = func() {}
 		roundCB.onError = func(err error) { roundErr = err }
 
-		switch spec.Endpoint {
-		case EndpointGemini:
-			streamGemini(ctx, req, roundCB)
-		case EndpointAnthropic:
-			streamAnthropic(ctx, req, roundCB)
-		case EndpointOpenAIChat:
-			streamOpenAI(ctx, req, false, roundCB)
-		default:
-			streamOpenAI(ctx, req, true, roundCB)
+		// 换密钥重试。只有"这一次尝试什么都没吐出来"时才敢重来 ——
+		// 已经通过事件推给前端的内容收不回去,重试会让用户看到两遍开头。
+		for {
+			roundCalls = nil
+			roundErr = nil
+			mark := progressMark{
+				text: bText.Len(), think: bThink.Len(),
+				images: len(accumImages), citations: len(accumCitations),
+				searches: len(accumSearches),
+			}
+
+			switch spec.Endpoint {
+			case EndpointGemini:
+				streamGemini(ctx, req, roundCB)
+			case EndpointAnthropic:
+				streamAnthropic(ctx, req, roundCB)
+			case EndpointOpenAIChat:
+				streamOpenAI(ctx, req, false, roundCB)
+			default:
+				streamOpenAI(ctx, req, true, roundCB)
+			}
+
+			clean := mark.text == bText.Len() && mark.think == bThink.Len() &&
+				mark.images == len(accumImages) && mark.citations == len(accumCitations) &&
+				mark.searches == len(accumSearches)
+			if roundErr == nil || !clean || keyIdx+1 >= len(attempts) || !isKeyLevelError(roundErr) {
+				break
+			}
+			keyIdx++
+			req.Provider = withKey(prov, attempts[keyIdx].Key)
 		}
 
 		if roundErr != nil {
@@ -503,6 +562,15 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 			// 到这儿说明模型停不下来了。已经拿到的正文照常保留,只是不再让它接着调。
 			cb.onError(fmt.Errorf("模型连续请求了 %d 轮工具调用仍未给出回答,已中止", maxToolRounds))
 			return
+		}
+
+		// 先把"要调什么"推给前端,再去执行。工具可能跑好几秒(MCP 冷启动更久),
+		// 期间界面上得有东西在动,否则用户只能对着空白等 —— 执行完再推就晚了。
+		for _, c := range roundCalls {
+			c.Status = ToolStatusRunning
+			if s.ctx != nil {
+				wailsruntime.EventsEmit(s.ctx, EventToolPrefix+conv.ID, c)
+			}
 		}
 
 		// 执行并把这一轮的调用 + 结果接进对话,下一轮模型就能看到结果了
@@ -531,12 +599,20 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 	cb.onDone()
 }
 
+// progressMark 一次尝试开始时,各累加器的长度快照。
+// 用来回答一个问题:这次尝试到底有没有往用户那边吐过东西?没有才敢换密钥重来。
+type progressMark struct {
+	text, think                 int
+	images, citations, searches int
+}
+
 // assistantResult 一次流跑完(或中断)后要落盘的 assistant 消息内容
 type assistantResult struct {
 	Content   string
 	Thinking  []ThinkingBlock
 	Images    []ImageBlock
 	Citations []Citation
+	Searches  []SearchQuery
 	ToolCalls []ToolCall
 	// Truncated 流被中断(用户取消 / 出错),正文尾部加省略号标记
 	Truncated bool
@@ -557,6 +633,9 @@ func (s *Service) persistAssistant(convID, msgID string, res assistantResult) {
 			}
 			if len(res.Citations) > 0 {
 				c.Messages[i].Citations = dedupeCitations(res.Citations)
+			}
+			if len(res.Searches) > 0 {
+				c.Messages[i].Searches = res.Searches
 			}
 			if len(res.ToolCalls) > 0 {
 				c.Messages[i].ToolCalls = res.ToolCalls

@@ -8,6 +8,7 @@ import {
   DeleteAIConversation,
   GetAIConversation,
   GetAIConfig,
+  ReorderAIConversations,
   UpdateAIConversationMeta,
 } from '../../../wailsjs/go/main/App'
 import type {
@@ -154,6 +155,18 @@ export default function AIChat() {
     }
   }
 
+  // 拖动排序:先动本地(拖放要跟手),再落盘
+  const onReorder = async (ids: string[]) => {
+    const byId = new Map(conversations.map((c) => [c.id, c]))
+    setConversations(ids.map((id) => byId.get(id)!).filter(Boolean))
+    try {
+      await ReorderAIConversations(ids)
+    } catch (e) {
+      await dialog({ title: '排序保存失败', message: String(e), confirmLabel: '知道了' })
+      await reloadAll()
+    }
+  }
+
   const onDelete = async (id: string) => {
     const err = (await DeleteAIConversation(id)) as unknown as string
     if (err) {
@@ -208,6 +221,7 @@ export default function AIChat() {
             onNew={onNewConversation}
             onDelete={onDelete}
             onEdit={(id) => void onEditConversation(id)}
+            onReorder={(ids) => void onReorder(ids)}
           />
           {activeId ? (
             <ChatPane

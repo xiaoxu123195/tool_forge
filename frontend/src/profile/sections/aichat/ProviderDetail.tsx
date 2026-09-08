@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react'
-import { Eye, EyeOff, Trash2, FlaskConical, Settings2, Save, Minus } from 'lucide-react'
-import { SaveAIProvider } from '../../../../wailsjs/go/main/App'
-import type { Provider, ProviderType } from '@/tools/ai-chat/types'
+import { useEffect, useMemo, useState } from 'react'
+import { ChevronDown, Minus, RefreshCw, Save, Trash2 } from 'lucide-react'
+import { ListAIModelSpecs, SaveAIProvider } from '../../../../wailsjs/go/main/App'
+import type { Capability, ModelSpec, Provider, ProviderType } from '@/tools/ai-chat/types'
 import { Button } from '@/components/ui/button'
 import { useConfirm } from '@/components/ui/confirm'
+import { cn } from '@/lib/utils'
+import { ApiKeyField } from './ApiKeyField'
 import { ProviderAvatar } from './ProviderAvatar'
 
 const DEFAULT_BASE_URL_BY_TYPE: Record<ProviderType, string> = {
@@ -22,6 +24,18 @@ const TYPE_LABEL: Record<ProviderType, string> = {
   xai: 'xAI Grok(/responses)',
 }
 
+/** 能力标签:文字比图标好认 —— 图标得先学一遍才知道哪个是"工具" */
+const CAP_LABEL: Record<Capability, { text: string; cls: string }> = {
+  vision: { text: '视觉', cls: 'bg-success/15 text-success' },
+  pdf: { text: '文档', cls: 'bg-muted-foreground/15 text-muted-foreground' },
+  reasoning: { text: '思考', cls: 'bg-violet-500/15 text-violet-500' },
+  webSearch: { text: '联网', cls: 'bg-info/15 text-info' },
+  imageGen: { text: '绘图', cls: 'bg-pink-500/15 text-pink-500' },
+  tools: { text: '工具', cls: 'bg-amber-500/15 text-amber-600 dark:text-amber-400' },
+}
+
+const CAP_ORDER: Capability[] = ['vision', 'reasoning', 'tools', 'webSearch', 'imageGen', 'pdf']
+
 function effectiveEndpoint(type: ProviderType, baseUrl: string): string {
   const url = baseUrl || DEFAULT_BASE_URL_BY_TYPE[type]
   switch (type) {
@@ -36,6 +50,27 @@ function effectiveEndpoint(type: ProviderType, baseUrl: string): string {
     default:
       return `${url}/responses`
   }
+}
+
+/**
+ * 模型归到哪一组。
+ *
+ * 先看 `/`、空格、冒号 —— 有这些的话前半截就是厂商/系列(`deepseek-ai/DeepSeek-V3`)。
+ * 都没有再按 `-`/`_` 取前两段:`grok-4.20-fast` → `grok-4.20`、`mimo-v2-omni` → `mimo-v2`。
+ * 取两段而不是一段,是因为只取一段会把 gpt-5.6 和 gpt-4o 混成一堆 "gpt"。
+ */
+function modelGroup(id: string): string {
+  const s = id.toLowerCase()
+  for (const d of ['/', ' ', ':']) {
+    if (s.includes(d)) return s.split(d)[0]
+  }
+  for (const d of ['-', '_']) {
+    if (s.includes(d)) {
+      const parts = s.split(d)
+      return parts.length > 1 ? parts[0] + d + parts[1] : parts[0]
+    }
+  }
+  return s
 }
 
 export function ProviderDetail({
@@ -56,62 +91,85 @@ export function ProviderDetail({
   const dialog = useConfirm()
   const [name, setName] = useState(provider.name)
   const [baseUrl, setBaseUrl] = useState(provider.baseUrl)
-  const [apiKey, setApiKey] = useState(provider.apiKey)
-  const [showKey, setShowKey] = useState(false)
   const [saving, setSaving] = useState(false)
   const [savedFlash, setSavedFlash] = useState(false)
+  const [specs, setSpecs] = useState<Record<string, ModelSpec>>({})
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     setName(provider.name)
     setBaseUrl(provider.baseUrl)
-    setApiKey(provider.apiKey)
+    setCollapsed(new Set())
   }, [provider.id])
 
-  const dirty =
-    name !== provider.name ||
-    baseUrl !== provider.baseUrl ||
-    apiKey !== provider.apiKey
+  // 能力画像一次批量取回:逐个模型问一遍就是十几次 IPC 往返
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      const list = await ListAIModelSpecs(provider.id)
+      if (!alive) return
+      const arr = Array.isArray(list) ? (list as unknown as ModelSpec[]) : []
+      setSpecs(Object.fromEntries(arr.map((s) => [s.id, s])))
+    })()
+    return () => {
+      alive = false
+    }
+  }, [provider.id, provider.models.join(',')])
+
+  const groups = useMemo(() => {
+    const m = new Map<string, string[]>()
+    for (const id of provider.models) {
+      const g = modelGroup(id)
+      const list = m.get(g)
+      if (list) list.push(id)
+      else m.set(g, [id])
+    }
+    return [...m.entries()]
+  }, [provider.models])
+
+  const dirty = name !== provider.name || baseUrl !== provider.baseUrl
 
   const onSave = async () => {
     setSaving(true)
     try {
-      const r = (await SaveAIProvider({
+      // 出错时 Wails 会 reject,由下面的 catch 接住 —— 以前那个 err 字符串
+      // 根本到不了前端(见 app.go SaveAIProvider 的注释)
+      await SaveAIProvider({
         ...provider,
         name: name.trim() || '未命名',
         baseUrl: baseUrl.trim() || DEFAULT_BASE_URL_BY_TYPE[provider.type],
-        apiKey: apiKey.trim(),
-      } as unknown as never)) as any
-      const err = (r?.[1] as string) || ''
-      if (err) {
-        await dialog({ title: '保存失败', message: err, confirmLabel: '知道了' })
-        return
-      }
+      } as unknown as never)
       setSavedFlash(true)
       setTimeout(() => setSavedFlash(false), 1500)
       onSaved()
+    } catch (e) {
+      await dialog({ title: '保存失败', message: String(e), confirmLabel: '知道了' })
     } finally {
       setSaving(false)
     }
   }
 
+  // 移除模型不弹确认:它只是把模型从选中列表里拿掉,再点「获取模型列表」就能加回来 ——
+  // 为一个可逆操作拦一道确认,只是让常规整理变得很烦
   const onRemoveModel = async (modelID: string) => {
-    const ok = await dialog({
-      title: '移除模型',
-      message: `从供应商「${provider.name}」中移除模型 ${modelID}?`,
-      confirmLabel: '移除',
-    })
-    if (!ok) return
-    const r = (await SaveAIProvider({
-      ...provider,
-      models: provider.models.filter((m) => m !== modelID),
-    } as unknown as never)) as any
-    const err = (r?.[1] as string) || ''
-    if (err) {
-      await dialog({ title: '移除失败', message: err, confirmLabel: '知道了' })
-      return
+    try {
+      await SaveAIProvider({
+        ...provider,
+        models: provider.models.filter((m) => m !== modelID),
+      } as unknown as never)
+    } catch (e) {
+      await dialog({ title: '移除失败', message: String(e), confirmLabel: '知道了' })
     }
     onSaved()
   }
+
+  const toggleGroup = (g: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(g)) next.delete(g)
+      else next.add(g)
+      return next
+    })
 
   return (
     <div className="space-y-5 p-6">
@@ -131,32 +189,7 @@ export function ProviderDetail({
         </Button>
       </div>
 
-      <div className="space-y-1.5">
-        <label className="text-xs font-medium text-muted-foreground">API 密钥</label>
-        <div className="flex gap-2">
-          <div className="relative flex-1">
-            <input
-              type={showKey ? 'text' : 'password'}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="sk-..."
-              className="h-9 w-full rounded-md border border-input bg-background pl-3 pr-9 font-mono text-sm outline-none focus:ring-1 focus:ring-ring"
-            />
-            <button
-              type="button"
-              onClick={() => setShowKey((v) => !v)}
-              className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-              title={showKey ? '隐藏' : '显示'}
-            >
-              {showKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-            </button>
-          </div>
-          <Button variant="outline" size="sm" onClick={onTest}>
-            <FlaskConical className="h-3.5 w-3.5" />
-            检测
-          </Button>
-        </div>
-      </div>
+      <ApiKeyField provider={provider} onChanged={onSaved} onTest={onTest} />
 
       <div className="space-y-1.5">
         <label className="text-xs font-medium text-muted-foreground">API 地址</label>
@@ -197,38 +230,78 @@ export function ProviderDetail({
             模型({provider.models.length})
           </label>
           <Button variant="outline" size="sm" onClick={onManage}>
-            <Settings2 className="h-3.5 w-3.5" />
-            管理
+            <RefreshCw className="h-3.5 w-3.5" />
+            获取模型列表
           </Button>
         </div>
         {provider.models.length === 0 ? (
           <div className="rounded-md border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
-            还没选模型,点击「管理」从 /v1/models 拉取并选入
+            还没选模型,点「获取模型列表」从 /v1/models 拉取并选入
           </div>
         ) : (
-          <ul className="space-y-1.5">
-            {provider.models.map((m) => (
-              <li
-                key={m}
-                className="group/model flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2"
-              >
-                <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-info/15 text-[10px] font-semibold text-info">
-                  {m.slice(0, 1).toUpperCase()}
+          <div className="space-y-2">
+            {groups.map(([group, ids]) => {
+              const open = !collapsed.has(group)
+              return (
+                <div key={group} className="overflow-hidden rounded-lg border border-border">
+                  <button
+                    type="button"
+                    onClick={() => toggleGroup(group)}
+                    className="flex w-full items-center gap-2 bg-secondary/40 px-3 py-1.5 text-left text-xs font-medium transition-colors hover:bg-secondary/60"
+                  >
+                    <ChevronDown
+                      className={cn('h-3.5 w-3.5 transition-transform', !open && '-rotate-90')}
+                    />
+                    <span className="truncate">{group}</span>
+                    <span className="ml-auto text-[10px] font-normal text-muted-foreground">
+                      {ids.length}
+                    </span>
+                  </button>
+                  {open && (
+                    <ul className="divide-y divide-border/60">
+                      {ids.map((m) => (
+                        <li
+                          key={m}
+                          className="group/model flex items-center gap-2 bg-card px-3 py-2"
+                        >
+                          <span className="min-w-0 flex-1 truncate font-mono text-xs">{m}</span>
+                          <CapabilityChips caps={specs[m]?.capabilities} />
+                          <button
+                            type="button"
+                            onClick={() => void onRemoveModel(m)}
+                            title="从列表中移除"
+                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive group-hover/model:opacity-100"
+                          >
+                            <Minus className="h-3.5 w-3.5" />
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
-                <span className="flex-1 truncate font-mono text-xs">{m}</span>
-                <button
-                  type="button"
-                  onClick={() => onRemoveModel(m)}
-                  title="移除该模型"
-                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-all hover:bg-destructive/10 hover:text-destructive group-hover/model:opacity-100"
-                >
-                  <Minus className="h-3.5 w-3.5" />
-                </button>
-              </li>
-            ))}
-          </ul>
+              )
+            })}
+          </div>
         )}
       </div>
+    </div>
+  )
+}
+
+function CapabilityChips({ caps }: { caps?: Capability[] }) {
+  if (!caps || caps.length === 0) return null
+  const shown = CAP_ORDER.filter((c) => caps.includes(c))
+  if (shown.length === 0) return null
+  return (
+    <div className="flex shrink-0 flex-wrap items-center gap-1">
+      {shown.map((c) => (
+        <span
+          key={c}
+          className={cn('rounded px-1.5 py-0.5 text-[10px] font-medium', CAP_LABEL[c].cls)}
+        >
+          {CAP_LABEL[c].text}
+        </span>
+      ))}
     </div>
   )
 }

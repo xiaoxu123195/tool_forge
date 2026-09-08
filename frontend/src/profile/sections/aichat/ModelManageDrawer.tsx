@@ -66,12 +66,18 @@ export function ModelManageDrawer({
     nextModels: Set<string>,
     nextOverrides: Record<string, ModelOverride>,
   ): Promise<string> => {
-    const r = (await SaveAIProvider({
-      ...provider,
-      models: Array.from(nextModels),
-      modelOverrides: nextOverrides,
-    } as unknown as never)) as any
-    return ((r?.[1] ?? r?.['1']) as string) || ''
+    // 出错时 Wails 直接 reject(第二个返回值是 error),不再走"错误字符串"那条路 ——
+    // 以前那句解包永远得到空串,保存失败在界面上一点声音都没有
+    try {
+      await SaveAIProvider({
+        ...provider,
+        models: Array.from(nextModels),
+        modelOverrides: nextOverrides,
+      } as unknown as never)
+      return ''
+    } catch (e) {
+      return String(e)
+    }
   }
 
   const load = async () => {

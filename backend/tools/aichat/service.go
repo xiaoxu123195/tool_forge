@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +50,12 @@ func (s *Service) ensureLoaded() error {
 		// 现在拆出独立的 "openai-compatible";若仍是 openai 则迁移
 		if ps[i].ID == "system-siliconflow" && ps[i].Type == TypeOpenAI {
 			ps[i].Type = TypeOpenAICompat
+			changed = true
+		}
+		// 单密钥 → 密钥池。老配置里 apiKey 可能是用户自己用逗号塞的一串,
+		// normalizeKeys 会一并拆开;拆不出东西的(没填 key)不写盘,免得每次启动都改文件
+		if len(ps[i].APIKeys) == 0 && strings.TrimSpace(ps[i].APIKey) != "" {
+			ps[i].APIKeys = normalizeKeys(ps[i])
 			changed = true
 		}
 	}
@@ -162,10 +169,58 @@ func (s *Service) ListProviders() ([]Provider, error) {
 	}
 	out := make([]Provider, len(s.providers))
 	copy(out, s.providers)
+	// 拖动排过序的排在前面(SortOrder 从 1 开始);没排过的按 UpdatedAt 倒序跟在后面。
+	// 这样"从没拖过"时的顺序和以前完全一致,拖过一次之后才由用户说了算。
 	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i].SortOrder, out[j].SortOrder
+		if (a == 0) != (b == 0) {
+			return a != 0
+		}
+		if a != b {
+			return a < b
+		}
 		return out[i].UpdatedAt > out[j].UpdatedAt
 	})
 	return out, nil
+}
+
+// ReorderProviders 按给定的 ID 顺序重排供应商。
+//
+// 只认列表里出现的 ID,没出现的保持原样 —— 前端拖的是过滤后的可见列表时,
+// 不该把搜索框外面那些的顺序也一起冲掉。
+func (s *Service) ReorderProviders(ids []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureLoaded(); err != nil {
+		return err
+	}
+	for i, id := range ids {
+		if p, idx := s.getProviderLocked(id); idx >= 0 {
+			p.SortOrder = i + 1
+		}
+	}
+	return saveProviders(s.providers)
+}
+
+// ModelSpecs 一次返回该供应商所有模型的能力画像。
+//
+// 逐个调 ModelSpec 也行,但列表里十几个模型就是十几次 IPC 往返;
+// 推断本身是纯计算,一次取回来最省事。
+func (s *Service) ModelSpecs(providerID string) []ModelSpec {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureLoaded(); err != nil {
+		return nil
+	}
+	p, idx := s.getProviderLocked(providerID)
+	if idx < 0 {
+		return nil
+	}
+	out := make([]ModelSpec, 0, len(p.Models))
+	for _, m := range p.Models {
+		out = append(out, InferModelSpec(*p, m))
+	}
+	return out
 }
 
 // GetProvider 按 ID 取一条;调用方需自行加锁或仅读不写
@@ -196,6 +251,21 @@ func (s *Service) SaveProvider(p Provider) (Provider, error) {
 		if p.Models == nil {
 			p.Models = []string{}
 		}
+		// 新建时接受调用方带来的密钥;它可能是逗号/换行分隔的一串,拆成池
+		p.APIKeys = normalizeKeys(p)
+		// 新供应商排在最前。刚建完接着就要填密钥、拉模型,让它掉到二十条开外
+		// 等于逼用户自己去找。已排过序的整体后移一位给它腾地方;
+		// 一条都没排过时不用动 —— SortOrder 全是 0,按 UpdatedAt 倒序它天然就在最前
+		bumped := false
+		for i := range s.providers {
+			if s.providers[i].SortOrder > 0 {
+				s.providers[i].SortOrder++
+				bumped = true
+			}
+		}
+		if bumped {
+			p.SortOrder = 1
+		}
 		s.providers = append(s.providers, p)
 	} else {
 		_, idx := s.getProviderLocked(p.ID)
@@ -206,6 +276,14 @@ func (s *Service) SaveProvider(p Provider) (Provider, error) {
 		p.CreatedAt = s.providers[idx].CreatedAt
 		p.IsSystem = s.providers[idx].IsSystem
 		p.UpdatedAt = now
+		p.SortOrder = s.providers[idx].SortOrder
+		// 密钥池归 SaveProviderKeys 独占,这里一律沿用磁盘上的。
+		//
+		// 前端保存供应商时发的是整个对象,里面的 apiKeys 可能是几秒前读到的旧值 ——
+		// 照单全收的话,"改个名字"这种操作会把中间新加的密钥悄悄抹掉。
+		// 更糟的是 apiKeys 缺省时会回落到单密钥字段,整个池直接塌成一把。
+		p.APIKeys = s.providers[idx].APIKeys
+		p.APIKey = s.providers[idx].APIKey
 		if p.Type == "" {
 			p.Type = TypeOpenAI
 		}
@@ -263,7 +341,7 @@ func (s *Service) FetchModels(providerID string) FetchModelsResult {
 		s.mu.Unlock()
 		return FetchModelsResult{OK: false, Message: "供应商不存在"}
 	}
-	provider := *p
+	provider := pickKey(*p)
 	s.mu.Unlock()
 	switch provider.Type {
 	case TypeGemini:
@@ -288,19 +366,9 @@ func (s *Service) TestProviderModel(providerID, modelID string) TestResult {
 		s.mu.Unlock()
 		return TestResult{OK: false, Message: "供应商不存在"}
 	}
-	provider := *p
+	provider := pickKey(*p)
 	s.mu.Unlock()
-	switch endpointFor(provider.Type) {
-	case EndpointGemini:
-		return testGeminiModel(provider, modelID)
-	case EndpointAnthropic:
-		return testAnthropicModel(provider, modelID)
-	case EndpointOpenAIChat:
-		return testModel(provider, modelID, false)
-	default:
-		// openai / xai 都走新版 Responses API
-		return testModel(provider, modelID, true)
-	}
+	return testProviderModelWithKey(provider, modelID)
 }
 
 // ModelSpec 返回某个模型在指定供应商下的能力画像。

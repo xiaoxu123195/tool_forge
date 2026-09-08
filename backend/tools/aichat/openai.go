@@ -299,6 +299,9 @@ func streamOpenAI(ctx context.Context, req chatRequest, useResponses bool, cb st
 			text, thinking = parseOpenAIResponsesDelta(payload)
 			citations = parseOpenAIResponsesCitations(payload)
 			collectResponsesToolCalls(payload, tools)
+			for _, q := range parseOpenAIResponsesSearches(payload) {
+				cb.onSearch(q)
+			}
 			// 中转(如 chatgpt2api 的 gpt-image)把生图结果以 markdown data:image
 			// 形式塞进正文,这里抽到图片通道,避免几 MB base64 当正文渲染/落盘
 			if text != "" {
@@ -1101,4 +1104,44 @@ func prettifyNetErr(err error) string {
 		return "网络错误: " + msg
 	}
 	return msg
+}
+
+// parseOpenAIResponsesSearches 抠出内置联网搜索发出的检索词。
+//
+// Responses 把每个内置工具调用当成一个 output item 推:
+//
+//	response.output_item.added  {item:{type:"web_search_call", status:"in_progress", action:{query}}}
+//	response.output_item.done   {item:{type:"web_search_call", status:"completed",  action:{query}}}
+//
+// 两帧都收:检索词在 added 那帧可能还没填(不同版本行为不一致),
+// 那就等 done 帧补上 —— 上层按 Query 去重,同一次检索不会显示成两条。
+func parseOpenAIResponsesSearches(payload string) []SearchQuery {
+	var ev struct {
+		Type string `json:"type"`
+		Item struct {
+			Type   string `json:"type"`
+			Status string `json:"status"`
+			Action struct {
+				Query string `json:"query"`
+			} `json:"action"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+		return nil
+	}
+	if ev.Type != "response.output_item.added" && ev.Type != "response.output_item.done" {
+		return nil
+	}
+	if ev.Item.Type != "web_search_call" {
+		return nil
+	}
+	q := strings.TrimSpace(ev.Item.Action.Query)
+	if q == "" {
+		return nil
+	}
+	status := "running"
+	if ev.Type == "response.output_item.done" || ev.Item.Status == "completed" {
+		status = "done"
+	}
+	return []SearchQuery{{Query: q, Status: status}}
 }

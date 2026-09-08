@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1147,16 +1148,17 @@ func (a *App) ListAIProviders() []aichat.Provider {
 	return list
 }
 
-// SaveAIProvider 新增或更新供应商;ID 为空 → 新增
-func (a *App) SaveAIProvider(p aichat.Provider) (aichat.Provider, string) {
+// SaveAIProvider 新增或更新供应商;ID 为空 → 新增。
+//
+// 第二个返回值是真正的 error,不是 string —— Wails 的 BoundMethod.Call 只把第一个
+// 返回值交给 JS,第二个仅当它是 error 才转成 promise reject。写成 string 的话
+// 错误在边界上被静默丢掉,前端那句 err 判断永远是空,而且首值是对象时
+// 前端的"多返回值可能是数组"解包还会再错一层(新建后选不中新供应商就是这么来的)。
+func (a *App) SaveAIProvider(p aichat.Provider) (aichat.Provider, error) {
 	if a.aichat == nil {
-		return aichat.Provider{}, "AI 服务未初始化"
+		return aichat.Provider{}, fmt.Errorf("AI 服务未初始化")
 	}
-	saved, err := a.aichat.SaveProvider(p)
-	if err != nil {
-		return aichat.Provider{}, err.Error()
-	}
-	return saved, ""
+	return a.aichat.SaveProvider(p)
 }
 
 // DeleteAIProvider 删除一条供应商
@@ -1195,6 +1197,57 @@ func (a *App) TestAIProviderModel(providerID, modelID string) aichat.TestResult 
 		return aichat.TestResult{OK: false, Message: "AI 服务未初始化"}
 	}
 	return a.aichat.TestProviderModel(providerID, modelID)
+}
+
+// ListAIProviderKeys 某供应商的密钥池。
+//
+// 注意这里是单返回值,不是本文件里常见的 (T, string)。Wails 的 BoundMethod.Call 在
+// 两个返回值时只把第一个交给 JS,第二个仅当它是 error 才转成 promise 的 reject ——
+// string 类型的错误会被**静默丢掉**。更糟的是首值本身是切片时,前端那套
+// "多返回值可能是数组"的解包逻辑会把它当成 [值, 错误] 再剥一层,
+// 于是拿到的是第一个密钥对象而不是密钥数组。密钥列表显示为空、乃至整页白屏,根源就在这。
+func (a *App) ListAIProviderKeys(providerID string) []aichat.APIKeyEntry {
+	if a.aichat == nil {
+		return nil
+	}
+	keys, err := a.aichat.ListProviderKeys(providerID)
+	if err != nil {
+		return nil
+	}
+	return keys
+}
+
+// SaveAIProviderKeys 整体替换某供应商的密钥池(增删改都走这一个入口)。
+// 第二个返回值是真正的 error —— Wails 会把它变成 promise reject,前端 catch 得到。
+func (a *App) SaveAIProviderKeys(providerID string, keys []aichat.APIKeyEntry) ([]aichat.APIKeyEntry, error) {
+	if a.aichat == nil {
+		return nil, fmt.Errorf("AI 服务未初始化")
+	}
+	return a.aichat.SaveProviderKeys(providerID, keys)
+}
+
+// ReorderAIProviders 按给定顺序重排供应商(拖动排序)
+func (a *App) ReorderAIProviders(ids []string) error {
+	if a.aichat == nil {
+		return fmt.Errorf("AI 服务未初始化")
+	}
+	return a.aichat.ReorderProviders(ids)
+}
+
+// ListAIModelSpecs 一次取回某供应商所有模型的能力画像(视觉 / 工具 / 思考 ...)
+func (a *App) ListAIModelSpecs(providerID string) []aichat.ModelSpec {
+	if a.aichat == nil {
+		return nil
+	}
+	return a.aichat.ModelSpecs(providerID)
+}
+
+// CheckAIProviderKeys 逐把检测密钥;keyIDs 为空表示检测全部启用中的
+func (a *App) CheckAIProviderKeys(providerID, modelID string, keyIDs []string) []aichat.KeyCheckResult {
+	if a.aichat == nil {
+		return nil
+	}
+	return a.aichat.CheckProviderKeys(providerID, modelID, keyIDs)
 }
 
 // GetAIConfig 默认助手模型
@@ -1410,6 +1463,14 @@ func (a *App) InsertAIClearMarker(id string) string {
 		return err.Error()
 	}
 	return ""
+}
+
+// ReorderAIConversations 按给定顺序重排会话列表(拖动排序)
+func (a *App) ReorderAIConversations(ids []string) error {
+	if a.aichat == nil {
+		return fmt.Errorf("AI 服务未初始化")
+	}
+	return a.aichat.ReorderConversations(ids)
 }
 
 // UpdateAIConversationModel 切换会话的供应商 / 模型

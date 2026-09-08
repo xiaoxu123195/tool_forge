@@ -94,6 +94,8 @@ type anthropicEvent struct {
 		Name string `json:"name"`
 		// Data redacted_thinking 的密文
 		Data string `json:"data"`
+		// ToolUseID web_search_tool_result 指回发起它的 server_tool_use 块
+		ToolUseID string `json:"tool_use_id"`
 		// Content web_search_tool_result 的搜索结果条目
 		Content []struct {
 			Type  string `json:"type"`
@@ -122,11 +124,16 @@ type anthropicEvent struct {
 // content_block_stop 这样一组事件;signature 必须和思考文本绑在一起落盘,
 // 下一轮原样回传,否则开着 thinking 的请求会被拒。
 type anthropicBlock struct {
-	kind      string
-	index     int
+	kind  string
+	index int
+	// id 块自身的 ID。server_tool_use 用它和后面的 web_search_tool_result 配对
+	id        string
 	text      strings.Builder
 	signature string
 	redacted  string
+	// args 累积 input_json_delta 分片。tool_use 走 toolCallAccumulator,
+	// server_tool_use(联网搜索)的参数没人接,只能在块内自己攒
+	args strings.Builder
 }
 
 // streamAnthropic 走 Anthropic /v1/messages 流;system 用顶层 system 字段
@@ -195,6 +202,8 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 	var streamErr string
 	var probe streamProbe
 	tools := newToolCallAccumulator()
+	// searchByID server_tool_use 块 ID → 检索词。搜索结果是另一个块,靠它认回是哪次检索
+	searchByID := map[string]string{}
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -217,7 +226,7 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 		if err := json.Unmarshal([]byte(payload), &ev); err == nil {
 			switch ev.Type {
 			case "content_block_start":
-				block = &anthropicBlock{kind: ev.ContentBlock.Type, index: ev.Index}
+				block = &anthropicBlock{kind: ev.ContentBlock.Type, index: ev.Index, id: ev.ContentBlock.ID}
 				if ev.ContentBlock.Type == "redacted_thinking" {
 					block.redacted = ev.ContentBlock.Data
 				}
@@ -227,7 +236,13 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 					c.ID = ev.ContentBlock.ID
 					c.Name = ev.ContentBlock.Name
 				}
-				// 联网搜索结果整块到达(不是增量),直接抽引用
+				// 搜索结果回来了:把对应的检索词标成完成,并抽出引用。
+				// 结果整块到达(不是增量),所以这里能一次拿到命中条数
+				if ev.ContentBlock.Type == "web_search_tool_result" {
+					if q, ok := searchByID[ev.ContentBlock.ToolUseID]; ok {
+						cb.onSearch(SearchQuery{Query: q, Status: "done", Results: len(ev.ContentBlock.Content)})
+					}
+				}
 				for _, c := range ev.ContentBlock.Content {
 					if c.URL != "" {
 						cb.onCitation(Citation{URL: c.URL, Title: c.Title})
@@ -251,6 +266,9 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 					if block != nil && block.kind == "tool_use" {
 						tools.at(strconv.Itoa(block.index)).Arguments += ev.Delta.PartialJSON
 					}
+					if block != nil && block.kind == "server_tool_use" {
+						block.args.WriteString(ev.Delta.PartialJSON)
+					}
 				case "citations_delta":
 					if ev.Delta.Citation.URL != "" {
 						cb.onCitation(Citation{
@@ -267,6 +285,13 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 						Signature: block.signature,
 						Redacted:  block.redacted,
 					})
+				}
+				// 检索词到这里才拼完整。先按 running 推出去,结果块回来时再改成 done
+				if block != nil && block.kind == "server_tool_use" {
+					if q := parseAnthropicSearchQuery(block.args.String()); q != "" {
+						searchByID[block.id] = q
+						cb.onSearch(SearchQuery{Query: q, Status: "running"})
+					}
 				}
 				block = nil
 			}
@@ -561,4 +586,18 @@ func testAnthropicModel(p Provider, modelID string) TestResult {
 		DurationMs: int(time.Since(start).Milliseconds()),
 		Message:    "流未返回任何数据",
 	}
+}
+
+// parseAnthropicSearchQuery 从 server_tool_use 的参数里取检索词。
+//
+// 参数是分片到达再拼起来的,模型被中断时可能拼不完整 —— 解不出来就当没有,
+// 界面上少一行"正在搜索"总好过弹一个解析错误。
+func parseAnthropicSearchQuery(args string) string {
+	var in struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal([]byte(args), &in); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(in.Query)
 }

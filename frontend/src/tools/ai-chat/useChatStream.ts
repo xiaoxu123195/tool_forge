@@ -5,12 +5,14 @@ import {
   EV_THINKING_PREFIX,
   EV_IMAGE_PREFIX,
   EV_CITATION_PREFIX,
+  EV_SEARCH_PREFIX,
   EV_TOOL_PREFIX,
   EV_DONE_PREFIX,
   EV_ERROR_PREFIX,
   type Citation,
   type Conversation,
   type ImageBlock,
+  type SearchQuery,
   type ToolCall,
 } from './types'
 
@@ -104,7 +106,25 @@ export function useChatStream({
         return prev
       })
     })
-    // 工具执行完才推,所以每条都是"调用 + 结果"的完整形态;
+    // 供应商内置联网搜索发出的检索词。同一个词会推两次(running → done),
+    // 按 query 就地覆盖 —— 只追加的话界面上会出现两条一模一样的
+    const offSearch = EventsOn(EV_SEARCH_PREFIX + conversationId, (q: SearchQuery) => {
+      if (!q?.query) return
+      setConv((prev) => {
+        if (!prev) return prev
+        const msgs = [...prev.messages]
+        const last = msgs[msgs.length - 1]
+        if (last?.role === 'assistant') {
+          const list = last.searches ?? []
+          const idx = list.findIndex((x) => x.query === q.query)
+          const next = idx >= 0 ? list.map((x, i) => (i === idx ? q : x)) : [...list, q]
+          msgs[msgs.length - 1] = { ...last, searches: next }
+          return { ...prev, messages: msgs }
+        }
+        return prev
+      })
+    })
+    // 同一次调用会推两次:模型请求时(status=running)、本地执行完时(带结果)。
     // 同一次提问可能连调多轮,按 id 覆盖而不是无脑追加
     const offTool = EventsOn(EV_TOOL_PREFIX + conversationId, (tc: ToolCall) => {
       if (!tc?.id) return
@@ -145,6 +165,7 @@ export function useChatStream({
       offChunk()
       offThinking()
       offCitation()
+      offSearch()
       offTool()
       offImage()
       offDone()

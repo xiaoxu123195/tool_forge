@@ -259,6 +259,7 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
           content: '',
           thinking: [],
           citations: undefined,
+          searches: undefined,
           toolCalls: undefined,
           model: prev.modelId,
         }
@@ -372,7 +373,19 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
   return (
     <div className="relative flex h-full min-w-0 flex-1 flex-col">
       <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-card px-4">
-        <h3 className="min-w-0 flex-1 truncate text-sm font-semibold">{conv.title}</h3>
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-sm font-semibold leading-tight">{conv.title}</h3>
+          <button
+            type="button"
+            onClick={() => setPickerOpen(true)}
+            className="flex max-w-full items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+            title="切换模型"
+          >
+            <span className="truncate font-mono">{conv.modelId}</span>
+            {provider && <span className="shrink-0 opacity-60">· {provider.name}</span>}
+            <ChevronDown className="h-3 w-3 shrink-0" />
+          </button>
+        </div>
         <button
           type="button"
           onClick={() => setSystemOpen(true)}
@@ -390,10 +403,11 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
         </button>
       </header>
 
+      <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="relative min-h-0 flex-1 overflow-auto bg-background"
+        className="min-h-0 flex-1 overflow-auto bg-background"
       >
         {isEmpty ? (
           <WelcomeScreen
@@ -405,7 +419,7 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
             }}
           />
         ) : (
-          <ul className="mx-auto max-w-3xl space-y-6 px-4 py-6">
+          <ul className="mx-auto max-w-3xl space-y-7 px-4 py-6">
             {visibleMessages.map((m) => {
               if (m.role === 'clear') {
                 return (
@@ -446,13 +460,14 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
         <button
           type="button"
           onClick={jumpToBottom}
-          className="pointer-events-auto absolute bottom-[148px] left-1/2 z-10 flex h-8 -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-card px-3 text-xs text-muted-foreground shadow-lg transition-colors hover:bg-secondary hover:text-foreground"
+          className="absolute bottom-4 left-1/2 z-10 flex h-8 -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-card px-3 text-xs text-muted-foreground shadow-lg transition-colors hover:bg-secondary hover:text-foreground"
           title="滚动到最新"
         >
           <ChevronDown className="h-3.5 w-3.5" />
           回到最新
         </button>
       )}
+      </div>
 
       <ChatComposer
         draft={draft}

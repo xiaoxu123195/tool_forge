@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
-import { X } from 'lucide-react'
+import { Eye, Pencil, X } from 'lucide-react'
+import { MarkdownPreview } from '@/components/tool/MarkdownPreview'
+import { cn } from '@/lib/utils'
 import type { ModelSpec } from './types'
 
 /** 用于"新建会话"和"编辑会话"两个场景 */
@@ -40,6 +42,7 @@ export function ConversationDialog({
 }) {
   const [title, setTitle] = useState(initial.title)
   const [system, setSystem] = useState(initial.system)
+  const [systemView, setSystemView] = useState<'edit' | 'preview'>('edit')
   const [contextCount, setContextCount] = useState(initial.contextCount)
   const [temperature, setTemperature] = useState<number | undefined>(initial.temperature)
   const [topP, setTopP] = useState<number | undefined>(initial.topP)
@@ -98,16 +101,55 @@ export function ConversationDialog({
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
               <label className="text-xs font-medium">系统提示词</label>
-              <span className="text-[11px] text-muted-foreground">{system.length} 字符</span>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-muted-foreground">{system.length} 字符</span>
+                {/* 提示词长了以后基本都是 Markdown(标题分段、列表、代码块),
+                    纯文本框里看是一坨;给个预览开关,写和读各用各的视图 */}
+                <div className="flex overflow-hidden rounded-md border border-border text-[11px]">
+                  {(['edit', 'preview'] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setSystemView(m)}
+                      className={cn(
+                        'flex items-center gap-1 px-2 py-0.5 transition-colors',
+                        systemView === m
+                          ? 'bg-info/15 text-info'
+                          : 'text-muted-foreground hover:bg-secondary',
+                      )}
+                    >
+                      {m === 'edit' ? <Pencil className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                      {m === 'edit' ? '编辑' : '预览'}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
-            <textarea
-              value={system}
-              onChange={(e) => setSystem(e.target.value)}
-              placeholder="例如:你是一个简洁、严谨的中文编程助手,只返回必要的代码,不要寒暄。"
-              rows={6}
-              className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm leading-relaxed outline-none focus:ring-1 focus:ring-ring"
-            />
-            <p className="text-[11px] text-muted-foreground">作为 system 角色注入到每次请求最前;留空则不发送。</p>
+            {systemView === 'edit' ? (
+              <textarea
+                value={system}
+                onChange={(e) => setSystem(e.target.value)}
+                placeholder="例如:你是一个简洁、严谨的中文编程助手,只返回必要的代码,不要寒暄。支持 Markdown。"
+                rows={8}
+                className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 font-mono text-sm leading-relaxed outline-none focus:ring-1 focus:ring-ring"
+              />
+            ) : (
+              <div
+                onDoubleClick={() => setSystemView('edit')}
+                title="双击回到编辑"
+                className="min-h-[168px] w-full overflow-auto rounded-md border border-input bg-secondary/20 px-3 py-2"
+              >
+                {system.trim() ? (
+                  <MarkdownPreview value={system} className="markdown-preview text-sm" />
+                ) : (
+                  <span className="text-sm text-muted-foreground">(空)</span>
+                )}
+              </div>
+            )}
+            <p className="text-[11px] text-muted-foreground">
+              作为 system 角色注入到每次请求最前;留空则不发送。原文按 Markdown 原样发给模型,
+              预览只影响这里怎么显示。
+            </p>
           </div>
 
           <div className="space-y-1.5">

@@ -17,6 +17,25 @@ export interface ModelOverride {
   maxOutput?: number
 }
 
+/** 密钥池里的一条。多把密钥轮着用,某把失效时后端自动换下一把 */
+export interface APIKeyEntry {
+  id: string
+  key: string
+  /** 用户给的备注,如 "个人号" / "公司额度" */
+  label?: string
+  /** 默认零值即启用 */
+  disabled?: boolean
+}
+
+/** 一把密钥的检测结果 */
+export interface KeyCheckResult {
+  keyId: string
+  ok: boolean
+  statusCode?: number
+  durationMs: number
+  message?: string
+}
+
 export interface Provider {
   id: string
   name: string
@@ -24,11 +43,16 @@ export interface Provider {
   /** builtin id (如 "openai" / "gemini") 或 data: URL;空 → 用名字首字母 */
   logo: string
   baseUrl: string
+  /** 单密钥字段;新逻辑一律看 apiKeys,这里只是老配置的迁移来源 */
   apiKey: string
+  /** 密钥池 */
+  apiKeys?: APIKeyEntry[]
   enabled: boolean
   models: string[]
   /** 系统内置预设 */
   isSystem: boolean
+  /** 拖动排出来的顺序,从 1 开始;0 = 没排过,回落到按 updatedAt 倒序 */
+  sortOrder?: number
   /** 按模型 ID 索引的能力修正 */
   modelOverrides?: Record<string, ModelOverride>
   createdAt: number
@@ -98,6 +122,17 @@ export interface ToolCall {
   result?: string
   /** 执行失败时的说明(同样会回传给模型) */
   error?: string
+  /** 'running' = 模型已请求、本地还在执行;落盘的都执行完了,所以读回来是空的 */
+  status?: string
+}
+
+/** 供应商内置联网搜索实际发出的一次检索(搜了什么词,不是引了哪些网页) */
+export interface SearchQuery {
+  query: string
+  /** 'running' = 检索已发出还没回来;空 / 'done' = 已完成 */
+  status?: string
+  /** 命中条数;有些协议给不出,留 0 */
+  results?: number
 }
 
 /** 联网搜索引用的一条来源 */
@@ -118,6 +153,8 @@ export interface Message {
   thinking?: ThinkingBlock[]
   /** 联网搜索引用到的来源 */
   citations?: Citation[]
+  /** 供应商内置联网搜索发出过的检索词 */
+  searches?: SearchQuery[]
   /** assistant 上是模型请求的工具调用(含执行结果) */
   toolCalls?: ToolCall[]
   /** 这条 assistant 消息使用的模型 ID */
@@ -125,9 +162,19 @@ export interface Message {
   createdAt: number
 }
 
-/** 把思考块拼成可展示的一段文本 */
+/**
+ * 把思考块拼成可展示的一段文本。
+ *
+ * 老会话文件里 thinking 是一个字符串(那时还没有 signature 的概念)。后端读盘时会把它
+ * 升格成数组,正常路径拿到的一定是数组 —— 但这个函数在渲染的最外层,一旦拿到字符串就是
+ * 整个窗口白屏。磁盘上确实还有那种格式的会话,所以这里认一下。
+ */
 export function thinkingText(m: Pick<Message, 'thinking'>): string {
-  return (m.thinking ?? []).map((b) => b.text ?? '').join('')
+  const t = m.thinking
+  if (!t) return ''
+  if (typeof t === 'string') return t
+  if (!Array.isArray(t)) return ''
+  return t.map((b) => b?.text ?? '').join('')
 }
 
 export interface Conversation {
@@ -228,6 +275,7 @@ export const EV_CHUNK_PREFIX = 'ai-chat:chunk:'
 export const EV_THINKING_PREFIX = 'ai-chat:thinking:'
 export const EV_IMAGE_PREFIX = 'ai-chat:image:'
 export const EV_CITATION_PREFIX = 'ai-chat:citation:'
+export const EV_SEARCH_PREFIX = 'ai-chat:search:'
 export const EV_TOOL_PREFIX = 'ai-chat:tool:'
 export const EV_DONE_PREFIX = 'ai-chat:done:'
 export const EV_ERROR_PREFIX = 'ai-chat:error:'

@@ -89,7 +89,7 @@ func (s *Service) StartTranslate(parent context.Context, req TranslateRequest) (
 		},
 	}
 	spec := InferModelSpec(prov, req.ModelID)
-	sreq := chatRequest{Provider: prov, Conv: conv, Spec: spec}
+	sreq := chatRequest{Provider: pickKey(prov), Conv: conv, Spec: spec}
 	cb := streamCallbacks{
 		onText: func(d string) {
 			if d == "" || s.ctx == nil {
@@ -175,7 +175,7 @@ func (s *Service) DetectLanguageLLM(parent context.Context, providerID, modelID,
 		Messages: []Message{{ID: uuid.NewString(), Role: "user", Content: prompt}},
 	}
 	spec := InferModelSpec(prov, modelID)
-	sreq := chatRequest{Provider: prov, Conv: conv, Spec: spec}
+	sreq := chatRequest{Provider: pickKey(prov), Conv: conv, Spec: spec}
 	var sb strings.Builder
 	done := make(chan struct{})
 	var streamErr error

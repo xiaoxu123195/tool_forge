@@ -42,8 +42,67 @@ func (s *Service) ListConversations() ([]ConversationSummary, error) {
 			MessageCount: len(c.Messages),
 		})
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
+	// 没排过的按 UpdatedAt 倒序排在最前,排过的按用户排定的顺序跟在后面。
+	//
+	// 顺序反过来(排过的在前)会有个坏结果:用户拖过一次之后现有会话全部变成"已排",
+	// 之后每新建一个都会掉到列表末尾 —— 刚开的对话反而看不见。现在这样,
+	// 新会话总在顶部,用户手工排的那一段稳稳待在下面。
+	rank := s.conversationRank()
+	sort.SliceStable(out, func(i, j int) bool {
+		a, aok := rank[out[i].ID]
+		b, bok := rank[out[j].ID]
+		if aok != bok {
+			return !aok
+		}
+		if aok && a != b {
+			return a < b
+		}
+		return out[i].UpdatedAt > out[j].UpdatedAt
+	})
 	return out, nil
+}
+
+// conversationRank 会话 ID → 用户排定的位次;没排过的不在表里
+func (s *Service) conversationRank() map[string]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureLoaded(); err != nil {
+		return nil
+	}
+	rank := make(map[string]int, len(s.config.ConversationOrder))
+	for i, id := range s.config.ConversationOrder {
+		rank[id] = i
+	}
+	return rank
+}
+
+// ReorderConversations 按给定顺序重排会话列表。
+//
+// 只记 ID,不碰会话文件本身。列表里已经不存在的 ID 会被顺手清掉,
+// 免得删了几十个会话之后 config 里还留着一堆孤儿。
+func (s *Service) ReorderConversations(ids []string) error {
+	alive := map[string]bool{}
+	if list, err := s.ListConversations(); err == nil {
+		for _, c := range list {
+			alive[c.ID] = true
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureLoaded(); err != nil {
+		return err
+	}
+	kept := make([]string, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if seen[id] || (len(alive) > 0 && !alive[id]) {
+			continue
+		}
+		seen[id] = true
+		kept = append(kept, id)
+	}
+	s.config.ConversationOrder = kept
+	return saveConfig(s.config)
 }
 
 // GetConversation 取一条会话(含全部消息)

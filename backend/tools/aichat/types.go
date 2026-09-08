@@ -50,15 +50,22 @@ type ModelOverride struct {
 
 // Provider 用户配置的一个 AI 供应商
 type Provider struct {
-	ID        string       `json:"id"`
-	Name      string       `json:"name"`     // 用户给的名字,如 "OpenAI"、"我的中转"
-	Type      ProviderType `json:"type"`     // 供应商协议类型;空值按 openai 处理(向前兼容)
-	Logo      string       `json:"logo"`     // 头像;builtin id (如 "openai") 或 data: URL;空 → 名字首字母
-	BaseURL   string       `json:"baseUrl"`  // 例如 https://api.openai.com/v1
-	APIKey    string       `json:"apiKey"`   // 明文存,Wails 是本地 app
-	Enabled   bool         `json:"enabled"`  // 总开关;关闭后不在模型选择器里出现
-	Models    []string     `json:"models"`   // 用户从 /v1/models 选进来的 model id
-	IsSystem  bool         `json:"isSystem"` // 系统内置预设(可改但删除会重新注入)
+	ID      string       `json:"id"`
+	Name    string       `json:"name"`    // 用户给的名字,如 "OpenAI"、"我的中转"
+	Type    ProviderType `json:"type"`    // 供应商协议类型;空值按 openai 处理(向前兼容)
+	Logo    string       `json:"logo"`    // 头像;builtin id (如 "openai") 或 data: URL;空 → 名字首字母
+	BaseURL string       `json:"baseUrl"` // 例如 https://api.openai.com/v1
+	// APIKey 单密钥字段。新逻辑一律走 APIKeys 池,这里保留两个作用:
+	// 老配置的迁移来源,以及协议层实际使用的"这次请求选中的那把"(见 keys.go 的 withKey)
+	APIKey string `json:"apiKey"`
+	// APIKeys 密钥池;多把轮着用,某把失效时自动换下一把(见 keys.go)
+	APIKeys  []APIKeyEntry `json:"apiKeys,omitempty"`
+	Enabled  bool          `json:"enabled"`  // 总开关;关闭后不在模型选择器里出现
+	Models   []string      `json:"models"`   // 用户从 /v1/models 选进来的 model id
+	IsSystem bool          `json:"isSystem"` // 系统内置预设(可改但删除会重新注入)
+	// SortOrder 用户拖动排出来的顺序,从 1 开始;0 表示"没排过",
+	// 这类回落到按 UpdatedAt 倒序 —— 也就是没人拖动过时的老行为
+	SortOrder int `json:"sortOrder,omitempty"`
 	// ModelOverrides 按模型 ID 索引的能力修正;能力推断不准时由用户手动纠正
 	ModelOverrides map[string]ModelOverride `json:"modelOverrides,omitempty"`
 	CreatedAt      int64                    `json:"createdAt"`
@@ -151,6 +158,27 @@ type ToolCall struct {
 	Result string `json:"result,omitempty"`
 	// Error 执行失败时的说明;它同样会回传给模型,让它有机会换个参数重试
 	Error string `json:"error,omitempty"`
+	// Status 仅用于流式展示:ToolStatusRunning 表示模型已经请求、本地还在执行。
+	// 执行完就把它留空再推一次(落盘的也是空),所以前端只需判断"是不是 running"
+	Status string `json:"status,omitempty"`
+}
+
+// ToolStatusRunning 工具已被模型请求、本地还在执行。
+// 没有对应的 "done":执行完时 Status 留空,空值即已完成 —— 这样老会话文件
+// (那时还没有这个字段)读回来也是"已完成",不用额外迁移。
+const ToolStatusRunning = "running"
+
+// SearchQuery 供应商内置联网搜索实际发出的一次检索。
+//
+// 和 Citation 是两回事:Citation 是"引用了哪些网页",这个是"用什么词搜的"。
+// 模型答得跑偏时,看它搜了什么往往比看它引了什么更能说明问题 ——
+// 而且检索发生在回答之前,能在等待期间就给用户一点"它在干什么"的反馈。
+type SearchQuery struct {
+	Query string `json:"query"`
+	// Status "running" = 检索已发出还没回来;空 / "done" = 已完成
+	Status string `json:"status,omitempty"`
+	// Results 这次检索命中的条数;有些协议给不出,留 0
+	Results int `json:"results,omitempty"`
 }
 
 // Citation 联网搜索引用的一条来源
@@ -173,6 +201,8 @@ type Message struct {
 	Thinking []ThinkingBlock `json:"thinking,omitempty"`
 	// Citations 联网搜索引用到的来源(仅 assistant 有意义)
 	Citations []Citation `json:"citations,omitempty"`
+	// Searches 供应商内置联网搜索发出过的检索词(仅 assistant 有意义)
+	Searches []SearchQuery `json:"searches,omitempty"`
 	// ToolCalls assistant 消息上是"模型请求调用的工具",
 	// RoleTool 消息上是"这批调用的执行结果"
 	ToolCalls []ToolCall `json:"toolCalls,omitempty"`
@@ -260,10 +290,18 @@ type ConversationSummary struct {
 	MessageCount int    `json:"messageCount"`
 }
 
+// SortedConversations 是 ListConversations 的返回值语义说明:
+// 拖动排过序的按用户的顺序在前,其余按 UpdatedAt 倒序跟在后面。
+
 // Config 全局 AI 配置
 type Config struct {
 	DefaultProviderID string `json:"defaultProviderId"`
 	DefaultModelID    string `json:"defaultModelId"`
+	// ConversationOrder 用户拖出来的会话顺序(会话 ID 列表)。
+	//
+	// 放在这里而不是每条会话里加一个 SortOrder 字段:会话文件带着全部消息,
+	// 有的几百 KB,为了改一个排序位把它们整个重写一遍太亏。这里一次写几百字节就够。
+	ConversationOrder []string `json:"conversationOrder,omitempty"`
 }
 
 // Usage 单次请求的 token 用量(由各协议从最后一帧解析)

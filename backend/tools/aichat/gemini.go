@@ -167,6 +167,9 @@ func streamGemini(ctx context.Context, req chatRequest, cb streamCallbacks) {
 		for _, c := range parseGeminiCitations(payload) {
 			cb.onCitation(c)
 		}
+		for _, q := range parseGeminiSearches(payload) {
+			cb.onSearch(q)
+		}
 		toolCalls = append(toolCalls, parseGeminiToolCalls(payload)...)
 	}
 	if err := scanner.Err(); err != nil {
@@ -355,6 +358,32 @@ func parseGeminiCitations(payload string) []Citation {
 		for _, chunk := range c.GroundingMetadata.GroundingChunks {
 			if chunk.Web != nil && chunk.Web.URI != "" {
 				out = append(out, Citation{URL: chunk.Web.URI, Title: chunk.Web.Title})
+			}
+		}
+	}
+	return out
+}
+
+// parseGeminiSearches 抠出 google_search 实际用的检索词。
+//
+// 和别家不同,Gemini 不在检索发生时通知,而是把用过的词和结果一起挂在
+// groundingMetadata 上事后给出 —— 所以这里只能直接标成 done,做不到"正在搜索"的实时感。
+func parseGeminiSearches(payload string) []SearchQuery {
+	var ev struct {
+		Candidates []struct {
+			GroundingMetadata struct {
+				WebSearchQueries []string `json:"webSearchQueries"`
+			} `json:"groundingMetadata"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+		return nil
+	}
+	var out []SearchQuery
+	for _, c := range ev.Candidates {
+		for _, q := range c.GroundingMetadata.WebSearchQueries {
+			if q = strings.TrimSpace(q); q != "" {
+				out = append(out, SearchQuery{Query: q, Status: "done"})
 			}
 		}
 	}
