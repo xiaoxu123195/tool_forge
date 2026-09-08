@@ -34,16 +34,44 @@ export function defaultFormState(): FormState {
   }
 }
 
+/**
+ * 把一段文本切成一串值:逗号、分号、换行都算分隔符,每段去掉两侧空白。
+ *
+ * 关键词和路径都用它。
+ */
+export function splitList(text: string): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const part of text.split(/[,;\r\n]+/)) {
+    const t = part.trim()
+    if (!t || seen.has(t)) continue
+    seen.add(t)
+    out.push(t)
+  }
+  return out
+}
+
+/** 规范化设备内路径:折叠重复斜杠。`Contacts//Donations` 这种手抖很常见 */
+export function normalizePath(p: string): string {
+  return p.replace(/\/{2,}/g, '/')
+}
+
 export function buildArgs(form: FormState): string[] {
   const args: string[] = [form.platform, 'export']
-  if (form.keywords.trim()) {
-    args.push('-k', form.keywords.trim())
+  // -k 和 -s 在 go-forensic 里都是 pflag 的 strings 类型。把整串逗号文本当**一个**
+  // 参数传过去的话,pflag 会自己按 CSV 规则切 —— 而人自然会敲"A, B"(逗号后带空格),
+  // 切出来第二个就成了 " B",带着前导空格,设备上根本找不到。
+  //
+  // 所以这里自己切好,一个值发一次 flag。重复 flag 是 pflag 明确支持的累加写法,
+  // 顺带也躲开了 CSV 的引号规则 —— 路径里真出现空格或逗号时不会被再切一次。
+  for (const k of splitList(form.keywords)) {
+    args.push('-k', k)
   }
   if (form.outputDir.trim()) {
     args.push('-o', form.outputDir.trim())
   }
-  if (form.specifyPaths.trim()) {
-    args.push('-s', form.specifyPaths.trim())
+  for (const path of splitList(form.specifyPaths)) {
+    args.push('-s', normalizePath(path))
   }
   if (form.platform === 'ios') {
     if (form.sshAddr.trim()) {
