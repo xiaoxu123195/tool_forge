@@ -31,7 +31,7 @@ import { ChatComposer } from './ChatComposer'
 import { ClearDivider, MessageItem } from './ChatMessage'
 import { WelcomeScreen } from './ChatWelcome'
 import { FilePreviewModal, ImagePreviewModal } from './ChatPreviews'
-import { pickFirst, pickSecond } from './chat-utils'
+import { CHAT_COLUMN, pickFirst, pickSecond } from './chat-utils'
 import { useChatStream } from './useChatStream'
 import { useAttachments } from './useAttachments'
 import { cn } from '@/lib/utils'
@@ -419,7 +419,7 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
             }}
           />
         ) : (
-          <ul className="mx-auto max-w-3xl space-y-7 px-4 py-6">
+          <ul className={cn(CHAT_COLUMN, 'space-y-7 px-4 py-6')}>
             {visibleMessages.map((m) => {
               if (m.role === 'clear') {
                 return (

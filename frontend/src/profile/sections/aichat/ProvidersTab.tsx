@@ -140,7 +140,7 @@ export function ProvidersTab() {
   }
 
   return (
-    <div className="flex h-[600px] overflow-hidden rounded-lg border border-border bg-card">
+    <div className="flex min-h-0 flex-1 overflow-hidden rounded-lg border border-border bg-card">
       {/* Left: provider list */}
       <aside className="flex w-[260px] shrink-0 flex-col border-r border-border">
         <div className="p-3">

@@ -44,7 +44,7 @@ export function DefaultsTab() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="max-w-2xl space-y-4">
       <div className="rounded-lg border border-border bg-card p-5">
         <div className="mb-3 flex items-center gap-2 text-sm font-medium">
           <MessagesSquare className="h-4 w-4 text-info" />

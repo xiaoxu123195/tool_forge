@@ -14,7 +14,7 @@ import {
 import { formatFileSize, imageSrc, MAX_FILES_PER_MESSAGE } from './file-parsers'
 import { Button } from '@/components/ui/button'
 import { ProviderAvatar } from './ProviderAvatar'
-import { fileIcon } from './chat-utils'
+import { CHAT_COLUMN, fileIcon } from './chat-utils'
 import type { useAttachments } from './useAttachments'
 import {
   EFFORT_LABELS,
@@ -87,7 +87,7 @@ export function ChatComposer({
 
   return (
     <footer className="shrink-0 border-t border-border bg-card">
-      <div className="mx-auto max-w-3xl p-3">
+      <div className={cn(CHAT_COLUMN, 'p-3')}>
         {!isEmpty && !streaming && (
           <div className="mb-2 flex items-center justify-end">
             <button
