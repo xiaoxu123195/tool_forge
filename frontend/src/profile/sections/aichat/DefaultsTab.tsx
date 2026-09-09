@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { MessagesSquare, Save } from 'lucide-react'
+import { MessagesSquare, Save, Sparkles } from 'lucide-react'
 import {
   ListAIProviders,
   GetAIConfig,
@@ -14,6 +14,11 @@ export function DefaultsTab() {
   const [providers, setProviders] = useState<Provider[]>([])
   const [providerId, setProviderId] = useState('')
   const [modelId, setModelId] = useState('')
+  // 自动起标题。后端存的是"关"(老配置没有这个字段 → 零值 → 开着),
+  // 这里翻成正向的"开"再给界面用,免得整个组件里到处都是双重否定
+  const [autoTitle, setAutoTitle] = useState(true)
+  const [titleProviderId, setTitleProviderId] = useState('')
+  const [titleModelId, setTitleModelId] = useState('')
   const [savedFlash, setSavedFlash] = useState(false)
 
   useEffect(() => {
@@ -23,17 +28,26 @@ export function DefaultsTab() {
       const cfg = (await GetAIConfig()) as unknown as AIConfig
       setProviderId(cfg.defaultProviderId ?? '')
       setModelId(cfg.defaultModelId ?? '')
+      setAutoTitle(!cfg.autoTitleOff)
+      setTitleProviderId(cfg.titleProviderId ?? '')
+      setTitleModelId(cfg.titleModelId ?? '')
     })()
   }, [])
 
   const enabled = providers.filter((p) => p.enabled && p.models.length > 0)
   const currentProvider = enabled.find((p) => p.id === providerId)
   const modelOptions = currentProvider?.models ?? []
+  const titleProvider = enabled.find((p) => p.id === titleProviderId)
 
   const onSave = async () => {
     const err = (await SaveAIConfig({
       defaultProviderId: providerId,
       defaultModelId: modelId,
+      autoTitleOff: !autoTitle,
+      // 只选了供应商没选模型等于没配。半套配置存下去,后端每次都要判一遍
+      // "两个字段是不是都在" —— 干脆在这里就不让它成形
+      titleProviderId: titleModelId ? titleProviderId : '',
+      titleModelId: titleProviderId ? titleModelId : '',
     } as unknown as never)) as unknown as string
     if (err) {
       await dialog({ title: '保存失败', message: err, confirmLabel: '知道了' })
@@ -106,6 +120,70 @@ export function DefaultsTab() {
           </Button>
           {savedFlash && <span className="text-xs text-success">已保存</span>}
         </div>
+      </div>
+
+      <div className="rounded-lg border border-border bg-card p-5">
+        <div className="mb-3 flex items-center gap-2 text-sm font-medium">
+          <Sparkles className="h-4 w-4 text-info" />
+          自动起标题
+        </div>
+        <label className="flex cursor-pointer items-start gap-2">
+          <input
+            type="checkbox"
+            checked={autoTitle}
+            onChange={(e) => setAutoTitle(e.target.checked)}
+            className="mt-0.5 h-3.5 w-3.5 shrink-0"
+          />
+          <span className="text-xs">
+            首轮问答结束后,让模型给会话起个标题
+            <span className="mt-0.5 block text-[11px] text-muted-foreground">
+              只在第一轮之后起一次;你手动改过名字的会话不会被覆盖
+            </span>
+          </span>
+        </label>
+
+        {autoTitle && (
+          <div className="mt-4 space-y-2">
+            <div className="text-xs font-medium text-muted-foreground">
+              专用模型
+              <span className="ml-2 font-normal">· 留空就用会话自己的模型</span>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <select
+                value={titleProviderId}
+                onChange={(e) => {
+                  setTitleProviderId(e.target.value)
+                  setTitleModelId('')
+                }}
+                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="">— 跟随会话 —</option>
+                {enabled.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={titleModelId}
+                onChange={(e) => setTitleModelId(e.target.value)}
+                disabled={!titleProvider}
+                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+              >
+                <option value="">— 未选择 —</option>
+                {(titleProvider?.models ?? []).map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              起标题是一次额外的请求。挑个便宜的小模型专门干这件事,
+              比让正在用的大模型顺手起要省得多。
+            </p>
+          </div>
+        )}
       </div>
     </div>
   )

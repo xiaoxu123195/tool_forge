@@ -9,6 +9,7 @@ import {
   EV_TOOL_PREFIX,
   EV_DONE_PREFIX,
   EV_ERROR_PREFIX,
+  EV_TITLE_PREFIX,
   type Citation,
   type Conversation,
   type ImageBlock,
@@ -29,6 +30,7 @@ export function useChatStream({
   onStreamEnd,
   onDone,
   onError,
+  onTitle,
 }: {
   conversationId: string
   setConv: React.Dispatch<React.SetStateAction<Conversation | null>>
@@ -38,6 +40,8 @@ export function useChatStream({
   onDone: () => void
   /** 出错;参数是后端给的错误文案 */
   onError: (err: string) => void
+  /** 后端自动起好了标题;用于顺带刷新左侧列表 */
+  onTitle?: (title: string) => void
 }) {
   // 用 EventsOn 返回的 cancel 函数逐个退订,避免误伤同名监听
   useEffect(() => {
@@ -184,6 +188,13 @@ export function useChatStream({
       })
       onDone()
     })
+    // 自动起的标题。只改标题,不碰 messages —— 它到达时用户很可能已经在问下一句了,
+    // 顺手把整个 conv 覆盖掉会把正在流的那条回复抹了
+    const offTitle = EventsOn(EV_TITLE_PREFIX + conversationId, (title: string) => {
+      if (!title) return
+      setConv((prev) => (prev ? { ...prev, title, titleAuto: false } : prev))
+      onTitle?.(title)
+    })
     const offError = EventsOn(EV_ERROR_PREFIX + conversationId, (err: string) => {
       flushNow() // 出错也把已收到的部分显示全,别让最后一截丢在缓冲里
       onStreamEnd()
@@ -199,6 +210,7 @@ export function useChatStream({
       offTool()
       offImage()
       offDone()
+      offTitle()
       offError()
     }
   }, [conversationId])

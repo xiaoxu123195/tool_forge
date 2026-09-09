@@ -81,6 +81,33 @@ export interface TestResult {
 export interface AIConfig {
   defaultProviderId: string
   defaultModelId: string
+  /** 关掉「首轮问答后让模型起标题」。存的是"关",所以缺省(老配置)= 开着 */
+  autoTitleOff?: boolean
+  /** 起标题专用的模型;两个都填才生效,留空就用会话自己的模型 */
+  titleProviderId?: string
+  titleModelId?: string
+  /** 会话拖动排序;由侧边栏写,设置页只读不写 */
+  conversationOrder?: string[]
+}
+
+/** 导出 Markdown 时带哪些内容 */
+export interface ExportOptions {
+  includeSystem: boolean
+  includeThinking: boolean
+  includeTools: boolean
+  includeCitations: boolean
+  includeUsage: boolean
+  /** 图片以 data: URI 内联;关掉只留占位,文件小很多 */
+  embedImages: boolean
+}
+
+export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
+  includeSystem: true,
+  includeThinking: false,
+  includeTools: false,
+  includeCitations: true,
+  includeUsage: true,
+  embedImages: true,
 }
 
 /** 一张图(用户上传给 vision 模型 / 模型生成给用户) */
@@ -194,6 +221,8 @@ export function thinkingText(m: Pick<Message, 'thinking'>): string {
 export interface Conversation {
   id: string
   title: string
+  /** 标题还是自动来的,允许被模型起的标题覆盖;用户手工命名过就是 false */
+  titleAuto?: boolean
   providerId: string
   modelId: string
   system?: string
@@ -327,3 +356,5 @@ export const EV_SEARCH_PREFIX = 'ai-chat:search:'
 export const EV_TOOL_PREFIX = 'ai-chat:tool:'
 export const EV_DONE_PREFIX = 'ai-chat:done:'
 export const EV_ERROR_PREFIX = 'ai-chat:error:'
+/** 自动起的标题。比 done 晚几秒到 —— 起标题是流结束后另发的一次请求 */
+export const EV_TITLE_PREFIX = 'ai-chat:title:'

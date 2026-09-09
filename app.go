@@ -1514,6 +1514,33 @@ func (a *App) ContinueAILastChat(convID string) (aichat.Conversation, error) {
 	return *c, nil
 }
 
+// RenderAIConversationMarkdown 把会话渲染成 Markdown 文本(供预览 / 复制到剪贴板)
+func (a *App) RenderAIConversationMarkdown(convID string, opt aichat.ExportOptions) (string, error) {
+	if a.aichat == nil {
+		return "", fmt.Errorf("AI 服务未初始化")
+	}
+	return a.aichat.RenderConversationMarkdown(convID, opt)
+}
+
+// ExportAIConversation 弹保存对话框,把会话导出成 .md 文件。
+// 返回保存后的绝对路径;用户在对话框里点了取消返回 ("", nil) —— 那不是错误,
+// 前端据此区分"存好了"和"算了不存",不该弹一个失败提示
+func (a *App) ExportAIConversation(convID string, opt aichat.ExportOptions) (string, error) {
+	if a.aichat == nil {
+		return "", fmt.Errorf("AI 服务未初始化")
+	}
+	md, err := a.aichat.RenderConversationMarkdown(convID, opt)
+	if err != nil {
+		return "", err
+	}
+	return system.SaveBytesToFile(a.ctx, system.PickFileOptions{
+		Title:           "导出会话",
+		DefaultFilename: aichat.ExportFilename(a.aichat.ConversationTitle(convID)) + ".md",
+		Extensions:      []string{".md"},
+		DisplayName:     "Markdown 文件",
+	}, base64.StdEncoding.EncodeToString([]byte(md)))
+}
+
 // ReorderAIConversations 按给定顺序重排会话列表(拖动排序)
 func (a *App) ReorderAIConversations(ids []string) error {
 	if a.aichat == nil {

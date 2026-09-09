@@ -85,6 +85,9 @@ const (
 	EventToolPrefix     = "ai-chat:tool:"     // 工具调用及其结果(payload = ToolCall)
 	EventDonePrefix     = "ai-chat:done:"
 	EventErrorPrefix    = "ai-chat:error:"
+	// EventTitlePrefix 自动起的标题(payload = 新标题)。它比 done 晚到几秒 ——
+	// 起标题是流结束之后另发的一次请求,不能让用户为了一个标题多等
+	EventTitlePrefix = "ai-chat:title:"
 )
 
 // streamRegistry 维护正在进行中的流的取消函数,key 是 conversationID
@@ -183,7 +186,10 @@ func (s *Service) SendChat(ctx context.Context, convID, userContent string, user
 	c.Messages = append(c.Messages, userMsg, asstMsg)
 	c.UpdatedAt = now
 	if c.Title == "" || c.Title == "新对话" {
+		// 先用首条消息截个标题顶上,列表里立刻能认出来;
+		// 首轮答完后 maybeAutoTitle 会拿模型起的换掉它
 		c.Title = autoTitle(userContent)
+		c.TitleAuto = true
 	}
 	if err := saveConversation(c); err != nil {
 		return nil, err
@@ -521,6 +527,9 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 			if s.ctx != nil {
 				wailsruntime.EventsEmit(s.ctx, EventDonePrefix+conv.ID, bText.String())
 			}
+			// 起标题是另发一次请求,放后台跑:done 事件已经发出去了,
+			// 界面该出的都出了,不该被这件小事拖着
+			go s.maybeAutoTitle(conv.ID)
 		},
 		onError: func(err error) {
 			res := assistantResult{

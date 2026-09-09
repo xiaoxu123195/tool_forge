@@ -405,6 +405,11 @@ func (s *Service) SaveConfig(c Config) error {
 	if err := s.ensureLoaded(); err != nil {
 		return err
 	}
+	// ConversationOrder 不归设置页管,它只由拖动排序(ReorderConversations)写。
+	// 整个结构体直接盖上去的话,用户在"默认模型"里点一次保存,
+	// 前端那个只带两个字段的对象就把排好的会话顺序清空了 —— 保存个默认模型,
+	// 侧边栏顺序全乱。这里显式留下它。
+	c.ConversationOrder = s.config.ConversationOrder
 	s.config = c
 	return saveConfig(c)
 }

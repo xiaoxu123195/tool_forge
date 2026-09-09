@@ -22,6 +22,7 @@ import { Button } from '@/components/ui/button'
 import { useConfirm } from '@/components/ui/confirm'
 import { ConversationList } from './ConversationList'
 import { ConversationDialog, type ConversationDraft } from './ConversationDialog'
+import { ExportDialog } from './ExportDialog'
 import { ChatPane } from './ChatPane'
 
 export default function AIChat() {
@@ -39,6 +40,9 @@ export default function AIChat() {
     | { mode: 'edit'; convId: string; initial: ConversationDraft }
     | null
   >(null)
+  // 要导出的会话。放在页面级而不是 ChatPane 里:正文区的按钮和侧边栏右键
+  // 是同一件事的两个入口,各自持一份状态迟早会不一致
+  const [exportId, setExportId] = useState('')
 
   const reloadAll = async () => {
     const [provList, convList, cfg] = await Promise.all([
@@ -241,6 +245,7 @@ export default function AIChat() {
             onNew={onNewConversation}
             onDelete={onDelete}
             onEdit={(id) => void onEditConversation(id)}
+            onExport={setExportId}
             onReorder={(ids) => void onReorder(ids)}
           />
           {activeId ? (
@@ -248,6 +253,7 @@ export default function AIChat() {
               key={activeId}
               conversationId={activeId}
               onTitleChange={() => void reloadAll()}
+              onExport={() => setExportId(activeId)}
             />
           ) : (
             <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
@@ -263,6 +269,17 @@ export default function AIChat() {
           initial={dialogState.initial}
           onClose={() => setDialogState(null)}
           onSave={(d) => void onDialogSave(d)}
+        />
+      )}
+
+      {exportId && (
+        <ExportDialog
+          conversationId={exportId}
+          title={conversations.find((c) => c.id === exportId)?.title ?? '会话'}
+          onClose={() => setExportId('')}
+          onError={(m) =>
+            void dialog({ title: '导出失败', message: m, confirmLabel: '知道了' })
+          }
         />
       )}
     </div>

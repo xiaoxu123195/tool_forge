@@ -166,42 +166,10 @@ func (s *Service) DetectLanguageLLM(parent context.Context, providerID, modelID,
 	}
 	prompt := "Identify the language of the following text. Respond with ONLY the language name in English (e.g. \"Chinese\", \"English\", \"Japanese\", \"Korean\", \"French\", \"German\"), nothing else.\n\nText:\n" + sample
 
-	jobID := uuid.NewString()
-	ctx, cancel := context.WithTimeout(parent, defaultDetectTimeout)
-	defer cancel()
-	conv := Conversation{
-		ID:       jobID,
-		ModelID:  modelID,
-		Messages: []Message{{ID: uuid.NewString(), Role: "user", Content: prompt}},
-	}
-	spec := InferModelSpec(prov, modelID)
-	sreq := chatRequest{Provider: pickKey(prov), Conv: conv, Spec: spec}
-	var sb strings.Builder
-	done := make(chan struct{})
-	var streamErr error
-	cb := streamCallbacks{
-		onText:     func(d string) { sb.WriteString(d) },
-		onThinking: func(_ string) {},
-		onImage:    func(_ ImageBlock) {},
-		onUsage:    func(_ Usage) {},
-		onDone:     func() { close(done) },
-		onError:    func(err error) { streamErr = err; close(done) },
-	}
-	go func() {
-		switch spec.Endpoint {
-		case EndpointGemini:
-			streamGemini(ctx, sreq, cb)
-		case EndpointAnthropic:
-			streamAnthropic(ctx, sreq, cb)
-		case EndpointOpenAIChat:
-			streamOpenAI(ctx, sreq, false, cb)
-		default:
-			streamOpenAI(ctx, sreq, true, cb)
-		}
-	}()
-	<-done
-	if streamErr != nil {
-		return "", streamErr
-	}
-	return strings.TrimSpace(sb.String()), nil
+	return oneShot(parent, oneShotRequest{
+		Provider:         prov,
+		ModelID:          modelID,
+		Prompt:           prompt,
+		MinimalReasoning: true, // 认个语言而已,不需要模型先想一会儿
+	})
 }

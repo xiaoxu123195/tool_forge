@@ -7,6 +7,7 @@ import {
   PanelLeftOpen,
   Pencil,
   Plus,
+  Share,
   Trash2,
 } from 'lucide-react'
 import type { ConversationSummary } from './types'
@@ -21,6 +22,7 @@ interface Props {
   onNew: () => void
   onDelete: (id: string) => void
   onEdit: (id: string) => void
+  onExport: (id: string) => void
   /** 拖动结束后的新顺序 */
   onReorder: (ids: string[]) => void
 }
@@ -40,6 +42,7 @@ export function ConversationList({
   onNew,
   onDelete,
   onEdit,
+  onExport,
   onReorder,
 }: Props) {
   const dialog = useConfirm()
@@ -201,6 +204,10 @@ export function ConversationList({
             onEdit(menu.id)
             setMenu(null)
           }}
+          onExport={() => {
+            onExport(menu.id)
+            setMenu(null)
+          }}
           onDelete={() => {
             const c = list.find((x) => x.id === menu.id)
             setMenu(null)
@@ -217,12 +224,14 @@ function ContextMenu({
   y,
   onClose,
   onEdit,
+  onExport,
   onDelete,
 }: {
   x: number
   y: number
   onClose: () => void
   onEdit: () => void
+  onExport: () => void
   onDelete: () => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
@@ -242,9 +251,9 @@ function ContextMenu({
     }
   }, [onClose])
 
-  // 防溢出:估算菜单尺寸
-  const W = 160
-  const H = 76
+  // 防溢出:估算菜单尺寸(三项 × 每项约 28px + 上下 padding)
+  const W = 176
+  const H = 104
   const left = Math.min(x, window.innerWidth - W - 4)
   const top = Math.min(y, window.innerHeight - H - 4)
 
@@ -252,7 +261,7 @@ function ContextMenu({
     <div
       ref={ref}
       style={{ left, top }}
-      className="fixed z-[80] w-40 overflow-hidden rounded-md border border-border bg-popover py-1 text-sm shadow-lg"
+      className="fixed z-[80] w-44 overflow-hidden rounded-md border border-border bg-popover py-1 text-sm shadow-lg"
       onContextMenu={(e) => e.preventDefault()}
     >
       <button
@@ -262,6 +271,14 @@ function ContextMenu({
       >
         <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
         编辑
+      </button>
+      <button
+        type="button"
+        onClick={onExport}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-secondary"
+      >
+        <Share className="h-3.5 w-3.5 text-muted-foreground" />
+        导出为 Markdown
       </button>
       <button
         type="button"

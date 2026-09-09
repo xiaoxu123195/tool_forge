@@ -66,7 +66,16 @@ interface MessageItemProps {
   onDelete?: () => void
   onPreviewImage?: (img: ImageBlock) => void
   onPreviewFile?: (f: FileBlock) => void
+  /** 会话内搜索定位到了这一条:画一圈高亮 */
+  highlight?: boolean
 }
+
+/** 消息 DOM 节点的 id 前缀。搜索跳转要按消息 id 找到节点,两边必须用同一个前缀 */
+export const MSG_DOM_PREFIX = 'ai-msg-'
+
+/** 搜索命中时画的那圈高亮。留白靠 ring-offset,不改布局 */
+const HIGHLIGHT_CLASS =
+  'rounded-lg ring-2 ring-warning ring-offset-4 ring-offset-background transition-shadow'
 
 /**
  * memo 的自定义比较:流式期间每 40ms 一次全量 setConv,不 memo 的话
@@ -104,6 +113,7 @@ function MessageItemImpl({
   onDelete,
   onPreviewImage,
   onPreviewFile,
+  highlight,
 }: MessageItemProps) {
   const [copied, setCopied] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -182,7 +192,13 @@ function MessageItemImpl({
 
   if (isUser) {
     return (
-      <li className="group/msg flex flex-col items-end gap-1.5">
+      <li
+        id={MSG_DOM_PREFIX + message.id}
+        className={cn(
+          'group/msg flex flex-col items-end gap-1.5',
+          highlight && HIGHLIGHT_CLASS,
+        )}
+      >
         {attachments}
         {editing ? (
           <div className="w-full rounded-2xl border border-info/50 bg-info/5">
@@ -248,7 +264,10 @@ function MessageItemImpl({
     !!message.files?.length
 
   return (
-    <li className="group/msg space-y-1.5">
+    <li
+      id={MSG_DOM_PREFIX + message.id}
+      className={cn('group/msg space-y-1.5', highlight && HIGHLIGHT_CLASS)}
+    >
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <Bot className="h-3.5 w-3.5 text-success" />
         <span className="min-w-0 truncate font-medium">

@@ -116,6 +116,8 @@ func (s *Service) GetConversation(id string) (*Conversation, error) {
 // CreateConversation 新建会话;providerID / modelID 给定后续聊天使用的默认模型;
 // system 系统提示词(可空);contextCount 上下文条数(0 = 不限)
 func (s *Service) CreateConversation(providerID, modelID, title, system string, contextCount int) (*Conversation, error) {
+	// 用户没填标题才允许自动起;填了就是他要的名字,模型不许动
+	titleAuto := strings.TrimSpace(title) == ""
 	if title == "" {
 		title = "新对话"
 	}
@@ -126,6 +128,7 @@ func (s *Service) CreateConversation(providerID, modelID, title, system string, 
 	c := &Conversation{
 		ID:           uuid.NewString(),
 		Title:        title,
+		TitleAuto:    titleAuto,
 		ProviderID:   providerID,
 		ModelID:      modelID,
 		System:       system,
@@ -196,8 +199,9 @@ func (s *Service) UpdateConversationMeta(id string, m ConversationMeta) error {
 	if err != nil {
 		return err
 	}
-	if t := strings.TrimSpace(m.Title); t != "" {
+	if t := strings.TrimSpace(m.Title); t != "" && t != c.Title {
 		c.Title = t
+		c.TitleAuto = false // 手工改过名,自动起标题从此绕开这条会话
 	}
 	c.System = m.System
 	if m.ContextCount < 0 {
@@ -263,6 +267,7 @@ func (s *Service) RenameConversation(id, title string) error {
 		t = "无标题"
 	}
 	c.Title = t
+	c.TitleAuto = false // 同上:用户起的名字不该被模型覆盖
 	c.UpdatedAt = time.Now().UnixMilli()
 	return saveConversation(c)
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, Settings2 } from 'lucide-react'
+import { ChevronDown, Search, Settings2, Share } from 'lucide-react'
 import {
   DeleteAIChatMessage,
   EditAndResendAIChat,
@@ -29,7 +29,8 @@ import { useConfirm } from '@/components/ui/confirm'
 import { ChatModelPicker } from './ChatModelPicker'
 import { ConversationDialog, type ConversationDraft } from './ConversationDialog'
 import { ChatComposer } from './ChatComposer'
-import { ClearDivider, MessageItem } from './ChatMessage'
+import { ClearDivider, MessageItem, MSG_DOM_PREFIX } from './ChatMessage'
+import { ChatSearch } from './ChatSearch'
 import { WelcomeScreen } from './ChatWelcome'
 import { FilePreviewModal, ImagePreviewModal } from './ChatPreviews'
 import { CHAT_COLUMN } from './chat-utils'
@@ -40,9 +41,11 @@ import { cn } from '@/lib/utils'
 interface Props {
   conversationId: string
   onTitleChange: () => void
+  /** 打开导出弹窗。弹窗本体在页面级 —— 侧边栏右键也是同一个入口 */
+  onExport: () => void
 }
 
-export function ChatPane({ conversationId, onTitleChange }: Props) {
+export function ChatPane({ conversationId, onTitleChange, onExport }: Props) {
   const dialog = useConfirm()
   const [conv, setConv] = useState<Conversation | null>(null)
   const [providers, setProviders] = useState<Provider[]>([])
@@ -55,6 +58,9 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
   // 当前模型的能力画像:决定输入栏上给不给思考档位、联网开关
   const [spec, setSpec] = useState<ModelSpec | null>(null)
   const [effortOpen, setEffortOpen] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+  // 搜索定位到的那条消息;空串 = 没有高亮
+  const [hitId, setHitId] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -142,12 +148,41 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
     }
   }, [conv?.providerId, conv?.modelId])
 
+  // Ctrl/Cmd+F 打开会话内搜索。挂在 window 上而不是某个容器上:
+  // 焦点这会儿多半在输入框里,挂容器就收不到
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        setSearchOpen(true)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // 换会话时把搜索关掉:上一个会话的关键词和命中位置在新会话里没有意义
+  useEffect(() => {
+    setSearchOpen(false)
+    setHitId('')
+  }, [conversationId])
+
+  // 跳到某条消息。跟随到底部要先关掉,否则下一次内容更新会把视图又拽回最底下
+  const jumpToMessage = (msgId: string) => {
+    setHitId(msgId)
+    if (!msgId) return
+    setStickToBottom(false)
+    const el = document.getElementById(MSG_DOM_PREFIX + msgId)
+    el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }
+
   // 流事件订阅(chunk / thinking / citation / image / done / error)
   useChatStream({
     conversationId,
     setConv,
     onStreamEnd: () => setStreaming(false),
     onDone: onTitleChange,
+    onTitle: onTitleChange,
     onError: (err) => {
       void dialog({ title: '请求失败', message: err || '未知错误', confirmLabel: '知道了' })
       void load()
@@ -426,6 +461,27 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
         </div>
         <button
           type="button"
+          onClick={() => setSearchOpen((v) => !v)}
+          title="在会话里查找 (Ctrl+F)"
+          className={cn(
+            'flex h-7 w-7 items-center justify-center rounded-md border transition-colors',
+            searchOpen
+              ? 'border-info/40 bg-info/10 text-info'
+              : 'border-border text-muted-foreground hover:bg-secondary hover:text-foreground',
+          )}
+        >
+          <Search className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={onExport}
+          title="导出为 Markdown"
+          className="flex h-7 w-7 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+        >
+          <Share className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
           onClick={() => setSystemOpen(true)}
           className={cn(
             'flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs transition-colors',
@@ -440,6 +496,17 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
           {conv.system && <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-info" />}
         </button>
       </header>
+
+      {searchOpen && (
+        <ChatSearch
+          messages={visibleMessages}
+          onJump={jumpToMessage}
+          onClose={() => {
+            setSearchOpen(false)
+            setHitId('')
+          }}
+        />
+      )}
 
       <div className="relative flex min-h-0 flex-1 flex-col">
       <div
@@ -490,6 +557,7 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
                   onDelete={canMutate ? () => void onDeleteMessage(m.id) : undefined}
                   onPreviewImage={setPreviewImage}
                   onPreviewFile={setPreviewFile}
+                  highlight={hitId === m.id}
                 />
               )
             })}

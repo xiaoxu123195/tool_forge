@@ -266,6 +266,11 @@ func (m Message) ThinkingText() string {
 type Conversation struct {
 	ID         string    `json:"id"`
 	Title      string    `json:"title"`      // 自动从首条 user 消息生成,可重命名
+	// TitleAuto 标题还是自动来的,允许被更好的自动标题覆盖。
+	//
+	// 用户一旦手工命名(重命名 / 建会话时自己填 / 会话设置里改)就置 false,
+	// 之后自动起标题永远绕开这条会话 —— 用户起的名字被模型悄悄改掉是最糟的体验。
+	TitleAuto  bool      `json:"titleAuto,omitempty"`
 	ProviderID string    `json:"providerId"` // 当前对话用的供应商
 	ModelID    string    `json:"modelId"`    // 当前对话用的模型
 	System     string    `json:"system,omitempty"`
@@ -306,6 +311,15 @@ type ConversationSummary struct {
 type Config struct {
 	DefaultProviderID string `json:"defaultProviderId"`
 	DefaultModelID    string `json:"defaultModelId"`
+	// AutoTitleOff 关掉"首轮问答后让模型起标题"。
+	//
+	// 存的是"关"而不是"开":这个功能默认就该开着,而老配置文件里没有这个字段,
+	// 反序列化出来是零值 —— 零值必须落在"开"这一侧,否则所有老用户升级后功能都是哑的。
+	AutoTitleOff bool `json:"autoTitleOff,omitempty"`
+	// TitleProviderID / TitleModelID 起标题专用的模型。两个都填才生效,
+	// 留空就用会话自己的模型。用意是拿一个便宜的小模型干这件小事
+	TitleProviderID string `json:"titleProviderId,omitempty"`
+	TitleModelID    string `json:"titleModelId,omitempty"`
 	// ConversationOrder 用户拖出来的会话顺序(会话 ID 列表)。
 	//
 	// 放在这里而不是每条会话里加一个 SortOrder 字段:会话文件带着全部消息,

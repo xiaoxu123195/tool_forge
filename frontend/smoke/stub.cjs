@@ -63,6 +63,14 @@ const special = {
       updatedAt: 1,
     }),
   ContinueAILastChat: () => Promise.resolve({}),
+  // 导出预览:给一段像样的 Markdown,好让预览区真有内容可渲染
+  RenderAIConversationMarkdown: (id, opt) =>
+    Promise.resolve(
+      '# 导出预览\n\n> **模型** `gpt-5`\n\n## 用户\n\n你好\n\n## 助手\n\n你好呀' +
+        (opt && opt.includeThinking ? '\n\n<details><summary>思考过程</summary>\n\n> 想了想\n\n</details>' : ''),
+    ),
+  // 用户在保存对话框里点了取消 = 空路径。这是最容易被当成"失败"处理错的分支
+  ExportAIConversation: () => Promise.resolve(''),
 
   // ---- 助手预设 ----
   ListAIAssistants: () => Promise.resolve(fx.assistants),
