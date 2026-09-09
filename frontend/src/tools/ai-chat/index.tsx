@@ -10,6 +10,7 @@ import {
   GetAIConfig,
   ReorderAIConversations,
   UpdateAIConversationMeta,
+  UpdateAIConversationOptions,
 } from '../../../wailsjs/go/main/App'
 import type {
   AIConfig,
@@ -126,6 +127,31 @@ export default function AIChat() {
       } catch (e) {
         await dialog({ title: '创建失败', message: String(e), confirmLabel: '知道了' })
         return
+      }
+      // CreateAIConversation 只收 title/system/contextCount。预设带来的采样参数和
+      // 三个开关要在创建后补写进去 —— 以前这里直接丢了,预设选了等于没选
+      if (
+        created?.id &&
+        (draft.temperature !== undefined ||
+          draft.topP !== undefined ||
+          (draft.maxTokens ?? 0) > 0)
+      ) {
+        await UpdateAIConversationMeta(created.id, {
+          title: created.title,
+          system: draft.system,
+          contextCount: draft.contextCount,
+          temperature: draft.temperature,
+          topP: draft.topP,
+          maxTokens: draft.maxTokens ?? 0,
+        } as never).catch(() => {})
+      }
+      if (created?.id && (draft.reasoningEffort || draft.webSearch || draft.tools)) {
+        await UpdateAIConversationOptions(
+          created.id,
+          draft.reasoningEffort ?? '',
+          !!draft.webSearch,
+          !!draft.tools,
+        ).catch(() => {})
       }
       setDialogState(null)
       await reloadAll()

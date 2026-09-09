@@ -42,18 +42,55 @@ export function useChatStream({
   // 用 EventsOn 返回的 cancel 函数逐个退订,避免误伤同名监听
   useEffect(() => {
     if (!conversationId) return
-    const offChunk = EventsOn(EV_CHUNK_PREFIX + conversationId, (delta: string) => {
-      if (!delta) return
+
+    // 正文和思考的增量先攒在缓冲里,每 40ms 落一次状态。
+    //
+    // 不攒的话,每个 chunk 都是一次完整的 setConv → 整棵消息树重渲染 → 最后一条的
+    // Markdown 全文重解析。快的模型一秒推几十个 chunk,长回答直接把界面拖卡。
+    // 40ms(约 25 帧/秒)肉眼看仍是连续的,解析量却少了一个数量级。
+    // 缓冲放在 effect 闭包里而不是 ref:换会话重订阅时天然清零,不用手工重置。
+    let pendingText = ''
+    let pendingThink = ''
+    let flushTimer: ReturnType<typeof setTimeout> | null = null
+    let disposed = false
+
+    const flushNow = () => {
+      if (flushTimer != null) {
+        clearTimeout(flushTimer)
+        flushTimer = null
+      }
+      if (disposed || (!pendingText && !pendingThink)) return
+      const text = pendingText
+      const think = pendingThink
+      pendingText = ''
+      pendingThink = ''
       setConv((prev) => {
         if (!prev) return prev
         const msgs = [...prev.messages]
         const last = msgs[msgs.length - 1]
-        if (last?.role === 'assistant') {
-          msgs[msgs.length - 1] = { ...last, content: last.content + delta }
-          return { ...prev, messages: msgs }
+        if (last?.role !== 'assistant') return prev
+        let next = last
+        if (text) next = { ...next, content: next.content + text }
+        if (think) {
+          const blocks = next.thinking ?? []
+          const head = blocks[0] ?? {}
+          next = {
+            ...next,
+            thinking: [{ ...head, text: (head.text ?? '') + think }, ...blocks.slice(1)],
+          }
         }
-        return prev
+        msgs[msgs.length - 1] = next
+        return { ...prev, messages: msgs }
       })
+    }
+    const schedule = () => {
+      if (flushTimer == null) flushTimer = setTimeout(flushNow, 40)
+    }
+
+    const offChunk = EventsOn(EV_CHUNK_PREFIX + conversationId, (delta: string) => {
+      if (!delta) return
+      pendingText += delta
+      schedule()
     })
     const offImage = EventsOn(EV_IMAGE_PREFIX + conversationId, (img: ImageBlock) => {
       if (!img || (!img.data && !img.url)) return
@@ -75,21 +112,8 @@ export function useChatStream({
     // 带 signature 的结构化块由后端在流结束时落盘,下次 load 会带回来
     const offThinking = EventsOn(EV_THINKING_PREFIX + conversationId, (delta: string) => {
       if (!delta) return
-      setConv((prev) => {
-        if (!prev) return prev
-        const msgs = [...prev.messages]
-        const last = msgs[msgs.length - 1]
-        if (last?.role === 'assistant') {
-          const blocks = last.thinking ?? []
-          const head = blocks[0] ?? {}
-          msgs[msgs.length - 1] = {
-            ...last,
-            thinking: [{ ...head, text: (head.text ?? '') + delta }, ...blocks.slice(1)],
-          }
-          return { ...prev, messages: msgs }
-        }
-        return prev
-      })
+      pendingThink += delta
+      schedule()
     })
     const offCitation = EventsOn(EV_CITATION_PREFIX + conversationId, (c: Citation) => {
       if (!c?.url) return
@@ -143,6 +167,9 @@ export function useChatStream({
       })
     })
     const offDone = EventsOn(EV_DONE_PREFIX + conversationId, (final: string) => {
+      // 先把缓冲整个落下去:思考增量 final 里没有,不落就丢了;
+      // 正文落了也无妨 —— 紧接着会被 final 整体覆盖,不会拼出重复
+      flushNow()
       onStreamEnd()
       setConv((prev) => {
         if (!prev) return prev
@@ -158,10 +185,13 @@ export function useChatStream({
       onDone()
     })
     const offError = EventsOn(EV_ERROR_PREFIX + conversationId, (err: string) => {
+      flushNow() // 出错也把已收到的部分显示全,别让最后一截丢在缓冲里
       onStreamEnd()
       onError(err)
     })
     return () => {
+      disposed = true
+      if (flushTimer != null) clearTimeout(flushTimer)
       offChunk()
       offThinking()
       offCitation()

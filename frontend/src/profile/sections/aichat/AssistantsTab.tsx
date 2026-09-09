@@ -170,9 +170,38 @@ function AssistantEditor({
   const [view, setView] = useState<'edit' | 'preview'>('edit')
   const [saving, setSaving] = useState(false)
   const [flash, setFlash] = useState(false)
+  // 参数区。数值输入统一用字符串状态,空串 = 不干预 ——
+  // 用 number 状态就没法表达"没填",0 又是 temperature 的合法取值
+  const [effort, setEffort] = useState(initial.reasoningEffort ?? '')
+  const [ctxCount, setCtxCount] = useState(initial.contextCount ? String(initial.contextCount) : '')
+  const [temp, setTemp] = useState(initial.temperature !== undefined ? String(initial.temperature) : '')
+  const [topP, setTopP] = useState(initial.topP !== undefined ? String(initial.topP) : '')
+  const [maxTok, setMaxTok] = useState(initial.maxTokens ? String(initial.maxTokens) : '')
+  const [webSearch, setWebSearch] = useState(!!initial.webSearch)
+  const [tools, setTools] = useState(!!initial.tools)
+
+  const num = (v: string): number | undefined => {
+    const t = v.trim()
+    if (t === '') return undefined
+    const n = Number(t)
+    return Number.isFinite(n) ? n : undefined
+  }
+  const intOrZero = (v: string): number => {
+    const n = num(v)
+    return n !== undefined && n > 0 ? Math.floor(n) : 0
+  }
 
   const dirty =
-    name !== initial.name || (emoji || '') !== (initial.emoji ?? '') || system !== initial.system
+    name !== initial.name ||
+    (emoji || '') !== (initial.emoji ?? '') ||
+    system !== initial.system ||
+    effort !== (initial.reasoningEffort ?? '') ||
+    intOrZero(ctxCount) !== (initial.contextCount ?? 0) ||
+    num(temp) !== initial.temperature ||
+    num(topP) !== initial.topP ||
+    intOrZero(maxTok) !== (initial.maxTokens ?? 0) ||
+    webSearch !== !!initial.webSearch ||
+    tools !== !!initial.tools
 
   const onSave = async () => {
     setSaving(true)
@@ -182,6 +211,13 @@ function AssistantEditor({
         name: name.trim() || '未命名',
         emoji: emoji.trim(),
         system,
+        reasoningEffort: effort,
+        contextCount: intOrZero(ctxCount),
+        temperature: num(temp),
+        topP: num(topP),
+        maxTokens: intOrZero(maxTok),
+        webSearch,
+        tools,
       } as unknown as never)) as unknown as Assistant
       setFlash(true)
       setTimeout(() => setFlash(false), 1500)
@@ -256,6 +292,90 @@ function AssistantEditor({
         </div>
       )}
 
+      <div className="shrink-0 space-y-2 rounded-md border border-border bg-secondary/20 p-3">
+        <div className="text-xs font-medium text-muted-foreground">
+          默认参数
+          <span className="ml-2 font-normal">· 留空 = 不干预;建会话时套用,之后还能在会话里改</span>
+        </div>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-2 md:grid-cols-3">
+          <ParamField label="思考档位">
+            <select
+              value={effort}
+              onChange={(e) => setEffort(e.target.value)}
+              className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+            >
+              <option value="">不干预</option>
+              <option value="none">关闭思考</option>
+              <option value="minimal">极简</option>
+              <option value="low">低</option>
+              <option value="medium">中</option>
+              <option value="high">高</option>
+            </select>
+          </ParamField>
+          <ParamField label="上下文条数">
+            <input
+              value={ctxCount}
+              onChange={(e) => setCtxCount(e.target.value)}
+              placeholder="不干预"
+              inputMode="numeric"
+              className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+            />
+          </ParamField>
+          <ParamField label="回复上限 (tokens)">
+            <input
+              value={maxTok}
+              onChange={(e) => setMaxTok(e.target.value)}
+              placeholder="不干预"
+              inputMode="numeric"
+              className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+            />
+          </ParamField>
+          <ParamField label="温度 (0-2)">
+            <input
+              value={temp}
+              onChange={(e) => setTemp(e.target.value)}
+              placeholder="不干预"
+              inputMode="decimal"
+              className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+            />
+          </ParamField>
+          <ParamField label="Top P (0-1)">
+            <input
+              value={topP}
+              onChange={(e) => setTopP(e.target.value)}
+              placeholder="不干预"
+              inputMode="decimal"
+              className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+            />
+          </ParamField>
+          <ParamField label="默认开启">
+            <div className="flex h-8 items-center gap-3 text-xs">
+              <label className="flex cursor-pointer items-center gap-1">
+                <input
+                  type="checkbox"
+                  checked={webSearch}
+                  onChange={(e) => setWebSearch(e.target.checked)}
+                  className="h-3.5 w-3.5"
+                />
+                联网
+              </label>
+              <label className="flex cursor-pointer items-center gap-1">
+                <input
+                  type="checkbox"
+                  checked={tools}
+                  onChange={(e) => setTools(e.target.checked)}
+                  className="h-3.5 w-3.5"
+                />
+                工具
+              </label>
+            </div>
+          </ParamField>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          温度和 Top P 是否生效取决于建会话时选的模型 —— 会思考的模型大多不收采样参数。
+        </p>
+      </div>
+
       <div className="flex shrink-0 items-center gap-2">
         <Button onClick={() => void onSave()} disabled={!dirty || saving} size="sm">
           <Save className="h-3.5 w-3.5" />
@@ -269,6 +389,15 @@ function AssistantEditor({
           </span>
         )}
       </div>
+    </div>
+  )
+}
+
+function ParamField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <div className="text-[11px] text-muted-foreground">{label}</div>
+      {children}
     </div>
   )
 }

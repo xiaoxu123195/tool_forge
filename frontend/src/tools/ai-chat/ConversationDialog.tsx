@@ -4,7 +4,7 @@ import { Eye, Pencil, X } from 'lucide-react'
 import { ListAIAssistants } from '../../../wailsjs/go/main/App'
 import { MarkdownPreview } from '@/components/tool/MarkdownPreview'
 import { cn } from '@/lib/utils'
-import type { Assistant, ModelSpec } from './types'
+import { EFFORT_LABELS, type Assistant, type ModelSpec, type ReasoningEffort } from './types'
 
 /** 用于"新建会话"和"编辑会话"两个场景 */
 export interface ConversationDraft {
@@ -17,6 +17,11 @@ export interface ConversationDraft {
   topP?: number
   /** 0 = 不指定 */
   maxTokens?: number
+  // 下面三个只在"新建 + 套了预设"时有值。它们本体是输入栏上的即时开关,
+  // 编辑弹窗不管理它们 —— 这里只是把预设的默认值捎给创建流程
+  reasoningEffort?: string
+  webSearch?: boolean
+  tools?: boolean
 }
 
 const PRESET_COUNTS: { label: string; value: number }[] = [
@@ -61,16 +66,41 @@ export function ConversationDialog({
     })()
   }, [mode])
 
+  // 预设里的思考档位 / 联网 / 工具。它们不在这个弹窗里显示成控件(本体是输入栏
+  // 上的即时开关),但要捎给创建流程,并用一行字说明 —— 免得"选了却不知道生效了什么"
+  const [extra, setExtra] = useState<
+    Pick<ConversationDraft, 'reasoningEffort' | 'webSearch' | 'tools'>
+  >({})
+
   const applyAssistant = (a: Assistant | null) => {
     setPickedId(a?.id ?? '')
-    if (!a) return
+    if (!a) {
+      setExtra({})
+      return
+    }
     setSystem(a.system)
     if (!title.trim()) setTitle(a.name)
     if (a.contextCount) setContextCount(a.contextCount)
     if (a.temperature !== undefined) setTemperature(a.temperature)
     if (a.topP !== undefined) setTopP(a.topP)
     if (a.maxTokens) setMaxTokens(a.maxTokens)
+    setExtra({
+      reasoningEffort: a.reasoningEffort || undefined,
+      webSearch: a.webSearch || undefined,
+      tools: a.tools || undefined,
+    })
   }
+
+  const effortLabel = extra.reasoningEffort
+    ? (EFFORT_LABELS[extra.reasoningEffort as ReasoningEffort] ?? extra.reasoningEffort)
+    : ''
+  const extraSummary = [
+    effortLabel ? '思考档位设为「' + effortLabel + '」' : '',
+    extra.webSearch ? '开启联网' : '',
+    extra.tools ? '开启工具' : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
 
   // 采样参数得模型接受才有意义:o 系列 / gpt-5 / Kimi K2.5+ 完全不收,发过去会报错。
   // 拿不到 spec 时(新建会话还没选模型)整块不展示,免得设了个不知道生不生效的值。
@@ -84,9 +114,12 @@ export function ConversationDialog({
       title: title.trim(),
       system: system.trim(),
       contextCount,
-      temperature: canTemp ? temperature : initial.temperature,
-      topP: canTopP ? topP : initial.topP,
+      // 新建时还没选模型、拿不到 spec,预设带来的采样参数要原样放行;
+      // 编辑时才按 spec 过滤(模型不收的参数设了也白设)
+      temperature: canTemp || mode === 'create' ? temperature : initial.temperature,
+      topP: canTopP || mode === 'create' ? topP : initial.topP,
       maxTokens,
+      ...(mode === 'create' ? extra : {}),
     })
   }
 
@@ -150,6 +183,9 @@ export function ConversationDialog({
                   </button>
                 ))}
               </div>
+              {extraSummary && (
+                <p className="text-[11px] text-info">该预设还会:{extraSummary}</p>
+              )}
             </div>
           )}
 

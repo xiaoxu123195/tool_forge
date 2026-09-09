@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Bot,
@@ -56,17 +56,7 @@ export function ClearDivider({ onDelete }: { onDelete?: () => void }) {
   )
 }
 
-export function MessageItem({
-  message,
-  fallbackModel,
-  streaming,
-  onRegenerate,
-  onContinue,
-  onEditResend,
-  onDelete,
-  onPreviewImage,
-  onPreviewFile,
-}: {
+interface MessageItemProps {
   message: Message
   fallbackModel: string
   streaming?: boolean
@@ -76,7 +66,45 @@ export function MessageItem({
   onDelete?: () => void
   onPreviewImage?: (img: ImageBlock) => void
   onPreviewFile?: (f: FileBlock) => void
-}) {
+}
+
+/**
+ * memo 的自定义比较:流式期间每 40ms 一次全量 setConv,不 memo 的话
+ * **每一条**历史消息都跟着重渲染、Markdown 全文重解析 —— 75 条的会话就是
+ * 每帧 75 次解析,卡顿的大头在这,不在正在生成的那一条。
+ *
+ * 函数 props 只比"有没有",不比身份:父组件每次渲染都会重建这些闭包,按身份比
+ * memo 就完全失效了。这样比是安全的,因为闭包抓的都是稳定值(会话 id / 消息 id),
+ * 而"能不能点"的开关(streaming 时按钮消失)表现为 prop 在函数和 undefined 之间
+ * 切换 —— 恰好被"有没有"这个比较捕捉到。
+ */
+function sameProps(prev: MessageItemProps, next: MessageItemProps): boolean {
+  const keys = new Set([...Object.keys(prev), ...Object.keys(next)]) as Set<keyof MessageItemProps>
+  for (const k of keys) {
+    const a = prev[k]
+    const b = next[k]
+    if (typeof a === 'function' || typeof b === 'function') {
+      if ((a == null) !== (b == null)) return false
+      continue
+    }
+    if (!Object.is(a, b)) return false
+  }
+  return true
+}
+
+export const MessageItem = memo(MessageItemImpl, sameProps)
+
+function MessageItemImpl({
+  message,
+  fallbackModel,
+  streaming,
+  onRegenerate,
+  onContinue,
+  onEditResend,
+  onDelete,
+  onPreviewImage,
+  onPreviewFile,
+}: MessageItemProps) {
   const [copied, setCopied] = useState(false)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(message.content)
