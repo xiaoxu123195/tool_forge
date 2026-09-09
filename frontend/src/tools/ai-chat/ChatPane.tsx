@@ -68,6 +68,17 @@ export function ChatPane({
   const [searchOpen, setSearchOpen] = useState(false)
   // 搜索定位到的那条消息;空串 = 没有高亮
   const [hitId, setHitId] = useState('')
+  // streaming 的 ref 影子。异步回调里读 state 拿到的是闭包捕获的旧值,
+  // 而"流结束后重读磁盘"这件事必须知道**此刻**有没有新的流又开起来
+  const streamingRef = useRef(false)
+  const beginStream = () => {
+    streamingRef.current = true
+    setStreaming(true)
+  }
+  const endStream = () => {
+    streamingRef.current = false
+    setStreaming(false)
+  }
   const fileInputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -189,12 +200,35 @@ export function ChatPane({
     el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }
 
+  /**
+   * 流结束后把这条会话整个重读一遍。
+   *
+   * 流式期间前端是拿一串事件自己拼出消息的,但有几样东西压根没走事件:
+   * token 用量、耗时、"这条没写完"的截断标记、后端按首条消息定下的标题。
+   * 它们都在流结束时由后端落盘 —— 不重读的话,界面上就是
+   * 「停止之后不给继续写按钮」「答完了没有用量行」「标题一直是新对话」,
+   * 而切走再切回来一切又都正常,查起来极其费解。
+   *
+   * 一次多读一份会话 JSON,换掉三处对不上的状态,划算。
+   */
+  const reloadAfterStream = async () => {
+    const c = (await GetAIConversation(conversationId).catch(
+      () => null,
+    )) as unknown as Conversation | null
+    // 读盘期间用户可能已经问了下一句。那份磁盘快照不含新消息,
+    // 盖上去会把乐观插入的问答对整个抹掉
+    if (c?.id && !streamingRef.current) setConv(c)
+  }
+
   // 流事件订阅(chunk / thinking / citation / image / done / error)
   useChatStream({
     conversationId,
     setConv,
-    onStreamEnd: () => setStreaming(false),
-    onDone: onTitleChange,
+    onStreamEnd: endStream,
+    onDone: () => {
+      onTitleChange()
+      void reloadAfterStream()
+    },
     onTitle: onTitleChange,
     onError: (err) => {
       void dialog({ title: '请求失败', message: err || '未知错误', confirmLabel: '知道了' })
@@ -216,7 +250,7 @@ export function ChatPane({
     const filesToSend = attach.pendingFiles
     setDraft('')
     attach.clear()
-    setStreaming(true)
+    beginStream()
 
     // 乐观更新:先把 user + assistant 占位放进本地状态,
     // 这样后端 goroutine 立刻发的 chunk 一定能找到对的 last 消息(避免 race)
@@ -248,7 +282,7 @@ export function ChatPane({
       (e) => String(e),
     )
     if (err) {
-      setStreaming(false)
+      endStream()
       // 回滚乐观更新
       setConv((prev) =>
         prev
@@ -277,7 +311,7 @@ export function ChatPane({
 
   const onEditResend = async (msgId: string, newContent: string) => {
     if (!conv || streaming) return
-    setStreaming(true)
+    beginStream()
     // 乐观更新:截断该消息之后的所有,改写其内容,并加占位 assistant
     setConv((prev) => {
       if (!prev) return prev
@@ -301,7 +335,7 @@ export function ChatPane({
       (e) => String(e),
     )
     if (err) {
-      setStreaming(false)
+      endStream()
       await dialog({ title: '重新发送失败', message: err, confirmLabel: '知道了' })
       void load()
     }
@@ -309,7 +343,7 @@ export function ChatPane({
 
   const onRegenerate = async () => {
     if (!conv || streaming) return
-    setStreaming(true)
+    beginStream()
     // 乐观更新:把最后一条 assistant 的 content / thinking 清空,前端立刻进入"思考中"
     setConv((prev) => {
       if (!prev) return prev
@@ -333,7 +367,7 @@ export function ChatPane({
       (e) => String(e),
     )
     if (err) {
-      setStreaming(false)
+      endStream()
       await dialog({ title: '重新生成失败', message: err, confirmLabel: '知道了' })
       void load()
     }
@@ -342,7 +376,7 @@ export function ChatPane({
   // 续写:不清空已有内容,后端把新产出接在后面;界面靠 chunk 事件自然追加
   const onContinue = async () => {
     if (!conv || streaming) return
-    setStreaming(true)
+    beginStream()
     setConv((prev) => {
       if (!prev) return prev
       const msgs = [...prev.messages]
@@ -355,7 +389,7 @@ export function ChatPane({
       (e) => String(e),
     )
     if (err) {
-      setStreaming(false)
+      endStream()
       await dialog({ title: '继续失败', message: err, confirmLabel: '知道了' })
       void load()
     }

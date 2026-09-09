@@ -16,8 +16,27 @@ for (const rel of ['../wailsjs/go/main/App.js', '../wailsjs/runtime/runtime.js']
   for (const m of src.matchAll(/export function (\w+)/g)) names.add(m[1])
 }
 
-const off = () => () => {}
 const nop = () => {}
+
+// 真的事件总线,不是空实现。
+//
+// 以前 EventsOn 直接返回空函数,于是"流结束"这条路在冒烟测试里根本走不到 ——
+// 而那正是出过事的地方:done 事件只带正文,截断标记 / 用量 / 标题都得靠流结束后
+// 重读磁盘才拿得到,少了那一步就是"点停止不给继续写按钮"。
+// 有了总线,probe 可以自己发一发 done,断言组件确实回头读了盘。
+const listeners = new Map()
+const on = (name, cb) => {
+  const arr = listeners.get(name) || []
+  arr.push(cb)
+  listeners.set(name, arr)
+  return () => listeners.set(name, (listeners.get(name) || []).filter((f) => f !== cb))
+}
+
+/** 计每个 RPC 被调了几次,用来断言"流结束后又读了一次会话" */
+const calls = {}
+const count = (name) => {
+  calls[name] = (calls[name] || 0) + 1
+}
 
 const special = {
   // ---- AI 配置 ----
@@ -80,9 +99,9 @@ const special = {
   ListAIChatTools: () => Promise.resolve(fx.chatTools),
 
   // ---- 运行时事件 ----
-  EventsOn: off,
-  EventsOnMultiple: off,
-  EventsOnce: off,
+  EventsOn: on,
+  EventsOnMultiple: (name, cb) => on(name, cb),
+  EventsOnce: on,
   EventsEmit: nop,
   EventsOff: nop,
   EventsOffAll: nop,
@@ -96,5 +115,15 @@ const special = {
 }
 
 for (const n of names) {
-  module.exports[n] = special[n] || (() => Promise.resolve(''))
+  const impl = special[n] || (() => Promise.resolve(''))
+  module.exports[n] = (...args) => {
+    count(n)
+    return impl(...args)
+  }
 }
+
+// probe 专用的两个把手。名字带下划线,免得跟真实 RPC 撞名
+module.exports.__emit = (name, payload) => {
+  for (const cb of listeners.get(name) || []) cb(payload)
+}
+module.exports.__calls = calls

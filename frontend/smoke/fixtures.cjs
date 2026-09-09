@@ -131,6 +131,29 @@ const conversations = [
     updatedAt: 5,
   },
   {
+    // 最后一条是被中断的回复:只有"最后一条 assistant"才拿得到 onContinue,
+    // 所以「继续写」按钮的渲染只能靠这种形状的会话覆盖
+    id: 'c-truncated',
+    title: '被中断的回复',
+    providerId: 'p-multi',
+    modelId: 'gpt-5.6-luna',
+    messages: [
+      { id: 't1', role: 'user', content: '写一篇很长的文章', createdAt: 1 },
+      {
+        id: 't2',
+        role: 'assistant',
+        content: '第一段写完了,第二段写到一半就被',
+        model: 'gpt-5.6-luna',
+        truncated: true,
+        usage: { inputTokens: 12, outputTokens: 340 },
+        durationMs: 4200,
+        createdAt: 2,
+      },
+    ],
+    createdAt: 1,
+    updatedAt: 2,
+  },
+  {
     id: 'c-empty',
     title: '空会话',
     providerId: 'p-single',

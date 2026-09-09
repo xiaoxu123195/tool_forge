@@ -551,6 +551,10 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 				if s.ctx != nil {
 					wailsruntime.EventsEmit(s.ctx, EventDonePrefix+conv.ID, bText.String())
 				}
+				// 主动停止同样能起标题:用户是看够了才按的停止,
+				// 已经写出来的几段完全够概括这段对话在谈什么。
+				// (真出错那条路不走这里 —— 那时正文往往是空的,起不出东西)
+				go s.maybeAutoTitle(conv.ID)
 				return
 			}
 			s.persistAssistant(conv.ID, asstMsgID, res)

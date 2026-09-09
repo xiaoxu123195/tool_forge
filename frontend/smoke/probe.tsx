@@ -20,6 +20,9 @@ import { ExportDialog } from '../src/tools/ai-chat/ExportDialog'
 import { DefaultsTab } from '../src/profile/sections/aichat/DefaultsTab'
 import { ConfirmProvider } from '../src/components/ui/confirm'
 import { conversations } from './fixtures.cjs'
+// 直接引桩本体拿事件把手。build.cjs 只把含 "wailsjs" 的路径重定向到这里,
+// 相对路径原样解析 —— CJS 缓存保证跟组件用的是同一个模块实例
+import { __emit, __calls } from './stub.cjs'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 let failed = false
@@ -217,6 +220,37 @@ async function main() {
       await mustClick('替换') // 提示词非空,必须先过这道确认
     },
   )
+
+  // 7) 被中断的回复必须给出「继续写」入口
+  await mount(
+    '截断回复的继续写按钮',
+    <ChatPane conversationId="c-truncated" onTitleChange={() => {}} onExport={() => {}} />,
+    async () => {
+      if (!btn('继续写')) throw new Error('truncated 的最后一条没有渲染出「继续写」')
+    },
+  )
+
+  // 8) 流结束后必须回头重读会话。
+  //
+  // done 事件的载荷只有正文 —— 截断标记、token 用量、耗时、后端定下的标题
+  // 全都不在里面。少了这次重读,用户点"停止"之后就看不到「继续写」,
+  // 而切走再切回来又一切正常,是个极难查的表现。
+  {
+    const conv = (conversations as { id: string }[])[1]
+    await mount('流结束后重读会话', <ChatPane conversationId={conv.id} onTitleChange={() => {}} onExport={() => {}} />, async () => {
+      const before = __calls.GetAIConversation || 0
+      await act(async () => {
+        __emit('ai-chat:done:' + conv.id, '写到一半被停掉的正文')
+      })
+      await act(async () => {
+        await sleep(60)
+      })
+      const after = __calls.GetAIConversation || 0
+      if (after <= before) {
+        throw new Error('流结束后没有重读会话 —— 截断标记 / 用量 / 标题都会停在旧值')
+      }
+    })
+  }
 
   console.log(failed ? '\n有异常' : '\n全部通过')
   process.exit(failed ? 1 : 0)
