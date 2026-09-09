@@ -1214,12 +1214,17 @@ func (a *App) TestAIProviderModel(providerID, modelID string) aichat.TestResult 
 // "多返回值可能是数组"的解包逻辑会把它当成 [值, 错误] 再剥一层,
 // 于是拿到的是第一个密钥对象而不是密钥数组。密钥列表显示为空、乃至整页白屏,根源就在这。
 func (a *App) ListAIProviderKeys(providerID string) []aichat.APIKeyEntry {
+	// 空切片而不是 nil:nil 过 JSON 是 null,前端 .length 当场崩。
+	// 这条路走得到 —— 供应商还没建好、ID 传错,都会落在这儿
 	if a.aichat == nil {
-		return nil
+		return []aichat.APIKeyEntry{}
 	}
 	keys, err := a.aichat.ListProviderKeys(providerID)
 	if err != nil {
-		return nil
+		return []aichat.APIKeyEntry{}
+	}
+	if keys == nil {
+		return []aichat.APIKeyEntry{}
 	}
 	return keys
 }
@@ -1244,9 +1249,12 @@ func (a *App) ReorderAIProviders(ids []string) error {
 // ListAIModelSpecs 一次取回某供应商所有模型的能力画像(视觉 / 工具 / 思考 ...)
 func (a *App) ListAIModelSpecs(providerID string) []aichat.ModelSpec {
 	if a.aichat == nil {
-		return nil
+		return []aichat.ModelSpec{}
 	}
-	return a.aichat.ModelSpecs(providerID)
+	if specs := a.aichat.ModelSpecs(providerID); specs != nil {
+		return specs
+	}
+	return []aichat.ModelSpec{}
 }
 
 // CheckAIProviderKeys 逐把检测密钥;keyIDs 为空表示检测全部启用中的
@@ -1526,7 +1534,16 @@ func (a *App) SearchAIConversations(query string) ([]aichat.SearchResult, error)
 	if a.aichat == nil {
 		return nil, fmt.Errorf("AI 服务未初始化")
 	}
-	return a.aichat.SearchConversations(query)
+	// 出错时第二个返回值会让前端走 reject,那条路不必给空切片;
+	// 但"查了但没结果"必须是 [],不能是 null
+	out, err := a.aichat.SearchConversations(query)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return []aichat.SearchResult{}, nil
+	}
+	return out, nil
 }
 
 // ForkAIConversation 从某条消息处分叉出一条新会话(含这条及之前的全部消息)
