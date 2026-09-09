@@ -1,6 +1,6 @@
 import { X, Download } from 'lucide-react'
 import { createPortal } from 'react-dom'
-import { imageSrc, formatFileSize } from './file-parsers'
+import { blobURL, imageSrc, formatFileSize } from './file-parsers'
 import { MarkdownPreview } from '@/components/tool/MarkdownPreview'
 import type { FileBlock, ImageBlock } from './types'
 import { fileIcon } from './chat-utils'
@@ -50,7 +50,16 @@ export function ImagePreviewModal({ img, onClose }: { img: ImageBlock; onClose: 
 }
 
 export function FilePreviewModal({ file, onClose }: { file: FileBlock; onClose: () => void }) {
+  // 落盘后二进制只剩 ref。直接指到 /aiblob/ 让 webview 自己下,
+  // 比先取回 base64、再 atob、再拼 Blob 少了两次整份拷贝
   const onDownload = () => {
+    if (file.ref && !file.data) {
+      const a = document.createElement('a')
+      a.href = blobURL(file.ref)
+      a.download = file.name
+      a.click()
+      return
+    }
     let blob: Blob
     if (file.data) {
       const bin = atob(file.data)
@@ -85,7 +94,7 @@ export function FilePreviewModal({ file, onClose }: { file: FileBlock; onClose: 
             <span className="shrink-0 text-[11px] text-muted-foreground">
               {file.sizeBytes ? formatFileSize(file.sizeBytes) : ''}
               {file.text ? ` · ${file.text.length} 字` : ''}
-              {file.data ? ' · 二进制' : ''}
+              {file.data || file.ref ? ' · 二进制' : ''}
             </span>
           </div>
           <div className="flex items-center gap-1">
@@ -112,7 +121,7 @@ export function FilePreviewModal({ file, onClose }: { file: FileBlock; onClose: 
             <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
               {file.text}
             </pre>
-          ) : file.data ? (
+          ) : file.data || file.ref ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
               <div className="text-center">
                 <Icon className="mx-auto h-12 w-12 text-info/60" />

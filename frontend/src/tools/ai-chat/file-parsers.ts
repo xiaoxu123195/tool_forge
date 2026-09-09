@@ -81,8 +81,16 @@ export async function fileToImageBlock(file: File): Promise<ImageBlock> {
 }
 
 /** ImageBlock → 可放进 <img src> 的字符串 */
+/** 附件的取用地址。和后端 main.go 的 blobRoutePrefix 必须一致 */
+export function blobURL(ref: string): string {
+  return '/aiblob/' + ref
+}
+
 export function imageSrc(img: ImageBlock): string {
   if (img.url) return img.url
+  // 落盘后的图片只有 ref。交给 webview 按普通 URL 去取:
+  // 它自己会缓存(内容寻址,URL 不变内容就不变),也不用先把整张图变成字符串
+  if (img.ref) return blobURL(img.ref)
   return `data:${img.mimeType ?? 'image/png'};base64,${img.data ?? ''}`
 }
 

@@ -139,6 +139,13 @@ func (a *App) startup(ctx context.Context) {
 	// AI 聊天 service 需要持有 wails ctx 才能 EventsEmit
 	if a.aichat != nil {
 		a.aichat.SetWailsContext(ctx)
+		// 老会话里内联的图片/附件搬进 blob 目录(一次性,自带完成标记)。
+		// 放后台:搬几 MB 很快,但没必要让窗口为它多等一会儿;
+		// 搬完之前打开会话也没问题 —— 内联和引用两种形态都读得动
+		go func() {
+			aichat.MigrateInlineBlobs()
+			aichat.GCBlobs()
+		}()
 	}
 	// 本地 API server:从配置文件读取,如果 enabled=true 就启动监听
 	if a.api != nil {

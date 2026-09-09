@@ -783,5 +783,10 @@ func contextMessages(conv Conversation) []Message {
 	for len(msgs) > 0 && msgs[0].Role == RoleTool {
 		msgs = msgs[1:]
 	}
-	return msgs
+	// 图片/附件在磁盘上只有引用,协议层要的是真数据 —— 在这里读回来。
+	//
+	// 放在这个函数里是因为它是四条协议路径唯一的公共入口,而且它已经把
+	// "这次到底发哪几条"算完了:只回填真要发的那几条,不为了发一句话
+	// 把整条会话的几 MB 图片全读进内存。
+	return hydrateMessages(msgs)
 }

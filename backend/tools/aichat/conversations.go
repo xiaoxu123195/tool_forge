@@ -297,7 +297,13 @@ func (s *Service) DeleteMessage(convID, msgID string) error {
 func (s *Service) DeleteConversationByID(id string) error {
 	// 取消可能正在进行的流
 	s.cancelStream(id)
-	return deleteConversation(id)
+	if err := deleteConversation(id); err != nil {
+		return err
+	}
+	// 顺手回收没人引用的附件。不能直接删这条会话的附件 —— 内容寻址,
+	// 同一张图可能被分叉出去的会话共用着。放后台跑,删会话不必等它
+	go gcBlobs()
+	return nil
 }
 
 // autoTitle 从 user 首条消息生成标题(最多 30 字)

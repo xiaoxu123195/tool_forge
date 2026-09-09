@@ -97,7 +97,7 @@ export function useChatStream({
       schedule()
     })
     const offImage = EventsOn(EV_IMAGE_PREFIX + conversationId, (img: ImageBlock) => {
-      if (!img || (!img.data && !img.url)) return
+      if (!img || (!img.data && !img.url && !img.ref)) return
       setConv((prev) => {
         if (!prev) return prev
         const msgs = [...prev.messages]

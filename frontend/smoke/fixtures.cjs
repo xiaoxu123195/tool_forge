@@ -91,8 +91,22 @@ const conversations = [
         id: 'm1',
         role: 'user',
         content: '查一下黄金价格',
-        images: [{ mimeType: 'image/png', data: TINY_PNG }],
-        files: [{ name: 'note.txt', text: '附件文本', sizeBytes: 12 }],
+        // 两种形态都得画得出来:data 是"刚上传 / 流式刚推过来"的样子,
+        // ref 是从磁盘读回来的样子(已外置,走 /aiblob/)。
+        // 只留 data 的话,渲染 ref 那条路一次都不会被走到
+        images: [
+          { mimeType: 'image/png', data: TINY_PNG },
+          { mimeType: 'image/png', ref: 'a'.repeat(64) + '.png' },
+        ],
+        files: [
+          { name: 'note.txt', text: '附件文本', sizeBytes: 12 },
+          {
+            name: '报告.pdf',
+            mimeType: 'application/pdf',
+            ref: 'b'.repeat(64) + '.pdf',
+            sizeBytes: 91234,
+          },
+        ],
         createdAt: 1,
       },
       {

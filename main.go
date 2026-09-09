@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"net/http"
+	"os"
 	"path"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	wailswin "github.com/wailsapp/wails/v2/pkg/options/windows"
 
+	"tool_forge/backend/tools/aichat"
 	"tool_forge/backend/updater"
 )
 
@@ -74,10 +76,45 @@ func main() {
 // 也不用在加新页面时记得回来改这里。
 func spaFallback(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ref, ok := strings.CutPrefix(r.URL.Path, blobRoutePrefix); ok {
+			serveAIBlob(w, r, ref)
+			return
+		}
 		p := strings.Trim(r.URL.Path, "/")
 		if p != "" && !strings.Contains(path.Base(p), ".") {
 			r.URL.Path = "/"
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// blobRoutePrefix AI 会话附件的路由前缀。前端 <img src> 直接指到这里,
+// 图片由 webview 自己按需加载 —— 不用再把几 MB base64 塞过前端桥
+const blobRoutePrefix = "/aiblob/"
+
+// serveAIBlob 把一个附件按内容类型吐出去。
+//
+// 路径校验在 aichat.BlobPath 里(必须是 64 位十六进制加扩展名),
+// 这里不做二次拼接 —— 任何"自己拼一下路径"的写法都是一个任意文件读取。
+func serveAIBlob(w http.ResponseWriter, r *http.Request, ref string) {
+	full, err := aichat.BlobPath(ref)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	f, err := os.Open(full)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", aichat.MimeForBlobRef(ref))
+	// 内容寻址:同一个 URL 的内容永远不会变,放心让 webview 长期缓存
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	http.ServeContent(w, r, ref, info.ModTime(), f)
 }

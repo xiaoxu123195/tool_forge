@@ -175,6 +175,10 @@ func saveConversation(c *Conversation) error {
 	if err != nil {
 		return err
 	}
+	// 唯一的外置点。放在这里而不是各个调用处:发消息、重新生成、续写、分叉、
+	// 编辑重发都会存会话,漏掉任何一条就会有 base64 溜进 JSON,
+	// 而那种"大部分时候是对的"最难发现
+	externalizeMessages(c.Messages)
 	return writeJSONAtomic(path, c)
 }
 

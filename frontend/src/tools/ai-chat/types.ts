@@ -173,21 +173,28 @@ export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
 export interface ImageBlock {
   /** image/png · image/jpeg · ... */
   mimeType?: string
-  /** base64,无 data: 前缀 */
+  /** base64,无 data: 前缀。只在"刚上传 / 流式刚推过来"时有值 */
   data?: string
   /** 远程 URL(替代 data) */
   url?: string
+  /**
+   * 落盘后的附件引用。从磁盘读回来的会话只有 ref 没有 data ——
+   * 图片走 /aiblob/<ref> 由 webview 自己加载,不再把几 MB base64 塞过桥
+   */
+  ref?: string
 }
 
 /** 一个非图附件(PDF / docx / xlsx / pptx / 文本 / 代码) */
 export interface FileBlock {
   name: string
   mimeType?: string
-  /** 已解析的文本(docx/xlsx/pptx/txt/code) */
+  /** 已解析的文本(docx/xlsx/pptx/txt/code);不外置,模型每轮都要看它 */
   text?: string
-  /** base64,无 data: 前缀(主要是 PDF) */
+  /** base64,无 data: 前缀(主要是 PDF)。落盘后只剩 ref */
   data?: string
   url?: string
+  /** 落盘后的附件引用,取用走 /aiblob/<ref> */
+  ref?: string
   sizeBytes?: number
 }
 

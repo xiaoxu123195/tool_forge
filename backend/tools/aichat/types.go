@@ -77,8 +77,8 @@ type Provider struct {
 	// 合并发生在最后一步,所以它能覆盖我们自己算出来的任何字段:
 	// 这是有意的逃生舱,推断错了至少还有救。
 	CustomBody map[string]any `json:"customBody,omitempty"`
-	CreatedAt      int64                    `json:"createdAt"`
-	UpdatedAt      int64                    `json:"updatedAt"`
+	CreatedAt  int64          `json:"createdAt"`
+	UpdatedAt  int64          `json:"updatedAt"`
 }
 
 // ModelInfo 从 /v1/models 拉到的一条
@@ -123,6 +123,9 @@ type ImageBlock struct {
 	MimeType string `json:"mimeType,omitempty"` // image/png / image/jpeg / ...
 	Data     string `json:"data,omitempty"`     // base64,无 data: 前缀
 	URL      string `json:"url,omitempty"`      // 远程 URL(替代 Data,不重复存)
+	// Ref 落盘后的 blob 引用(见 blobs.go)。磁盘上的会话只有 Ref 没有 Data ——
+	// base64 内联会让一条会话涨到几 MB,而它每次打开、每次搜索、每答一句都要被完整读写一遍
+	Ref string `json:"ref,omitempty"`
 }
 
 // FileBlock 一个非图附件(PDF / docx / xlsx / pptx / 纯文本 / 代码)。
@@ -131,11 +134,14 @@ type ImageBlock struct {
 //	Data 二进制 base64(主要是 PDF,各协议有原生支持)
 //	两者通常二选一,允许同时存在(Text 用于 fallback,Data 用于原生)
 type FileBlock struct {
-	Name      string `json:"name"`              // 显示名(含扩展名)
-	MimeType  string `json:"mimeType,omitempty"`
-	Text      string `json:"text,omitempty"`    // 提取/原始文本
-	Data      string `json:"data,omitempty"`    // base64,无 data: 前缀
-	URL       string `json:"url,omitempty"`     // 远程引用(暂未启用)
+	Name     string `json:"name"` // 显示名(含扩展名)
+	MimeType string `json:"mimeType,omitempty"`
+	Text     string `json:"text,omitempty"` // 提取/原始文本
+	Data     string `json:"data,omitempty"` // base64,无 data: 前缀
+	URL      string `json:"url,omitempty"`  // 远程引用(暂未启用)
+	// Ref 落盘后的 blob 引用(见 blobs.go);只外置 Data,Text 仍内联 ——
+	// 文本本来就不大,而且模型每轮都要看它,外置只会换来一次次读盘
+	Ref       string `json:"ref,omitempty"`
 	SizeBytes int    `json:"sizeBytes,omitempty"`
 }
 
@@ -225,8 +231,8 @@ type Message struct {
 	// Truncated 这条回复没写完(用户点了停止,或流中途断了)。
 	// 以前是往正文尾部塞一个 " …" —— 那会污染内容,复制出去带着个莫名其妙的省略号,
 	// 再发给模型时它也会把省略号当成正文的一部分
-	Truncated bool `json:"truncated,omitempty"`
-	CreatedAt  int64 `json:"createdAt"`
+	Truncated bool  `json:"truncated,omitempty"`
+	CreatedAt int64 `json:"createdAt"`
 }
 
 // UnmarshalJSON 兼容旧会话文件:早期 thinking 是单个字符串,现在是带 signature 的块数组。
@@ -273,16 +279,16 @@ func (m Message) ThinkingText() string {
 
 // Conversation 一个对话(多轮)
 type Conversation struct {
-	ID         string    `json:"id"`
-	Title      string    `json:"title"`      // 自动从首条 user 消息生成,可重命名
+	ID    string `json:"id"`
+	Title string `json:"title"` // 自动从首条 user 消息生成,可重命名
 	// TitleAuto 标题还是自动来的,允许被更好的自动标题覆盖。
 	//
 	// 用户一旦手工命名(重命名 / 建会话时自己填 / 会话设置里改)就置 false,
 	// 之后自动起标题永远绕开这条会话 —— 用户起的名字被模型悄悄改掉是最糟的体验。
-	TitleAuto  bool      `json:"titleAuto,omitempty"`
-	ProviderID string    `json:"providerId"` // 当前对话用的供应商
-	ModelID    string    `json:"modelId"`    // 当前对话用的模型
-	System     string    `json:"system,omitempty"`
+	TitleAuto  bool   `json:"titleAuto,omitempty"`
+	ProviderID string `json:"providerId"` // 当前对话用的供应商
+	ModelID    string `json:"modelId"`    // 当前对话用的模型
+	System     string `json:"system,omitempty"`
 	// ContextCount 发给模型时保留的最近 user/assistant 消息条数;0 = 不限
 	ContextCount int `json:"contextCount,omitempty"`
 	// ReasoningEffort 思考档位:"" / "default" 不干预由供应商决定,"none" 显式关闭,
@@ -346,7 +352,7 @@ type Usage struct {
 
 // UsageRecord 一条用量日志(append 到 ~/.toolforge/ai-chat/usage.jsonl)
 type UsageRecord struct {
-	Ts              int64  `json:"ts"`         // unix milli
+	Ts              int64  `json:"ts"` // unix milli
 	ConvID          string `json:"convId"`
 	ProviderID      string `json:"providerId"`
 	ProviderName    string `json:"providerName"` // 写入时快照,删 provider 后仍可看

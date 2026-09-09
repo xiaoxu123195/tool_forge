@@ -183,7 +183,7 @@ function MessageItemImpl({
                   <div className="text-[10px] text-muted-foreground">
                     {f.sizeBytes ? formatFileSize(f.sizeBytes) : ''}
                     {f.text ? ` · ${f.text.length} 字` : ''}
-                    {f.data ? ' · PDF' : ''}
+                    {f.data || f.ref ? ' · PDF' : ''}
                   </div>
                 </div>
               </button>

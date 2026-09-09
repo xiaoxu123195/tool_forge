@@ -177,7 +177,9 @@ func renderMessage(b *strings.Builder, m Message, fallbackModel string, opt Expo
 				mime = "image/png"
 			}
 			fmt.Fprintf(b, "![图片 %d](data:%s;base64,%s)\n\n", i+1, mime, img.Data)
-		case img.Data != "":
+		case img.Data != "" || img.Ref != "":
+			// Ref 也要认:不勾内嵌时图片只有引用、没有 Data,
+			// 只判 Data 的话这里什么都不写,导出的文档里图就凭空消失了
 			fmt.Fprintf(b, "> [图片 %d · %s,导出时未内嵌]\n\n", i+1, orDefault(img.MimeType, "image"))
 		}
 	}
@@ -211,6 +213,10 @@ func (s *Service) RenderConversationMarkdown(convID string, opt ExportOptions) (
 	name := ""
 	if p, err := s.providerSnapshot(c.ProviderID); err == nil {
 		name = p.Name
+	}
+	// 勾了内嵌图片才回填 —— 不勾的话只写一行占位,把几 MB base64 读进来纯属白费
+	if opt.EmbedImages {
+		c.Messages = hydrateMessages(c.Messages)
 	}
 	return RenderMarkdown(c, name, opt), nil
 }
