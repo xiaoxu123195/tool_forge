@@ -17,6 +17,7 @@ import { ProvidersTab } from '../src/profile/sections/aichat/ProvidersTab'
 import { AssistantsTab } from '../src/profile/sections/aichat/AssistantsTab'
 import { ConversationDialog } from '../src/tools/ai-chat/ConversationDialog'
 import { ExportDialog } from '../src/tools/ai-chat/ExportDialog'
+import { TraceDialog } from '../src/tools/ai-chat/TraceDialog'
 import { DefaultsTab } from '../src/profile/sections/aichat/DefaultsTab'
 import { ConfirmProvider } from '../src/components/ui/confirm'
 import { conversations } from './fixtures.cjs'
@@ -126,6 +127,40 @@ const click = async (label: string) => {
   return true
 }
 
+/** 勾一个复选框(按它旁边的文字找)。它不是 button,click() 抓不到 */
+const check = async (labelText: string) => {
+  const label = (Array.from(document.querySelectorAll('label')) as HTMLElement[]).find((l) =>
+    (l.textContent || '').includes(labelText),
+  )
+  const box = label?.querySelector('input[type=checkbox]') as HTMLElement | undefined
+  if (!box) throw new Error('找不到复选框「' + labelText + '」')
+  await act(async () => {
+    box.click()
+  })
+  await act(async () => {
+    await sleep(50)
+  })
+}
+
+/** 往 textarea 里打字(受控组件要走原生 setter) */
+const typeArea = async (placeholderPart: string, value: string) => {
+  const el = document.querySelector(
+    `textarea[placeholder*="${placeholderPart}"]`,
+  ) as HTMLTextAreaElement | null
+  if (!el) throw new Error('找不到文本域「' + placeholderPart + '」')
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLTextAreaElement.prototype,
+    'value',
+  )?.set
+  setter?.call(el, value)
+  await act(async () => {
+    el.dispatchEvent(new window.Event('input', { bubbles: true }))
+  })
+  await act(async () => {
+    await sleep(50)
+  })
+}
+
 /** 点一个必须存在的按钮;找不到就是回归 —— 静悄悄跳过等于这条用例白测 */
 const mustClick = async (label: string) => {
   if (!(await click(label))) throw new Error('找不到按钮「' + label + '」')
@@ -164,6 +199,16 @@ async function main() {
     await click('检测')
     await click('关闭')
   })
+  await mount('供应商页 · 自定义参数校验', <ProvidersTab />, async () => {
+    await typeArea('stream_options', '{ 这不是 JSON')
+    const shown = document.body.textContent || ''
+    if (!shown.includes('JSON 解析失败')) throw new Error('非法 JSON 没有当场提示')
+    await typeArea('stream_options', '[1,2,3]')
+    if (!(document.body.textContent || '').includes('最外层要是一个对象')) {
+      throw new Error('顶层不是对象时没有提示')
+    }
+  })
+
   await mount('助手预设页', <AssistantsTab />)
   await mount('默认与自动起标题页', <DefaultsTab />)
 
@@ -230,7 +275,19 @@ async function main() {
     },
   )
 
-  // 8) 流结束后必须回头重读会话。
+  // 8) 请求留档面板:切到失败那条、翻到响应页。
+  // 拿不到详情的那条要显示后端给的话,不能白着
+  await mount(
+    '请求留档面板',
+    <TraceDialog conversationId="c-rich" onClose={() => {}} />,
+    async () => {
+      await mustClick('gpt-5.6-luna') // 列表里第一条
+      await mustClick('响应 (2 帧)')
+      await check('只看当前会话') // 取消过滤,把"进行中"那条也画一遍
+    },
+  )
+
+  // 9) 流结束后必须回头重读会话。
   //
   // done 事件的载荷只有正文 —— 截断标记、token 用量、耗时、后端定下的标题
   // 全都不在里面。少了这次重读,用户点"停止"之后就看不到「继续写」,

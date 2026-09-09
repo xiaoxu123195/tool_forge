@@ -55,6 +55,8 @@ export interface Provider {
   sortOrder?: number
   /** 按模型 ID 索引的能力修正 */
   modelOverrides?: Record<string, ModelOverride>
+  /** 原样并进请求体的自定义字段;值为 null 表示删掉这个键 */
+  customBody?: Record<string, unknown>
   createdAt: number
   updatedAt: number
 }
@@ -88,6 +90,35 @@ export interface AIConfig {
   titleModelId?: string
   /** 会话拖动排序;由侧边栏写,设置页只读不写 */
   conversationOrder?: string[]
+}
+
+/** 一次发往上游的请求留档(列表用的精简版) */
+export interface TraceSummary {
+  id: string
+  ts: number
+  providerName: string
+  model: string
+  endpoint: string
+  convId?: string
+  status?: number
+  error?: string
+  durationMs?: number
+  frameCount: number
+  /** 流已结束;false = 还在跑(卡住的请求就长这样) */
+  done?: boolean
+}
+
+/** 完整留档:请求头(已脱敏)、请求体、逐帧原始响应 */
+export interface RequestTrace extends TraceSummary {
+  kind: string
+  providerId: string
+  method: string
+  url: string
+  headers?: string[]
+  body?: string
+  bodyTruncated?: boolean
+  frames?: string[]
+  framesTruncated?: boolean
 }
 
 /** 导出 Markdown 时带哪些内容 */

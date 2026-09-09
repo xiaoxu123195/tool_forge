@@ -8,6 +8,7 @@ import {
   ChevronDown,
   Copy,
   Eraser,
+  GitBranch,
   Globe,
   Link2,
   Pencil,
@@ -68,6 +69,8 @@ interface MessageItemProps {
   onPreviewFile?: (f: FileBlock) => void
   /** 会话内搜索定位到了这一条:画一圈高亮 */
   highlight?: boolean
+  /** 从这条消息分叉出一条新会话 */
+  onFork?: () => void
 }
 
 /** 消息 DOM 节点的 id 前缀。搜索跳转要按消息 id 找到节点,两边必须用同一个前缀 */
@@ -114,6 +117,7 @@ function MessageItemImpl({
   onPreviewImage,
   onPreviewFile,
   highlight,
+  onFork,
 }: MessageItemProps) {
   const [copied, setCopied] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -249,6 +253,7 @@ function MessageItemImpl({
             copied={copied}
             onCopy={() => void onCopy()}
             onEdit={onEditResend ? startEdit : undefined}
+            onFork={onFork}
             onDelete={onDelete}
             align="end"
           />
@@ -327,6 +332,7 @@ function MessageItemImpl({
           copied={copied}
           onCopy={() => void onCopy()}
           onRegenerate={onRegenerate}
+          onFork={onFork}
           onDelete={onDelete}
           align="start"
         />
@@ -384,6 +390,7 @@ function MessageActions({
   onCopy,
   onEdit,
   onRegenerate,
+  onFork,
   onDelete,
   align,
 }: {
@@ -391,6 +398,7 @@ function MessageActions({
   onCopy: () => void
   onEdit?: () => void
   onRegenerate?: () => void
+  onFork?: () => void
   onDelete?: () => void
   align: 'start' | 'end'
 }) {
@@ -405,6 +413,14 @@ function MessageActions({
       {onEdit && <ActionBtn onClick={onEdit} icon={Pencil} label="编辑" title="编辑并重发" />}
       {onRegenerate && (
         <ActionBtn onClick={onRegenerate} icon={RotateCcw} label="重新生成" title="重新生成" />
+      )}
+      {onFork && (
+        <ActionBtn
+          onClick={onFork}
+          icon={GitBranch}
+          label="分叉"
+          title="把这条及之前的对话复制成一条新会话,原会话不动"
+        />
       )}
       {onDelete && (
         <ActionBtn onClick={onDelete} icon={Trash2} label="删除" title="删除这条消息" danger />

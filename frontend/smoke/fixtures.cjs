@@ -208,4 +208,70 @@ const chatTools = {
   offline: ['context7'],
 }
 
-module.exports = { providers, keysById, conversations, assistants, modelSpec, chatTools }
+// 请求留档。三条覆盖三种状态:成功、HTTP 失败、还在跑 ——
+// 面板对这三种的画法不一样(圆点颜色、错误条、"进行中"标记)
+const traces = [
+  {
+    id: 'tr-ok',
+    ts: 1757000000000,
+    providerName: '我的中转',
+    model: 'gpt-5.6-luna',
+    endpoint: 'openai-responses',
+    convId: 'c-rich',
+    status: 200,
+    durationMs: 2400,
+    frameCount: 3,
+    done: true,
+  },
+  {
+    id: 'tr-400',
+    ts: 1757000010000,
+    providerName: '我的中转',
+    model: 'gpt-5.6-luna',
+    endpoint: 'openai-chat',
+    convId: 'c-rich',
+    status: 400,
+    error: 'HTTP 400: unknown field "reasoning"',
+    durationMs: 120,
+    frameCount: 1,
+    done: true,
+  },
+  {
+    // 还在跑的那条:done 为假、没有状态码 —— 卡住的请求就长这样
+    id: 'tr-running',
+    ts: 1757000020000,
+    providerName: 'Anthropic',
+    model: 'claude-sonnet-4-5',
+    endpoint: 'anthropic-messages',
+    convId: 'c-other',
+    frameCount: 0,
+  },
+]
+
+function traceDetail(t) {
+  return {
+    ...t,
+    kind: 'chat',
+    providerId: 'p-multi',
+    method: 'POST',
+    url: 'https://relay.example.com/v1/responses?key=abcd****',
+    headers: ['Authorization: Bearer sk-a****', 'Content-Type: application/json'],
+    body: '{"model":"gpt-5.6-luna","stream":true}',
+    frames:
+      t.frameCount > 0
+        ? ['{"type":"response.output_text.delta","delta":"你好"}', '{"type":"response.completed"}']
+        : [],
+    framesTruncated: t.id === 'tr-ok',
+  }
+}
+
+module.exports = {
+  providers,
+  keysById,
+  conversations,
+  assistants,
+  modelSpec,
+  chatTools,
+  traces,
+  traceDetail,
+}

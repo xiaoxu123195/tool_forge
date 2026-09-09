@@ -313,3 +313,73 @@ func autoTitle(content string) string {
 	}
 	return string(r)
 }
+
+// ForkConversation 从某条消息处分叉出一条新会话:把它**及之前**的所有消息复制过去,
+// 原会话原封不动。
+//
+// 用途是"同一个问题想试另一种追问方向"。以前只能删掉后半截重来 ——
+// 那等于用毁掉一条路的方式去走另一条。
+//
+// 消息 ID 全部重新生成:两条会话共用同一批 ID 的话,删其中一条里的某条消息、
+// 或者续写、重新生成,都会因为 ID 撞车而写错地方。
+func (s *Service) ForkConversation(convID, msgID string) (*Conversation, error) {
+	src, err := loadConversation(convID)
+	if err != nil {
+		return nil, err
+	}
+	cut := -1
+	for i := range src.Messages {
+		if src.Messages[i].ID == msgID {
+			cut = i
+			break
+		}
+	}
+	if cut < 0 {
+		return nil, fmt.Errorf("消息不存在")
+	}
+
+	now := time.Now().UnixMilli()
+	msgs := make([]Message, 0, cut+1)
+	for _, m := range src.Messages[:cut+1] {
+		c := m
+		c.ID = uuid.NewString()
+		msgs = append(msgs, c)
+	}
+	// 末尾如果是"模型请求调工具"的那条,它的结果消息被切在外面了。
+	// 各家都要求调用和结果成对出现,落单的调用会让下一次请求整个被拒
+	for len(msgs) > 0 && msgs[len(msgs)-1].Role == RoleTool {
+		msgs = msgs[:len(msgs)-1]
+	}
+
+	title := strings.TrimSpace(src.Title)
+	if title == "" {
+		title = "新对话"
+	}
+	if r := []rune(title); len(r) > 20 {
+		title = string(r[:20])
+	}
+	dst := &Conversation{
+		ID:    uuid.NewString(),
+		Title: title + " · 分支",
+		// 不留给自动起标题:分支里已经有好几轮对话了,而自动起标题只认第一轮,
+		// 挂着一个永远不会兑现的 titleAuto 只会让人以为它会自己改名
+		TitleAuto:       false,
+		ProviderID:      src.ProviderID,
+		ModelID:         src.ModelID,
+		System:          src.System,
+		ContextCount:    src.ContextCount,
+		ReasoningEffort: src.ReasoningEffort,
+		WebSearch:       src.WebSearch,
+		Tools:           src.Tools,
+		Temperature:     src.Temperature,
+		TopP:            src.TopP,
+		MaxTokens:       src.MaxTokens,
+		Messages:        msgs,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := saveConversation(dst); err != nil {
+		return nil, err
+	}
+	return dst, nil
+}

@@ -1514,6 +1514,45 @@ func (a *App) ContinueAILastChat(convID string) (aichat.Conversation, error) {
 	return *c, nil
 }
 
+// ForkAIConversation 从某条消息处分叉出一条新会话(含这条及之前的全部消息)
+func (a *App) ForkAIConversation(convID, msgID string) (aichat.Conversation, error) {
+	if a.aichat == nil {
+		return aichat.Conversation{}, fmt.Errorf("AI 服务未初始化")
+	}
+	c, err := a.aichat.ForkConversation(convID, msgID)
+	if err != nil {
+		return aichat.Conversation{}, err
+	}
+	return *c, nil
+}
+
+// ListAIRequestTraces 最近几次发往上游的请求留档(精简版,不含请求体和响应帧)
+func (a *App) ListAIRequestTraces() []aichat.TraceSummary {
+	if a.aichat == nil {
+		return nil
+	}
+	return a.aichat.ListRequestTraces()
+}
+
+// GetAIRequestTrace 取一条完整留档:请求头(已脱敏)、请求体、逐帧原始响应
+func (a *App) GetAIRequestTrace(id string) (aichat.RequestTrace, error) {
+	if a.aichat == nil {
+		return aichat.RequestTrace{}, fmt.Errorf("AI 服务未初始化")
+	}
+	t, err := a.aichat.GetRequestTrace(id)
+	if err != nil {
+		return aichat.RequestTrace{}, err
+	}
+	return *t, nil
+}
+
+// ClearAIRequestTraces 清空请求留档
+func (a *App) ClearAIRequestTraces() {
+	if a.aichat != nil {
+		a.aichat.ClearRequestTraces()
+	}
+}
+
 // RenderAIConversationMarkdown 把会话渲染成 Markdown 文本(供预览 / 复制到剪贴板)
 func (a *App) RenderAIConversationMarkdown(convID string, opt aichat.ExportOptions) (string, error) {
 	if a.aichat == nil {

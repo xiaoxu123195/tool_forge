@@ -68,6 +68,15 @@ type Provider struct {
 	SortOrder int `json:"sortOrder,omitempty"`
 	// ModelOverrides 按模型 ID 索引的能力修正;能力推断不准时由用户手动纠正
 	ModelOverrides map[string]ModelOverride `json:"modelOverrides,omitempty"`
+	// CustomBody 原样并进请求体的自定义字段。
+	//
+	// 中转五花八门,常有一两个非标参数不给就不干活(要个 stream_options、
+	// 要个自家的 provider 路由字段、要把某个开关显式关掉)。没有这个口子,
+	// 每遇到一家就得改一次协议层代码再重编 —— 那不是用户能做的事。
+	//
+	// 合并发生在最后一步,所以它能覆盖我们自己算出来的任何字段:
+	// 这是有意的逃生舱,推断错了至少还有救。
+	CustomBody map[string]any `json:"customBody,omitempty"`
 	CreatedAt      int64                    `json:"createdAt"`
 	UpdatedAt      int64                    `json:"updatedAt"`
 }

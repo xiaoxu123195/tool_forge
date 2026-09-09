@@ -82,6 +82,14 @@ const special = {
       updatedAt: 1,
     }),
   ContinueAILastChat: () => Promise.resolve({}),
+  ForkAIConversation: (id) =>
+    Promise.resolve({ ...fx.conversations.find((c) => c.id === id), id: 'c-forked' }),
+  ListAIRequestTraces: () => Promise.resolve(fx.traces),
+  GetAIRequestTrace: (id) => {
+    const t = fx.traces.find((x) => x.id === id)
+    // 被挤掉的那条要 reject,前端得把这句话显示出来而不是白着
+    return t ? Promise.resolve(fx.traceDetail(t)) : Promise.reject(new Error('这条记录已经被挤掉了'))
+  },
   // 导出预览:给一段像样的 Markdown,好让预览区真有内容可渲染
   RenderAIConversationMarkdown: (id, opt) =>
     Promise.resolve(

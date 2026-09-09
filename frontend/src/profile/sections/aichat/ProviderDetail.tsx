@@ -95,10 +95,14 @@ export function ProviderDetail({
   const [savedFlash, setSavedFlash] = useState(false)
   const [specs, setSpecs] = useState<Record<string, ModelSpec>>({})
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  // 自定义请求参数。存成一段 JSON 文本而不是键值对表格:
+  // 值本来就可能是对象、数组、数字、null,拿一格输入框去装等于逼用户在里面再写一遍 JSON
+  const [customText, setCustomText] = useState(() => stringifyCustom(provider.customBody))
 
   useEffect(() => {
     setName(provider.name)
     setBaseUrl(provider.baseUrl)
+    setCustomText(stringifyCustom(provider.customBody))
     setCollapsed(new Set())
   }, [provider.id])
 
@@ -127,9 +131,21 @@ export function ProviderDetail({
     return [...m.entries()]
   }, [provider.models])
 
-  const dirty = name !== provider.name || baseUrl !== provider.baseUrl
+  const custom = parseCustom(customText)
+  const dirty =
+    name !== provider.name ||
+    baseUrl !== provider.baseUrl ||
+    customText !== stringifyCustom(provider.customBody)
 
   const onSave = async () => {
+    if (custom.error) {
+      await dialog({
+        title: '自定义参数格式不对',
+        message: custom.error,
+        confirmLabel: '知道了',
+      })
+      return
+    }
     setSaving(true)
     try {
       // 出错时 Wails 会 reject,由下面的 catch 接住 —— 以前那个 err 字符串
@@ -138,6 +154,7 @@ export function ProviderDetail({
         ...provider,
         name: name.trim() || '未命名',
         baseUrl: baseUrl.trim() || DEFAULT_BASE_URL_BY_TYPE[provider.type],
+        customBody: custom.value,
       } as unknown as never)
       setSavedFlash(true)
       setTimeout(() => setSavedFlash(false), 1500)
@@ -212,6 +229,32 @@ export function ProviderDetail({
           className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-1 focus:ring-ring"
         />
       </div>
+
+      <details className="rounded-md border border-border" open={!!provider.customBody}>
+        <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-muted-foreground">
+          自定义请求参数
+          <span className="ml-2 font-normal">· 原样并进请求体,可覆盖我们算出来的字段</span>
+        </summary>
+        <div className="space-y-1.5 border-t border-border p-3">
+          <textarea
+            value={customText}
+            onChange={(e) => setCustomText(e.target.value)}
+            spellCheck={false}
+            rows={5}
+            placeholder={'{\n  "stream_options": { "include_usage": true }\n}'}
+            className="w-full resize-y rounded-md border border-input bg-background p-2 font-mono text-xs outline-none focus:ring-1 focus:ring-ring"
+          />
+          {custom.error ? (
+            <p className="text-[11px] text-destructive">{custom.error}</p>
+          ) : (
+            <p className="text-[11px] text-muted-foreground">
+              一个 JSON 对象。中转常有一两个非标参数不给就不干活 —— 写在这里,
+              不用改代码。值写成 <code className="font-mono">null</code> 表示把这个字段从请求里删掉
+              (有的中转是"这个字段存在就报错")。检测模型时也会带上。
+            </p>
+          )}
+        </div>
+      </details>
 
       {dirty && (
         <div className="flex items-center gap-2">
@@ -331,4 +374,34 @@ function ToggleSwitch({
       />
     </button>
   )
+}
+
+/** 把自定义参数转成编辑框里的文本;没配过就是空串,而不是一对空花括号 */
+function stringifyCustom(v: Record<string, unknown> | undefined): string {
+  if (!v || Object.keys(v).length === 0) return ''
+  return JSON.stringify(v, null, 2)
+}
+
+/**
+ * 解编辑框里的 JSON。
+ *
+ * 空串 = 没配,返回 undefined(而不是空对象)—— 空对象会让 Go 那边的
+ * omitempty 失效,配置文件里留下一个没意义的 "customBody": {}。
+ *
+ * 只接受对象:顶层写成数组或裸值的话,合并进请求体是没有意义的,
+ * 与其静默忽略不如当场说不行。
+ */
+function parseCustom(text: string): { value?: Record<string, unknown>; error?: string } {
+  const t = text.trim()
+  if (!t) return {}
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(t)
+  } catch (e) {
+    return { error: 'JSON 解析失败: ' + (e as Error).message }
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return { error: '最外层要是一个对象,形如 { "字段": 值 }' }
+  }
+  return { value: parsed as Record<string, unknown> }
 }

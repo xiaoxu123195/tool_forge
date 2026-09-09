@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, Search, Settings2, Share } from 'lucide-react'
+import { Bug, ChevronDown, Search, Settings2, Share } from 'lucide-react'
 import {
   DeleteAIChatMessage,
   EditAndResendAIChat,
@@ -8,6 +8,7 @@ import {
   InsertAIClearMarker,
   ListAIProviders,
   ContinueAILastChat,
+  ForkAIConversation,
   RegenerateAILastChat,
   SendAIChat,
   StopAIChat,
@@ -31,6 +32,7 @@ import { ConversationDialog, type ConversationDraft } from './ConversationDialog
 import { ChatComposer } from './ChatComposer'
 import { ClearDivider, MessageItem, MSG_DOM_PREFIX } from './ChatMessage'
 import { ChatSearch } from './ChatSearch'
+import { TraceDialog } from './TraceDialog'
 import { WelcomeScreen } from './ChatWelcome'
 import { FilePreviewModal, ImagePreviewModal } from './ChatPreviews'
 import { CHAT_COLUMN } from './chat-utils'
@@ -45,6 +47,8 @@ interface Props {
   onExport: () => void
   /** 变一次就重读一次会话。侧边栏右键改了正在显示的这条时用得上 */
   refreshToken?: number
+  /** 分叉出了一条新会话,让页面刷新列表并切过去 */
+  onForked: (newId: string) => void
 }
 
 export function ChatPane({
@@ -52,6 +56,7 @@ export function ChatPane({
   onTitleChange,
   onExport,
   refreshToken,
+  onForked,
 }: Props) {
   const dialog = useConfirm()
   const [conv, setConv] = useState<Conversation | null>(null)
@@ -66,6 +71,7 @@ export function ChatPane({
   const [spec, setSpec] = useState<ModelSpec | null>(null)
   const [effortOpen, setEffortOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [traceOpen, setTraceOpen] = useState(false)
   // 搜索定位到的那条消息;空串 = 没有高亮
   const [hitId, setHitId] = useState('')
   // streaming 的 ref 影子。异步回调里读 state 拿到的是闭包捕获的旧值,
@@ -465,6 +471,18 @@ export function ChatPane({
     void load()
   }
 
+  // 分叉:把这条及之前的对话复制成新会话,原会话不动。
+  // 复制在后端做(消息 ID 要全部重生成,否则两条会话删改会串)
+  const onFork = async (msgId: string) => {
+    if (!conv) return
+    try {
+      const forked = (await ForkAIConversation(conv.id, msgId)) as unknown as Conversation
+      if (forked?.id) onForked(forked.id)
+    } catch (e) {
+      await dialog({ title: '分叉失败', message: String(e), confirmLabel: '知道了' })
+    }
+  }
+
   const onPickModel = async (providerId: string, modelId: string) => {
     if (!conv) return
     setPickerOpen(false)
@@ -526,6 +544,14 @@ export function ChatPane({
           )}
         >
           <Search className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={() => setTraceOpen(true)}
+          title="请求留档:看最近几次实际发出去的请求和原始响应"
+          className="flex h-7 w-7 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+        >
+          <Bug className="h-3.5 w-3.5" />
         </button>
         <button
           type="button"
@@ -614,6 +640,7 @@ export function ChatPane({
                   onPreviewImage={setPreviewImage}
                   onPreviewFile={setPreviewFile}
                   highlight={hitId === m.id}
+                  onFork={!streaming ? () => void onFork(m.id) : undefined}
                 />
               )
             })}
@@ -676,6 +703,10 @@ export function ChatPane({
 
       {previewFile && (
         <FilePreviewModal file={previewFile} onClose={() => setPreviewFile(null)} />
+      )}
+
+      {traceOpen && (
+        <TraceDialog conversationId={conv.id} onClose={() => setTraceOpen(false)} />
       )}
 
       {systemOpen && (

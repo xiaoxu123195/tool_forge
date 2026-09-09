@@ -176,6 +176,7 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 	if spec.family == familyAnthropic {
 		applyAnthropicCache(body)
 	}
+	applyCustomBody(body, p.CustomBody)
 	bodyBytes, _ := json.Marshal(body)
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
@@ -186,15 +187,26 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 	applyAnthropicHeaders(httpReq, p.APIKey)
 	httpReq.Header.Set("Accept", "text/event-stream")
 
+	tr := startTrace("chat", p, spec, conv.ID, "POST", url)
+	tr.request(httpReq.Header, bodyBytes)
+	defer tr.finish()
+
 	resp, err := streamClient.Do(httpReq)
 	if err != nil {
+		tr.fail(err)
 		cb.onError(fmt.Errorf("%s", prettifyNetErr(err)))
 		return
 	}
 	defer resp.Body.Close()
+	tr.status(resp.StatusCode)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(resp.Body)
-		cb.onError(fmt.Errorf("HTTP %d: %s", resp.StatusCode, extractErrorMessage(raw)))
+		// 上游的原始错误体一并留档 —— 中转返回的 HTTP 400 里往往写着
+		// 到底哪个字段它不认,那句话比"HTTP 400"有用得多
+		tr.frame(string(raw))
+		err := fmt.Errorf("HTTP %d: %s", resp.StatusCode, extractErrorMessage(raw))
+		tr.fail(err)
+		cb.onError(err)
 		return
 	}
 
@@ -219,6 +231,7 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		probe.record(payload)
+		tr.frame(payload)
 		if msg := parseAnthropicStreamError(payload); msg != "" {
 			streamErr = msg
 			continue
@@ -535,6 +548,7 @@ func testAnthropicModel(p Provider, modelID string) TestResult {
 			{"role": "user", "content": "hi"},
 		},
 	}
+	applyCustomBody(body, p.CustomBody)
 	bodyBytes, _ := json.Marshal(body)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
