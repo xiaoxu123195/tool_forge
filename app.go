@@ -1514,6 +1514,14 @@ func (a *App) ContinueAILastChat(convID string) (aichat.Conversation, error) {
 	return *c, nil
 }
 
+// SearchAIConversations 在所有会话里找一段文字(标题 / 正文 / 思考),按会话分组返回
+func (a *App) SearchAIConversations(query string) ([]aichat.SearchResult, error) {
+	if a.aichat == nil {
+		return nil, fmt.Errorf("AI 服务未初始化")
+	}
+	return a.aichat.SearchConversations(query)
+}
+
 // ForkAIConversation 从某条消息处分叉出一条新会话(含这条及之前的全部消息)
 func (a *App) ForkAIConversation(convID, msgID string) (aichat.Conversation, error) {
 	if a.aichat == nil {

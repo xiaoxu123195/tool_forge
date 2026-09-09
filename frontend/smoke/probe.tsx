@@ -18,6 +18,7 @@ import { AssistantsTab } from '../src/profile/sections/aichat/AssistantsTab'
 import { ConversationDialog } from '../src/tools/ai-chat/ConversationDialog'
 import { ExportDialog } from '../src/tools/ai-chat/ExportDialog'
 import { TraceDialog } from '../src/tools/ai-chat/TraceDialog'
+import { GlobalSearchDialog } from '../src/tools/ai-chat/GlobalSearchDialog'
 import { DefaultsTab } from '../src/profile/sections/aichat/DefaultsTab'
 import { ConfirmProvider } from '../src/components/ui/confirm'
 import { conversations } from './fixtures.cjs'
@@ -275,7 +276,25 @@ async function main() {
     },
   )
 
-  // 8) 请求留档面板:切到失败那条、翻到响应页。
+  // 8) 跨会话搜索:输入后要出结果,只命中标题的那条要给可点的入口
+  await mount(
+    '跨会话搜索',
+    <GlobalSearchDialog onPick={() => {}} onClose={() => {}} />,
+    async () => {
+      await type('在所有会话里查找', '泛型')
+      // 防抖 200ms,得等过去
+      await act(async () => {
+        await sleep(320)
+      })
+      const txt = document.body.textContent || ''
+      if (!txt.includes('富消息')) throw new Error('搜索结果没出来')
+      if (!txt.includes('这条会话里另有 3 处')) throw new Error('剩余处数没显示')
+      if (!txt.includes('标题匹配')) throw new Error('只命中标题的那条没标出来')
+      await mustClick('打开这条会话')
+    },
+  )
+
+  // 9) 请求留档面板:切到失败那条、翻到响应页。
   // 拿不到详情的那条要显示后端给的话,不能白着
   await mount(
     '请求留档面板',
@@ -295,7 +314,7 @@ async function main() {
     },
   )
 
-  // 9) 流结束后必须回头重读会话。
+  // 10) 流结束后必须回头重读会话。
   //
   // done 事件的载荷只有正文 —— 截断标记、token 用量、耗时、后端定下的标题
   // 全都不在里面。少了这次重读,用户点"停止"之后就看不到「继续写」,

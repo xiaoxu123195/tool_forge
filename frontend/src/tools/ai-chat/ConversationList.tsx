@@ -7,6 +7,7 @@ import {
   PanelLeftOpen,
   Pencil,
   Plus,
+  Search,
   Share,
   Trash2,
 } from 'lucide-react'
@@ -23,6 +24,8 @@ interface Props {
   onDelete: (id: string) => void
   onEdit: (id: string) => void
   onExport: (id: string) => void
+  /** 打开跨会话搜索 */
+  onSearch: () => void
   /** 拖动结束后的新顺序 */
   onReorder: (ids: string[]) => void
 }
@@ -43,6 +46,7 @@ export function ConversationList({
   onDelete,
   onEdit,
   onExport,
+  onSearch,
   onReorder,
 }: Props) {
   const dialog = useConfirm()
@@ -113,6 +117,14 @@ export function ConversationList({
         >
           <Plus className="h-4 w-4" />
         </button>
+        <button
+          type="button"
+          onClick={onSearch}
+          title="在所有会话里查找 (Ctrl+Shift+F)"
+          className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+        >
+          <Search className="h-4 w-4" />
+        </button>
         <div className="my-1 h-px w-6 bg-border" />
         {/* 收起后仍然能切会话:只画一列小圆点,当前那条高亮 */}
         <div className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-auto">
@@ -144,6 +156,14 @@ export function ConversationList({
           <Plus className="h-3.5 w-3.5" />
           新建对话
         </Button>
+        <button
+          type="button"
+          onClick={onSearch}
+          title="在所有会话里查找 (Ctrl+Shift+F)"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+        >
+          <Search className="h-4 w-4" />
+        </button>
         <button
           type="button"
           onClick={() => setCollapsed(true)}

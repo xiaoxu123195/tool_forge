@@ -92,6 +92,28 @@ export interface AIConfig {
   conversationOrder?: string[]
 }
 
+/** 跨会话搜索:一处命中。三段已经由后端切好,前端把 match 套上高亮即可 */
+export interface SearchHit {
+  messageId: string
+  role: string
+  before: string
+  match: string
+  after: string
+  createdAt: number
+}
+
+/** 跨会话搜索:一条会话里的全部命中 */
+export interface SearchResult {
+  convId: string
+  title: string
+  updatedAt: number
+  /** 命中的是标题本身(标题没有上下文可摘,单独标一下) */
+  titleMatch?: boolean
+  hits: SearchHit[]
+  /** 这条会话里还有多少处命中没列出来 */
+  more?: number
+}
+
 /** 一次发往上游的请求留档(列表用的精简版) */
 export interface TraceSummary {
   id: string

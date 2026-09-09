@@ -49,6 +49,13 @@ interface Props {
   refreshToken?: number
   /** 分叉出了一条新会话,让页面刷新列表并切过去 */
   onForked: (newId: string) => void
+  /** 打开后要定位到的消息(跨会话搜索点进来时用);空串 = 不定位 */
+  focusMessageId?: string
+  /**
+   * 定位请求的序号。光靠 focusMessageId 不够:在同一条会话里连着点同一处命中
+   * 两次,id 没变,effect 就不会再跑 —— 第二次点下去毫无反应。
+   */
+  focusToken?: number
 }
 
 export function ChatPane({
@@ -57,6 +64,8 @@ export function ChatPane({
   onExport,
   refreshToken,
   onForked,
+  focusMessageId,
+  focusToken,
 }: Props) {
   const dialog = useConfirm()
   const [conv, setConv] = useState<Conversation | null>(null)
@@ -225,6 +234,13 @@ export function ChatPane({
     // 盖上去会把乐观插入的问答对整个抹掉
     if (c?.id && !streamingRef.current) setConv(c)
   }
+
+  // 从跨会话搜索点进来:等会话真的加载完再定位 ——
+  // 消息还没渲染时 getElementById 找不到节点,滚动会静悄悄地不发生
+  useEffect(() => {
+    if (!focusMessageId || !conv) return
+    jumpToMessage(focusMessageId)
+  }, [focusMessageId, focusToken, conv?.id])
 
   // 流事件订阅(chunk / thinking / citation / image / done / error)
   useChatStream({

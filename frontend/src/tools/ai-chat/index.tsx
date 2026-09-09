@@ -23,6 +23,7 @@ import { useConfirm } from '@/components/ui/confirm'
 import { ConversationList } from './ConversationList'
 import { ConversationDialog, type ConversationDraft } from './ConversationDialog'
 import { ExportDialog } from './ExportDialog'
+import { GlobalSearchDialog, isGlobalSearchHotkey } from './GlobalSearchDialog'
 import { ChatPane } from './ChatPane'
 
 /** 新会话默认带多少条历史给模型。跟以前新建弹窗里的默认值保持一致 */
@@ -48,6 +49,10 @@ export default function AIChat() {
   // 要导出的会话。放在页面级而不是 ChatPane 里:正文区的按钮和侧边栏右键
   // 是同一件事的两个入口,各自持一份状态迟早会不一致
   const [exportId, setExportId] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
+  // 从搜索结果点进来时要定位到的消息。带一个自增序号:
+  // 连着点同一条消息两次,光看 id 是没变化的,effect 不会再跑一遍
+  const [focus, setFocus] = useState<{ msgId: string; seq: number }>({ msgId: '', seq: 0 })
 
   const reloadAll = async () => {
     const [provList, convList, cfg] = await Promise.all([
@@ -72,6 +77,18 @@ export default function AIChat() {
       setActiveId(conversations[0]?.id ?? '')
     }
   }, [conversations, activeId])
+
+  // Ctrl/Cmd+Shift+F 全局搜索。Ctrl+F 归会话内搜索,两个别抢
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isGlobalSearchHotkey(e)) {
+        e.preventDefault()
+        setSearchOpen(true)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   const usable = providers.filter((p) => p.enabled && p.models.length > 0)
 
@@ -242,6 +259,7 @@ export default function AIChat() {
             onDelete={onDelete}
             onEdit={(id) => void onEditConversation(id)}
             onExport={setExportId}
+            onSearch={() => setSearchOpen(true)}
             onReorder={(ids) => void onReorder(ids)}
           />
           {activeId ? (
@@ -254,6 +272,8 @@ export default function AIChat() {
               onForked={(id) => {
                 void reloadAll().then(() => setActiveId(id))
               }}
+              focusMessageId={focus.msgId}
+              focusToken={focus.seq}
             />
           ) : (
             <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
@@ -268,6 +288,19 @@ export default function AIChat() {
           initial={dialogState.initial}
           onClose={() => setDialogState(null)}
           onSave={(d) => void onDialogSave(d)}
+        />
+      )}
+
+      {searchOpen && (
+        <GlobalSearchDialog
+          onPick={(convId, msgId) => {
+            setSearchOpen(false)
+            setActiveId(convId)
+            // ChatPane 是按 activeId 做 key 的,换会话会整块重挂;
+            // 定位放到新的那一份里去做(它加载完会话后自己滚过去)
+            setFocus((f) => ({ msgId, seq: f.seq + 1 }))
+          }}
+          onClose={() => setSearchOpen(false)}
         />
       )}
 

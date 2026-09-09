@@ -84,6 +84,7 @@ const special = {
   ContinueAILastChat: () => Promise.resolve({}),
   ForkAIConversation: (id) =>
     Promise.resolve({ ...fx.conversations.find((c) => c.id === id), id: 'c-forked' }),
+  SearchAIConversations: (q) => Promise.resolve(fx.searchResults(q)),
   ListAIRequestTraces: () => Promise.resolve(fx.traces),
   GetAIRequestTrace: (id) => {
     const t = fx.traces.find((x) => x.id === id)

@@ -283,7 +283,39 @@ function traceDetail(t) {
   }
 }
 
+// 跨会话搜索结果。三种形状:正常命中、只命中标题(hits 为空)、还有更多没列出来 ——
+// 面板对这三种的画法不一样
+function searchResults(q) {
+  if (!q || q === 'zzz') return []
+  return [
+    {
+      convId: 'c-rich',
+      title: '富消息',
+      updatedAt: 5,
+      hits: [
+        { messageId: 'm1', role: 'user', before: '前面的话 ', match: q, after: ' 后面的话', createdAt: 1 },
+        { messageId: 'm2', role: 'assistant', before: '', match: q, after: '在开头', createdAt: 2 },
+      ],
+      more: 3,
+    },
+    {
+      // 只命中标题:面板要给一个"打开这条会话"的入口,
+      // 否则这条在结果里就是个点不动的标题。
+      //
+      // hits 写成 null 而不是 [] —— 这才是 Go 真正发过来的形状(nil 切片
+      // 序列化成 null)。当初照着 TS 类型写了 [],结果这条崩没被拦住。
+      // 样本要照着线上的字节写,不是照着类型声明写。
+      convId: 'c-empty',
+      title: '空会话',
+      updatedAt: 1,
+      titleMatch: true,
+      hits: null,
+    },
+  ]
+}
+
 module.exports = {
+  searchResults,
   providers,
   keysById,
   conversations,
