@@ -25,6 +25,9 @@ import { ConversationDialog, type ConversationDraft } from './ConversationDialog
 import { ExportDialog } from './ExportDialog'
 import { ChatPane } from './ChatPane'
 
+/** 新会话默认带多少条历史给模型。跟以前新建弹窗里的默认值保持一致 */
+const DEFAULT_CONTEXT_COUNT = 10
+
 export default function AIChat() {
   const navigate = useNavigate()
   const dialog = useConfirm()
@@ -36,10 +39,12 @@ export default function AIChat() {
     defaultModelId: '',
   })
   const [dialogState, setDialogState] = useState<
-    | { mode: 'create'; initial: ConversationDraft }
-    | { mode: 'edit'; convId: string; initial: ConversationDraft }
-    | null
+    { convId: string; initial: ConversationDraft } | null
   >(null)
+  // 编辑弹窗保存后要让正在显示的 ChatPane 重新读一次盘。
+  // 用计数器而不是给 ChatPane 换 key:换 key 是整块重挂,输入框里的草稿和
+  // 滚动位置全没了 —— 改个系统提示词不该有这种代价
+  const [convRev, setConvRev] = useState(0)
   // 要导出的会话。放在页面级而不是 ChatPane 里:正文区的按钮和侧边栏右键
   // 是同一件事的两个入口,各自持一份状态迟早会不一致
   const [exportId, setExportId] = useState('')
@@ -72,19 +77,49 @@ export default function AIChat() {
 
   const goConfig = () => navigate('/profile', { state: { section: 'ai' } })
 
-  const onNewConversation = () => {
+  /**
+   * 新建对话:直接开一条空的「新对话」,不弹窗。
+   *
+   * 以前先弹一个要填标题和提示词的表单 —— 可绝大多数时候用户只是想立刻开始问,
+   * 标题首轮答完会自动生成,人设想设的话进「会话设置」随时能改。
+   * 把这一步挪到事后,常见路径就少了一次打断。
+   */
+  const onNewConversation = async () => {
     if (usable.length === 0) {
-      void dialog({
+      await dialog({
         title: '没有可用模型',
         message: '请先到「个人中心 → AI 配置」启用至少一个供应商并选择模型',
         confirmLabel: '去配置',
-      }).then(() => goConfig())
+      })
+      goConfig()
       return
     }
-    setDialogState({
-      mode: 'create',
-      initial: { title: '', system: '', contextCount: 10 },
-    })
+    // 已经停在一条一句话都没说的会话上就不再建 ——
+    // 连点几下"新建"不该在侧边栏攒出一串一模一样的空「新对话」
+    const active = conversations.find((c) => c.id === activeId)
+    if (active && active.messageCount === 0) return
+
+    let providerId = defaults.defaultProviderId
+    let modelId = defaults.defaultModelId
+    const def = usable.find((p) => p.id === providerId)
+    if (!def || !def.models.includes(modelId)) {
+      providerId = usable[0].id
+      modelId = usable[0].models[0]
+    }
+    try {
+      // 标题传空串:后端据此把 titleAuto 置上,首轮答完才轮到模型起名
+      const created = (await CreateAIConversation(
+        providerId,
+        modelId,
+        '',
+        '',
+        DEFAULT_CONTEXT_COUNT,
+      )) as unknown as Conversation
+      await reloadAll()
+      if (created?.id) setActiveId(created.id)
+    } catch (e) {
+      await dialog({ title: '创建失败', message: String(e), confirmLabel: '知道了' })
+    }
   }
 
   const onEditConversation = async (id: string) => {
@@ -96,7 +131,6 @@ export default function AIChat() {
       return
     }
     setDialogState({
-      mode: 'edit',
       convId: id,
       initial: {
         title: conv.title,
@@ -111,72 +145,34 @@ export default function AIChat() {
 
   const onDialogSave = async (draft: ConversationDraft) => {
     if (!dialogState) return
-    if (dialogState.mode === 'create') {
-      let providerId = defaults.defaultProviderId
-      let modelId = defaults.defaultModelId
-      const def = usable.find((p) => p.id === providerId)
-      if (!def || !def.models.includes(modelId)) {
-        providerId = usable[0].id
-        modelId = usable[0].models[0]
-      }
-      let created: Conversation
-      try {
-        created = (await CreateAIConversation(
-          providerId,
-          modelId,
-          draft.title,
-          draft.system,
-          draft.contextCount,
-        )) as unknown as Conversation
-      } catch (e) {
-        await dialog({ title: '创建失败', message: String(e), confirmLabel: '知道了' })
-        return
-      }
-      // CreateAIConversation 只收 title/system/contextCount。预设带来的采样参数和
-      // 三个开关要在创建后补写进去 —— 以前这里直接丢了,预设选了等于没选
-      if (
-        created?.id &&
-        (draft.temperature !== undefined ||
-          draft.topP !== undefined ||
-          (draft.maxTokens ?? 0) > 0)
-      ) {
-        await UpdateAIConversationMeta(created.id, {
-          title: created.title,
-          system: draft.system,
-          contextCount: draft.contextCount,
-          temperature: draft.temperature,
-          topP: draft.topP,
-          maxTokens: draft.maxTokens ?? 0,
-        } as never).catch(() => {})
-      }
-      if (created?.id && (draft.reasoningEffort || draft.webSearch || draft.tools)) {
-        await UpdateAIConversationOptions(
-          created.id,
-          draft.reasoningEffort ?? '',
-          !!draft.webSearch,
-          !!draft.tools,
-        ).catch(() => {})
-      }
-      setDialogState(null)
-      await reloadAll()
-      if (created?.id) setActiveId(created.id)
-    } else {
-      const err =
-        ((await UpdateAIConversationMeta(dialogState.convId, {
-          title: draft.title || '新对话',
-          system: draft.system,
-          contextCount: draft.contextCount,
-          temperature: draft.temperature,
-          topP: draft.topP,
-          maxTokens: draft.maxTokens ?? 0,
-        } as never)) as string) || ''
-      if (err) {
-        await dialog({ title: '保存失败', message: err, confirmLabel: '知道了' })
-        return
-      }
-      setDialogState(null)
-      await reloadAll()
+    const { convId } = dialogState
+    // 标题原样传:清空了就是"交回给自动起名",后端见到空串不动标题也不动 titleAuto
+    const err =
+      ((await UpdateAIConversationMeta(convId, {
+        title: draft.title,
+        system: draft.system,
+        contextCount: draft.contextCount,
+        temperature: draft.temperature,
+        topP: draft.topP,
+        maxTokens: draft.maxTokens ?? 0,
+      } as never)) as string) || ''
+    if (err) {
+      await dialog({ title: '保存失败', message: err, confirmLabel: '知道了' })
+      return
     }
+    // 只有真套了预设才动这三个开关 —— 没套预设时它们是 undefined,
+    // 照着写会把用户在输入栏上开着的联网悄悄关掉
+    if (draft.preset) {
+      await UpdateAIConversationOptions(
+        convId,
+        draft.preset.reasoningEffort,
+        draft.preset.webSearch,
+        draft.preset.tools,
+      ).catch(() => {})
+    }
+    setDialogState(null)
+    await reloadAll()
+    if (convId === activeId) setConvRev((n) => n + 1)
   }
 
   // 拖动排序:先动本地(拖放要跟手),再落盘
@@ -242,7 +238,7 @@ export default function AIChat() {
             list={conversations}
             activeId={activeId}
             onSelect={setActiveId}
-            onNew={onNewConversation}
+            onNew={() => void onNewConversation()}
             onDelete={onDelete}
             onEdit={(id) => void onEditConversation(id)}
             onExport={setExportId}
@@ -254,6 +250,7 @@ export default function AIChat() {
               conversationId={activeId}
               onTitleChange={() => void reloadAll()}
               onExport={() => setExportId(activeId)}
+              refreshToken={convRev}
             />
           ) : (
             <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
@@ -265,7 +262,6 @@ export default function AIChat() {
 
       {dialogState && (
         <ConversationDialog
-          mode={dialogState.mode}
           initial={dialogState.initial}
           onClose={() => setDialogState(null)}
           onSave={(d) => void onDialogSave(d)}

@@ -43,9 +43,16 @@ interface Props {
   onTitleChange: () => void
   /** 打开导出弹窗。弹窗本体在页面级 —— 侧边栏右键也是同一个入口 */
   onExport: () => void
+  /** 变一次就重读一次会话。侧边栏右键改了正在显示的这条时用得上 */
+  refreshToken?: number
 }
 
-export function ChatPane({ conversationId, onTitleChange, onExport }: Props) {
+export function ChatPane({
+  conversationId,
+  onTitleChange,
+  onExport,
+  refreshToken,
+}: Props) {
   const dialog = useConfirm()
   const [conv, setConv] = useState<Conversation | null>(null)
   const [providers, setProviders] = useState<Provider[]>([])
@@ -91,6 +98,12 @@ export function ChatPane({ conversationId, onTitleChange, onExport }: Props) {
     void load()
     void reloadProviders()
   }, [conversationId])
+
+  // 别人(侧边栏右键编辑)改了这条会话,重新读一次。
+  // 初次挂载时上面那个 effect 已经读过了,这里跳过 0
+  useEffect(() => {
+    if (refreshToken) void load()
+  }, [refreshToken])
 
   // 自动跟随到底部 — 但用户主动往上滑就停;再滑回底部就恢复跟随
   const [stickToBottom, setStickToBottom] = useState(true)
@@ -376,6 +389,14 @@ export function ChatPane({ conversationId, onTitleChange, onExport }: Props) {
           }
         : prev,
     )
+    // 套了预设才动这三个开关;没套时它们是 undefined,写下去会把联网悄悄关掉
+    if (draft.preset) {
+      const { reasoningEffort, webSearch, tools } = draft.preset
+      setConv((prev) => (prev ? { ...prev, reasoningEffort, webSearch, tools } : prev))
+      await UpdateAIConversationOptions(conv.id, reasoningEffort, webSearch, tools).catch(
+        () => {},
+      )
+    }
     setSystemOpen(false)
     onTitleChange()
   }
@@ -522,6 +543,7 @@ export function ChatPane({ conversationId, onTitleChange, onExport }: Props) {
               setDraft(s)
               textareaRef.current?.focus()
             }}
+            onOpenSettings={() => setSystemOpen(true)}
           />
         ) : (
           <ul className={cn(CHAT_COLUMN, 'space-y-7 px-4 py-6')}>
@@ -624,7 +646,6 @@ export function ChatPane({ conversationId, onTitleChange, onExport }: Props) {
 
       {systemOpen && (
         <ConversationDialog
-          mode="edit"
           spec={spec}
           initial={{
             title: conv.title,

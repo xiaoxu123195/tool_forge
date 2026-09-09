@@ -3,10 +3,16 @@ import { createPortal } from 'react-dom'
 import { Eye, Pencil, X } from 'lucide-react'
 import { ListAIAssistants } from '../../../wailsjs/go/main/App'
 import { MarkdownPreview } from '@/components/tool/MarkdownPreview'
+import { useConfirm } from '@/components/ui/confirm'
 import { cn } from '@/lib/utils'
 import { EFFORT_LABELS, type Assistant, type ModelSpec, type ReasoningEffort } from './types'
 
-/** 用于"新建会话"和"编辑会话"两个场景 */
+/**
+ * 「编辑会话」一次提交的内容。
+ *
+ * 以前还兼着"新建会话"。现在点新建就直接开一个空的「新对话」——
+ * 想设人设、改参数再进这个弹窗,所以这里只剩编辑一种用法。
+ */
 export interface ConversationDraft {
   title: string
   system: string
@@ -17,11 +23,12 @@ export interface ConversationDraft {
   topP?: number
   /** 0 = 不指定 */
   maxTokens?: number
-  // 下面三个只在"新建 + 套了预设"时有值。它们本体是输入栏上的即时开关,
-  // 编辑弹窗不管理它们 —— 这里只是把预设的默认值捎给创建流程
-  reasoningEffort?: string
-  webSearch?: boolean
-  tools?: boolean
+  /**
+   * 套了预设时带上它的三个开关。没套预设是 undefined ——
+   * 调用方据此区分"预设要求关掉联网"和"这次压根没碰过联网",
+   * 用 false 表示两者的话,进来编辑一下提示词就会把用户开着的联网顺手关了。
+   */
+  preset?: { reasoningEffort: string; webSearch: boolean; tools: boolean }
 }
 
 const PRESET_COUNTS: { label: string; value: number }[] = [
@@ -33,19 +40,18 @@ const PRESET_COUNTS: { label: string; value: number }[] = [
 ]
 
 export function ConversationDialog({
-  mode,
   initial,
   spec,
   onClose,
   onSave,
 }: {
-  mode: 'create' | 'edit'
   initial: ConversationDraft
-  /** 当前模型的能力画像;新建会话时还没有模型,传 undefined 即可(此时不展示采样区) */
+  /** 当前模型的能力画像;拿不到时不展示采样区(免得设一个不知道生不生效的值) */
   spec?: ModelSpec | null
   onClose: () => void
   onSave: (draft: ConversationDraft) => void
 }) {
+  const confirm = useConfirm()
   const [title, setTitle] = useState(initial.title)
   const [system, setSystem] = useState(initial.system)
   const [systemView, setSystemView] = useState<'edit' | 'preview'>('edit')
@@ -56,51 +62,66 @@ export function ConversationDialog({
   const [assistants, setAssistants] = useState<Assistant[]>([])
   const [pickedId, setPickedId] = useState('')
 
-  // 预设只在新建时给 —— 编辑已有会话时套一个预设会把用户写过的提示词直接冲掉,
-  // 那不是"选一下"该有的后果
   useEffect(() => {
-    if (mode !== 'create') return
     void (async () => {
       const l = ((await ListAIAssistants().catch(() => [])) ?? []) as unknown as Assistant[]
       setAssistants(l)
     })()
-  }, [mode])
+  }, [])
 
   // 预设里的思考档位 / 联网 / 工具。它们不在这个弹窗里显示成控件(本体是输入栏
-  // 上的即时开关),但要捎给创建流程,并用一行字说明 —— 免得"选了却不知道生效了什么"
-  const [extra, setExtra] = useState<
-    Pick<ConversationDraft, 'reasoningEffort' | 'webSearch' | 'tools'>
-  >({})
+  // 上的即时开关),但要捎给保存流程,并用一行字说明 —— 免得"选了却不知道生效了什么"
+  const [preset, setPreset] = useState<ConversationDraft['preset']>()
 
-  const applyAssistant = (a: Assistant | null) => {
-    setPickedId(a?.id ?? '')
+  /**
+   * 套一个预设。
+   *
+   * 已经写了提示词的会话要先问一句:预设是整段替换,不是追加。以前这个弹窗
+   * 干脆不给编辑态看预设,就是怕这一下冲掉用户写的东西 —— 现在新建走的是
+   * "直接开一个空会话",预设只剩这一个入口,不能再藏着了,改成问一句。
+   */
+  const applyAssistant = async (a: Assistant | null) => {
     if (!a) {
-      setExtra({})
+      setPickedId('')
+      setPreset(undefined)
       return
     }
+    if (system.trim() && system.trim() !== a.system.trim()) {
+      const ok = await confirm({
+        title: '替换系统提示词',
+        message: `当前会话已经有提示词了,套用「${a.name}」会把它整段换掉。`,
+        danger: true,
+        confirmLabel: '替换',
+      })
+      if (!ok) return
+    }
+    setPickedId(a.id)
     setSystem(a.system)
-    if (!title.trim()) setTitle(a.name)
+    // 不拿预设名当会话标题:标题留给首轮问答后自动生成,
+    // 在这里填上等于提前把它锁死(改过标题的会话不再自动起名)
     if (a.contextCount) setContextCount(a.contextCount)
     if (a.temperature !== undefined) setTemperature(a.temperature)
     if (a.topP !== undefined) setTopP(a.topP)
     if (a.maxTokens) setMaxTokens(a.maxTokens)
-    setExtra({
-      reasoningEffort: a.reasoningEffort || undefined,
-      webSearch: a.webSearch || undefined,
-      tools: a.tools || undefined,
+    setPreset({
+      reasoningEffort: a.reasoningEffort || '',
+      webSearch: !!a.webSearch,
+      tools: !!a.tools,
     })
   }
 
-  const effortLabel = extra.reasoningEffort
-    ? (EFFORT_LABELS[extra.reasoningEffort as ReasoningEffort] ?? extra.reasoningEffort)
+  const effortLabel = preset?.reasoningEffort
+    ? (EFFORT_LABELS[preset.reasoningEffort as ReasoningEffort] ?? preset.reasoningEffort)
     : ''
-  const extraSummary = [
-    effortLabel ? '思考档位设为「' + effortLabel + '」' : '',
-    extra.webSearch ? '开启联网' : '',
-    extra.tools ? '开启工具' : '',
-  ]
-    .filter(Boolean)
-    .join(' · ')
+  const extraSummary = !preset
+    ? ''
+    : [
+        effortLabel ? '思考档位设为「' + effortLabel + '」' : '',
+        preset.webSearch ? '开启联网' : '',
+        preset.tools ? '开启工具' : '',
+      ]
+        .filter(Boolean)
+        .join(' · ')
 
   // 采样参数得模型接受才有意义:o 系列 / gpt-5 / Kimi K2.5+ 完全不收,发过去会报错。
   // 拿不到 spec 时(新建会话还没选模型)整块不展示,免得设了个不知道生不生效的值。
@@ -114,12 +135,11 @@ export function ConversationDialog({
       title: title.trim(),
       system: system.trim(),
       contextCount,
-      // 新建时还没选模型、拿不到 spec,预设带来的采样参数要原样放行;
-      // 编辑时才按 spec 过滤(模型不收的参数设了也白设)
-      temperature: canTemp || mode === 'create' ? temperature : initial.temperature,
-      topP: canTopP || mode === 'create' ? topP : initial.topP,
+      // 模型不收的采样参数原样退回初值 —— 界面上没给控件,就不该悄悄改掉它
+      temperature: canTemp ? temperature : initial.temperature,
+      topP: canTopP ? topP : initial.topP,
       maxTokens,
-      ...(mode === 'create' ? extra : {}),
+      preset,
     })
   }
 
@@ -132,9 +152,7 @@ export function ConversationDialog({
     >
       <div className="flex max-h-[80vh] w-[640px] max-w-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
-          <h3 className="text-sm font-semibold">
-            {mode === 'create' ? '新建会话' : '编辑会话'}
-          </h3>
+          <h3 className="text-sm font-semibold">会话设置</h3>
           <button
             onClick={onClose}
             className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
@@ -144,7 +162,7 @@ export function ConversationDialog({
         </header>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-auto p-4">
-          {mode === 'create' && assistants.length > 0 && (
+          {assistants.length > 0 && (
             <div className="space-y-1.5">
               <label className="text-xs font-medium">
                 助手预设
@@ -155,7 +173,7 @@ export function ConversationDialog({
               <div className="flex flex-wrap gap-1.5">
                 <button
                   type="button"
-                  onClick={() => applyAssistant(null)}
+                  onClick={() => void applyAssistant(null)}
                   className={cn(
                     'h-7 rounded-md border px-2.5 text-xs transition-colors',
                     pickedId === ''
@@ -169,7 +187,7 @@ export function ConversationDialog({
                   <button
                     key={a.id}
                     type="button"
-                    onClick={() => applyAssistant(a)}
+                    onClick={() => void applyAssistant(a)}
                     title={a.system.slice(0, 200)}
                     className={cn(
                       'flex h-7 items-center gap-1 rounded-md border px-2.5 text-xs transition-colors',
@@ -192,10 +210,9 @@ export function ConversationDialog({
           <div className="space-y-1.5">
             <label className="text-xs font-medium">会话名称</label>
             <input
-              autoFocus={mode === 'create'}
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder={mode === 'create' ? '留空则用首条消息生成' : ''}
+              placeholder="留空则由模型在首轮问答后自动生成"
               className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
@@ -357,7 +374,7 @@ export function ConversationDialog({
             onClick={submit}
             className="h-7 rounded-md bg-info px-3 font-medium text-info-foreground transition-colors hover:bg-info/90"
           >
-            {mode === 'create' ? '创建' : '保存'}
+            保存
           </button>
         </footer>
       </div>

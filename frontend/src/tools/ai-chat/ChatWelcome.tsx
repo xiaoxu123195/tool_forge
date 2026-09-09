@@ -11,10 +11,13 @@ export function WelcomeScreen({
   providerName,
   modelId,
   onPick,
+  onOpenSettings,
 }: {
   providerName: string
   modelId: string
   onPick: (s: string) => void
+  /** 打开会话设置。新建对话不再弹表单,人设和预设都挪到了那里 */
+  onOpenSettings?: () => void
 }) {
   return (
     <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-center gap-6 px-4 py-10 text-center">
@@ -39,6 +42,15 @@ export function WelcomeScreen({
           </button>
         ))}
       </div>
+      {onOpenSettings && (
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          className="text-[11px] text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline"
+        >
+          想让它扮演某个角色?到「会话设置」挑一个助手预设,或自己写提示词
+        </button>
+      )}
     </div>
   )
 }

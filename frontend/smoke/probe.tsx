@@ -45,10 +45,23 @@ console.error = (...args: unknown[]) => {
   realError(...(args as []))
 }
 
-const btn = (label: string) =>
-  (Array.from(document.querySelectorAll('button')) as HTMLElement[]).find(
-    (b) => ((b.getAttribute('title') || b.textContent) || '').trim() === label,
+/**
+ * 按标签找按钮。三级回退,顺序不能反:
+ *   1. title 或文字精确相等 —— 图标按钮只有 title
+ *   2. 只看文字精确相等 —— 带 title 的文字按钮(预设那排就是,title 是整段提示词,
+ *      按第 1 条会拿 title 去比名字,永远匹配不上,click 静悄悄返回 false)
+ *   3. 文字包含 —— 名字前面带 emoji 的那种
+ */
+const btn = (label: string) => {
+  const all = Array.from(document.querySelectorAll('button')) as HTMLElement[]
+  const attr = (b: HTMLElement) => ((b.getAttribute('title') || b.textContent) || '').trim()
+  const text = (b: HTMLElement) => (b.textContent || '').trim()
+  return (
+    all.find((b) => attr(b) === label) ??
+    all.find((b) => text(b) === label) ??
+    all.find((b) => text(b).includes(label))
   )
+}
 
 /** 往输入框里打字(React 受控组件要走原生 setter 才认) */
 const type = async (placeholder: string, value: string) => {
@@ -108,6 +121,11 @@ const click = async (label: string) => {
     await sleep(50)
   })
   return true
+}
+
+/** 点一个必须存在的按钮;找不到就是回归 —— 静悄悄跳过等于这条用例白测 */
+const mustClick = async (label: string) => {
+  if (!(await click(label))) throw new Error('找不到按钮「' + label + '」')
 }
 
 async function main() {
@@ -171,18 +189,32 @@ async function main() {
     },
   )
 
-  // 5) 新建会话弹窗:套一个带参数的预设,再切 Markdown 预览
+  // 5) 会话设置弹窗:套一个带参数的预设,再切 Markdown 预览。
+  // 提示词留空 —— 非空时套预设会先弹替换确认,那条路单独测
   await mount(
-    '新建会话弹窗',
+    '会话设置弹窗',
     <ConversationDialog
-      mode="create"
-      initial={{ title: '', system: '', contextCount: 10 }}
+      initial={{ title: '新对话', system: '', contextCount: 10 }}
       onClose={() => {}}
       onSave={() => {}}
     />,
     async () => {
-      await click('逆子AI')
-      await click('预览')
+      await mustClick('逆子AI')
+      await mustClick('预览')
+    },
+  )
+
+  // 6) 已经写了提示词时套预设:要先弹「替换系统提示词」确认
+  await mount(
+    '会话设置弹窗 · 预设覆盖确认',
+    <ConversationDialog
+      initial={{ title: '有人设的会话', system: '你是一个 Go 专家', contextCount: 10 }}
+      onClose={() => {}}
+      onSave={() => {}}
+    />,
+    async () => {
+      await mustClick('素预设')
+      await mustClick('替换') // 提示词非空,必须先过这道确认
     },
   )
 
