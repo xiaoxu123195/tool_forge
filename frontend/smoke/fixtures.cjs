@@ -214,6 +214,7 @@ const traces = [
   {
     id: 'tr-ok',
     ts: 1757000000000,
+    kind: 'chat',
     providerName: '我的中转',
     model: 'gpt-5.6-luna',
     endpoint: 'openai-responses',
@@ -226,6 +227,7 @@ const traces = [
   {
     id: 'tr-400',
     ts: 1757000010000,
+    kind: 'chat',
     providerName: '我的中转',
     model: 'gpt-5.6-luna',
     endpoint: 'openai-chat',
@@ -240,11 +242,27 @@ const traces = [
     // 还在跑的那条:done 为假、没有状态码 —— 卡住的请求就长这样
     id: 'tr-running',
     ts: 1757000020000,
+    kind: 'chat',
     providerName: 'Anthropic',
     model: 'claude-sonnet-4-5',
     endpoint: 'anthropic-messages',
     convId: 'c-other',
     frameCount: 0,
+  },
+  {
+    // 检测发的:没有 convId —— 面板勾着"只看当前会话"时它会被藏起来,
+    // 那条"另有 N 条"的提示就是为它准备的
+    id: 'tr-test',
+    ts: 1757000030000,
+    kind: 'test',
+    providerName: '我的中转',
+    model: 'gpt-5.6-luna',
+    endpoint: 'openai-chat',
+    status: 401,
+    error: 'HTTP 401: invalid api key',
+    durationMs: 90,
+    frameCount: 1,
+    done: true,
   },
 ]
 

@@ -283,7 +283,15 @@ async function main() {
     async () => {
       await mustClick('gpt-5.6-luna') // 列表里第一条
       await mustClick('响应 (2 帧)')
-      await check('只看当前会话') // 取消过滤,把"进行中"那条也画一遍
+      // 检测那条没有 convId,勾着过滤时必须有"另有 N 条"的提示,
+      // 否则用户会以为检测根本没被记下来
+      if (!(document.body.textContent || '').includes('另有')) {
+        throw new Error('被过滤掉的记录没有给出提示')
+      }
+      await check('只看当前会话') // 取消过滤:检测标记和"进行中"那条都要画出来
+      if (!(document.body.textContent || '').includes('检测')) {
+        throw new Error('检测来源的记录没有标出来')
+      }
     },
   )
 

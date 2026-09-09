@@ -96,6 +96,8 @@ export interface AIConfig {
 export interface TraceSummary {
   id: string
   ts: number
+  /** 'chat' = 聊天发的,'test' = 检测模型发的 */
+  kind: string
   providerName: string
   model: string
   endpoint: string
@@ -108,9 +110,13 @@ export interface TraceSummary {
   done?: boolean
 }
 
-/** 完整留档:请求头(已脱敏)、请求体、逐帧原始响应 */
-export interface RequestTrace extends TraceSummary {
-  kind: string
+/**
+ * 完整留档:请求头(已脱敏)、请求体、逐帧原始响应。
+ *
+ * frameCount 排除在外 —— 后端的完整结构里没有这个字段(帧数从 frames.length 就能数出来),
+ * 直接 extends 会让类型声称有一个实际拿不到的值
+ */
+export interface RequestTrace extends Omit<TraceSummary, 'frameCount'> {
   providerId: string
   method: string
   url: string

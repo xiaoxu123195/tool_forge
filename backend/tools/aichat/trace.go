@@ -15,9 +15,20 @@ import (
 // 请求留档的容量。都是内存里的环形缓冲,不落盘 ——
 // 里面有完整的请求体(可能含用户上传的文件文本)和响应,写进磁盘等于凭空多一份副本。
 const (
-	traceKeepCount  = 20        // 保留最近多少次请求
-	traceBodyLimit  = 64 << 10  // 单次请求体最多记多少字节
-	traceFrameLimit = 256 << 10 // 单次响应帧合计最多记多少字节
+	// traceKeepCount 保留最近多少次**请求**(不是多少次提问)。
+	//
+	// 一次提问不止一条:模型每要求调一次工具就是一轮新请求,密钥失效换一把重试
+	// 也是一条。带工具的对话问三句就能把二十条挤满 —— 所以这个数要比直觉大。
+	traceKeepCount = 40
+	// traceBodyLimit / traceFrameLimit 单条记录的两个上限
+	traceBodyLimit  = 64 << 10  // 请求体(附件文本会很大)
+	traceFrameLimit = 256 << 10 // 响应帧合计
+	// traceTotalLimit 整个环加起来最多占多少内存。
+	//
+	// 光靠"条数 × 单条上限"算出来的是最坏情况(40×320KB≈12MB),而绝大多数请求
+	// 只有几 KB —— 按条数留会让常见情况白白留得太少,按字节封顶才是真的把内存兜住。
+	// 两个限制同时生效,先撞上哪个就按哪个淘汰。
+	traceTotalLimit = 8 << 20
 )
 
 // RequestTrace 一次对上游的请求现场:发了什么、回了什么。
@@ -58,8 +69,11 @@ type RequestTrace struct {
 
 // TraceSummary 列表用的精简版:不含 body 和 frames,免得开个面板就把几 MB 塞进前端
 type TraceSummary struct {
-	ID           string `json:"id"`
-	Ts           int64  `json:"ts"`
+	ID string `json:"id"`
+	Ts int64  `json:"ts"`
+	// Kind "chat" = 聊天发的,"test" = 检测模型发的。
+	// 检测没有会话,面板上"只看当前会话"会把它滤掉,得让用户看得出少了什么
+	Kind         string `json:"kind"`
 	ProviderName string `json:"providerName"`
 	Model        string `json:"model"`
 	Endpoint     string `json:"endpoint"`
@@ -93,7 +107,7 @@ type requestTrace struct {
 //
 // 立刻放进去(而不是等结束时再放)是有意的:请求卡住不返回时,
 // 那条"进行中"的记录本身就是最重要的线索。
-func startTrace(kind string, p Provider, spec ModelSpec, convID, method, rawURL string) *requestTrace {
+func startTrace(kind string, p Provider, model, endpoint, convID, method, rawURL string) *requestTrace {
 	t := &RequestTrace{
 		ID:           uuid.NewString(),
 		Ts:           time.Now().UnixMilli(),
@@ -101,18 +115,41 @@ func startTrace(kind string, p Provider, spec ModelSpec, convID, method, rawURL 
 		ConvID:       convID,
 		ProviderID:   p.ID,
 		ProviderName: p.Name,
-		Model:        spec.ID,
-		Endpoint:     string(spec.Endpoint),
+		Model:        model,
+		Endpoint:     endpoint,
 		Method:       method,
 		URL:          redactURL(rawURL),
 	}
 	traceRing.mu.Lock()
 	traceRing.list = append(traceRing.list, t)
-	if len(traceRing.list) > traceKeepCount {
-		traceRing.list = traceRing.list[len(traceRing.list)-traceKeepCount:]
-	}
+	evictLocked()
 	traceRing.mu.Unlock()
 	return &requestTrace{t: t, start: time.Now()}
+}
+
+// evictLocked 从头上丢掉最老的,直到条数和总字节都在限内。
+// 调用方必须已经持有 traceRing.mu。
+//
+// 只保底留一条:哪怕这一条自己就超了总量上限,也不能把它也丢掉 ——
+// 刚出问题的那次请求正是要看的,面板空着比留一条超标的更糟。
+func evictLocked() {
+	for len(traceRing.list) > traceKeepCount {
+		traceRing.list = traceRing.list[1:]
+	}
+	for len(traceRing.list) > 1 && traceBytesLocked() > traceTotalLimit {
+		traceRing.list = traceRing.list[1:]
+	}
+}
+
+func traceBytesLocked() int {
+	n := 0
+	for _, t := range traceRing.list {
+		n += len(t.Body)
+		for _, f := range t.Frames {
+			n += len(f)
+		}
+	}
+	return n
 }
 
 // request 记下真正发出去的请求头和请求体
@@ -154,6 +191,9 @@ func (r *requestTrace) frame(payload string) {
 	}
 	r.bytes += len(payload)
 	r.t.Frames = append(r.t.Frames, payload)
+	// 长流是一边跑一边把环撑大的。只在新建记录时淘汰的话,
+	// 总量上限对"一次几百帧的长回答"完全不起作用
+	evictLocked()
 }
 
 func (r *requestTrace) fail(err error) {
@@ -185,7 +225,7 @@ func (s *Service) ListRequestTraces() []TraceSummary {
 	for i := len(traceRing.list) - 1; i >= 0; i-- {
 		t := traceRing.list[i]
 		out = append(out, TraceSummary{
-			ID: t.ID, Ts: t.Ts, ProviderName: t.ProviderName, Model: t.Model,
+			ID: t.ID, Ts: t.Ts, Kind: t.Kind, ProviderName: t.ProviderName, Model: t.Model,
 			Endpoint: t.Endpoint, ConvID: t.ConvID, Status: t.Status,
 			Error: t.Error, DurationMs: t.DurationMs, FrameCount: len(t.Frames),
 			Done: t.Done,

@@ -187,7 +187,7 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 	applyAnthropicHeaders(httpReq, p.APIKey)
 	httpReq.Header.Set("Accept", "text/event-stream")
 
-	tr := startTrace("chat", p, spec, conv.ID, "POST", url)
+	tr := startTrace("chat", p, spec.ID, string(spec.Endpoint), conv.ID, "POST", url)
 	tr.request(httpReq.Header, bodyBytes)
 	defer tr.finish()
 
@@ -560,8 +560,13 @@ func testAnthropicModel(p Provider, modelID string) TestResult {
 	applyAnthropicHeaders(req, p.APIKey)
 	req.Header.Set("Accept", "text/event-stream")
 
+	tr := startTrace("test", p, modelID, string(EndpointAnthropic), "", "POST", url)
+	tr.request(req.Header, bodyBytes)
+	defer tr.finish()
+
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		tr.fail(err)
 		return TestResult{
 			OK:         false,
 			Message:    prettifyNetErr(err),
@@ -569,15 +574,19 @@ func testAnthropicModel(p Provider, modelID string) TestResult {
 		}
 	}
 	defer resp.Body.Close()
+	tr.status(resp.StatusCode)
 	dur := int(time.Since(start).Milliseconds())
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(resp.Body)
+		tr.frame(string(raw))
+		msg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, extractErrorMessage(raw))
+		tr.fail(fmt.Errorf("%s", msg))
 		return TestResult{
 			OK:         false,
 			StatusCode: resp.StatusCode,
 			DurationMs: dur,
-			Message:    fmt.Sprintf("HTTP %d: %s", resp.StatusCode, extractErrorMessage(raw)),
+			Message:    msg,
 		}
 	}
 
@@ -587,6 +596,7 @@ func testAnthropicModel(p Provider, modelID string) TestResult {
 		if line == "" || !strings.HasPrefix(line, "data:") {
 			continue
 		}
+		tr.frame(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 		return TestResult{
 			OK:         true,
 			StatusCode: resp.StatusCode,

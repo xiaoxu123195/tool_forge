@@ -148,8 +148,17 @@ func testModel(p Provider, modelID string, useResponses bool) TestResult {
 	applyOpenAIHeaders(req, p.APIKey)
 	req.Header.Set("Accept", "text/event-stream")
 
+	endpoint := string(EndpointOpenAIChat)
+	if useResponses {
+		endpoint = string(EndpointOpenAIResponses)
+	}
+	tr := startTrace("test", p, modelID, endpoint, "", "POST", url)
+	tr.request(req.Header, bodyBytes)
+	defer tr.finish()
+
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		tr.fail(err)
 		return TestResult{
 			OK:         false,
 			Message:    prettifyNetErr(err),
@@ -157,15 +166,19 @@ func testModel(p Provider, modelID string, useResponses bool) TestResult {
 		}
 	}
 	defer resp.Body.Close()
+	tr.status(resp.StatusCode)
 	dur := int(time.Since(start).Milliseconds())
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
+		tr.frame(string(body))
+		msg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, extractErrorMessage(body))
+		tr.fail(fmt.Errorf("%s", msg))
 		return TestResult{
 			OK:         false,
 			StatusCode: resp.StatusCode,
 			DurationMs: dur,
-			Message:    fmt.Sprintf("HTTP %d: %s", resp.StatusCode, extractErrorMessage(body)),
+			Message:    msg,
 		}
 	}
 
@@ -180,7 +193,9 @@ func testModel(p Provider, modelID string, useResponses bool) TestResult {
 		if payload == "[DONE]" {
 			break
 		}
-		// 收到任意 chunk → 成功
+		// 收到任意 chunk → 成功。这一帧要留档:检测"通过"但聊天不正常时,
+		// 看它到底回了什么形状是唯一的线索
+		tr.frame(payload)
 		return TestResult{
 			OK:         true,
 			StatusCode: resp.StatusCode,
@@ -255,7 +270,7 @@ func streamOpenAI(ctx context.Context, req chatRequest, useResponses bool, cb st
 	applyOpenAIHeaders(httpReq, p.APIKey)
 	httpReq.Header.Set("Accept", "text/event-stream")
 
-	tr := startTrace("chat", p, spec, conv.ID, "POST", url)
+	tr := startTrace("chat", p, spec.ID, string(spec.Endpoint), conv.ID, "POST", url)
 	tr.request(httpReq.Header, bodyBytes)
 	defer tr.finish()
 

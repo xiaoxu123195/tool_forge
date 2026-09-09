@@ -80,6 +80,9 @@ export function TraceDialog({
   }, [onClose])
 
   const shown = onlyThis ? list.filter((t) => t.convId === conversationId) : list
+  // 被过滤掉的条数要显式说出来。检测请求没有会话 id,勾着"只看当前会话"时
+  // 它们全都不见 —— 而"检测失败想看看发了什么"恰恰是打开这个面板的主要理由之一
+  const hidden = list.length - shown.length
 
   return createPortal(
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-6">
@@ -88,7 +91,7 @@ export function TraceDialog({
           <Bug className="h-4 w-4 text-info" />
           <h3 className="text-sm font-semibold">请求留档</h3>
           <span className="text-[11px] text-muted-foreground">
-            只在内存里,最多 20 条 · 密钥已打码
+            只在内存里 · 保留最近 40 次请求(合计不超过 8MB) · 密钥已打码
           </span>
           <div className="ml-auto flex items-center gap-2">
             <label className="flex cursor-pointer items-center gap-1 text-xs text-muted-foreground">
@@ -147,6 +150,11 @@ export function TraceDialog({
                   >
                     <div className="flex items-center gap-1.5 text-xs">
                       <StatusDot t={t} />
+                      {t.kind === 'test' && (
+                        <span className="shrink-0 rounded bg-secondary px-1 text-[10px] text-muted-foreground">
+                          检测
+                        </span>
+                      )}
                       <span className="min-w-0 flex-1 truncate font-mono">{t.model}</span>
                       {t.durationMs ? (
                         <span className="shrink-0 text-[10px] text-muted-foreground">
@@ -160,6 +168,11 @@ export function TraceDialog({
                   </button>
                 </li>
               ))
+            )}
+            {hidden > 0 && (
+              <li className="px-2 py-2 text-center text-[11px] text-muted-foreground">
+                另有 {hidden} 条来自检测或其他会话,取消上面的勾选可以看到
+              </li>
             )}
           </ul>
 

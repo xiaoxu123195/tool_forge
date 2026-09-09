@@ -104,3 +104,67 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+// 环的淘汰有两条线:条数和总字节。任何一条都不能把最后一条也吞掉 ——
+// 面板空着比留一条超标的更糟
+func TestTraceRingEviction(t *testing.T) {
+	t.Cleanup(func() {
+		traceRing.mu.Lock()
+		traceRing.list = nil
+		traceRing.mu.Unlock()
+	})
+
+	t.Run("按条数淘汰", func(t *testing.T) {
+		traceRing.mu.Lock()
+		traceRing.list = nil
+		traceRing.mu.Unlock()
+		p := Provider{ID: "p", Name: "测试"}
+		for i := 0; i < traceKeepCount+5; i++ {
+			startTrace("chat", p, "m", "openai-chat", "c1", "POST", "https://x/y")
+		}
+		traceRing.mu.Lock()
+		n := len(traceRing.list)
+		traceRing.mu.Unlock()
+		if n != traceKeepCount {
+			t.Fatalf("应该只剩 %d 条,得到 %d", traceKeepCount, n)
+		}
+	})
+
+	t.Run("按总字节淘汰", func(t *testing.T) {
+		traceRing.mu.Lock()
+		traceRing.list = nil
+		traceRing.mu.Unlock()
+		p := Provider{ID: "p", Name: "测试"}
+		big := make([]byte, traceBodyLimit) // 每条都塞满请求体上限
+		for i := 0; i < traceKeepCount; i++ {
+			tr := startTrace("chat", p, "m", "openai-chat", "c1", "POST", "https://x/y")
+			tr.request(nil, big)
+		}
+		traceRing.mu.Lock()
+		bytes := traceBytesLocked()
+		n := len(traceRing.list)
+		traceRing.mu.Unlock()
+		if bytes > traceTotalLimit {
+			t.Fatalf("总字节 %d 超过上限 %d", bytes, traceTotalLimit)
+		}
+		if n == 0 {
+			t.Fatal("不该把记录全淘汰光")
+		}
+	})
+
+	t.Run("单条自己就超标也要留住", func(t *testing.T) {
+		traceRing.mu.Lock()
+		traceRing.list = nil
+		traceRing.mu.Unlock()
+		tr := startTrace("chat", Provider{ID: "p"}, "m", "openai-chat", "", "POST", "https://x/y")
+		for i := 0; i < 100; i++ {
+			tr.frame(string(make([]byte, 100<<10)))
+		}
+		traceRing.mu.Lock()
+		n := len(traceRing.list)
+		traceRing.mu.Unlock()
+		if n != 1 {
+			t.Fatalf("刚出问题的那条必须留着,得到 %d 条", n)
+		}
+	})
+}
