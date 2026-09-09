@@ -24,35 +24,35 @@ import type {
 
 interface AppRPC {
   ListOutlookGroups(): Promise<Group[] | null>
-  AddOutlookGroup(name: string, color: string): Promise<[Group | null, string]>
+  AddOutlookGroup(name: string, color: string): Promise<Group | null>
   RenameOutlookGroup(id: string, name: string): Promise<string>
   DeleteOutlookGroup(id: string): Promise<string>
 
   ListOutlookAccounts(groupID: string): Promise<AccountView[] | null>
   ImportOutlookAccounts(req: ImportRequest): Promise<ImportResponse>
-  UpdateOutlookAccount(id: string, patch: AccountPatch): Promise<[AccountView | null, string]>
+  UpdateOutlookAccount(id: string, patch: AccountPatch): Promise<AccountView | null>
   DeleteOutlookAccount(id: string): Promise<string>
 
   RefreshOutlookToken(id: string): Promise<RefreshResult>
   RefreshOutlookTokens(ids: string[]): Promise<RefreshResult[] | null>
 
-  ListOutlookMails(accountID: string, folder: string, page: number, pageSize: number): Promise<[MailPage | null, string]>
-  GetOutlookMail(accountID: string, folder: string, messageID: string): Promise<[MailDetail | null, string]>
-  ExtractOutlookMail(accountID: string, folder: string, messageID: string): Promise<[ExtractResult | null, string]>
+  ListOutlookMails(accountID: string, folder: string, page: number, pageSize: number): Promise<MailPage | null>
+  GetOutlookMail(accountID: string, folder: string, messageID: string): Promise<MailDetail | null>
+  ExtractOutlookMail(accountID: string, folder: string, messageID: string): Promise<ExtractResult | null>
   ExtractOutlookText(text: string): Promise<ExtractResult | null>
 
   GetOutlookConfig(): Promise<Config>
   UpdateOutlookConfig(cfg: Config): Promise<string>
 
-  GetOutlookAccountSecret(id: string): Promise<[AccountSecret | null, string]>
+  GetOutlookAccountSecret(id: string): Promise<AccountSecret | null>
   SetOutlookRefreshToken(id: string, newRT: string): Promise<string>
 
   BuildOutlookAuthURL(clientID: string, redirectURI: string): Promise<AuthURLResult>
-  ExchangeOutlookCode(redirectedURL: string, clientID: string, redirectURI: string): Promise<[ExchangeResult | null, string]>
-  SaveOutlookFromAuth(req: SaveFromAuthRequest): Promise<[AccountView | null, string]>
+  ExchangeOutlookCode(redirectedURL: string, clientID: string, redirectURI: string): Promise<ExchangeResult | null>
+  SaveOutlookFromAuth(req: SaveFromAuthRequest): Promise<AccountView | null>
 
   PreviewOutlookExport(): Promise<ExportSummary[] | null>
-  ExportOutlookAccounts(groupIDs: string[]): Promise<[ExportResult | null, string]>
+  ExportOutlookAccounts(groupIDs: string[]): Promise<ExportResult | null>
   PickOutlookExportPath(defaultFilename: string): Promise<string>
   WriteOutlookExportFile(path: string, content: string): Promise<string>
 
@@ -77,29 +77,17 @@ function app(): AppRPC {
 //   2) 对象 { '0': T, '1': string }
 //   3) 仅 T 本身(当 string 是空字符串时 Wails 可能省掉包装)
 // 必须三种都兼容,所以不能用解构,也不能假定 r[0] 一定是 T。
-async function unwrap<T>(p: Promise<[T | null, string]>): Promise<T> {
-  const r = (await p) as any
-  // Wails 对 (T, error) 的 error path 是 reject,只有 (T, string) 需要这套兼容。
-  let v: T | null | undefined
-  let err = ''
-  if (r == null) {
-    throw new Error('返回值为空')
-  } else if (Array.isArray(r)) {
-    v = r[0]
-    err = (r[1] as string) ?? ''
-  } else if (typeof r === 'object' && ('0' in r || '1' in r)) {
-    v = (r as Record<string, unknown>)['0'] as T | null | undefined
-    err = ((r as Record<string, unknown>)['1'] as string) ?? ''
-  } else {
-    // 直接是 T 本身(无错误时 Wails 偶尔会跳过包装)
-    v = r as T
-  }
-  if (err) throw new Error(err)
+/**
+ * 取绑定的返回值。
+ *
+ * 后端这些方法现在都是 (T, error):Wails 只把第一个值交给 JS,出错时直接 reject。
+ * 以前那套 [值, 错误] 的解包分支全是死代码 —— 错误字符串从来没到过这里。
+ */
+async function unwrap<T>(p: Promise<T | null>): Promise<T> {
+  const v = await p
   if (v == null) throw new Error('返回值为空')
-  return v as T
+  return v
 }
-
-// 同上,但 string 是单返回(后端直接 return string 表示错误,空字符串=ok)
 async function unwrapErr(p: Promise<string>): Promise<void> {
   const err = await p
   if (err) throw new Error(err)

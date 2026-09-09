@@ -54,19 +54,6 @@ const EV_ERR = 'translate:error:'
 const MAX_TRANSLATE_IMAGES = 6
 
 /** Wails 多返回值兼容:array / {0,1} / 直传字符串(只有一个值时) */
-function pickFirst(r: any): string {
-  if (r == null) return ''
-  if (Array.isArray(r)) return (r[0] as string) ?? ''
-  if (typeof r === 'object' && '0' in r) return (r['0'] as string) ?? ''
-  if (typeof r === 'string') return r
-  return ''
-}
-function pickSecond(r: any): string {
-  if (r == null) return ''
-  if (Array.isArray(r)) return (r[1] as string) ?? ''
-  if (typeof r === 'object' && '1' in r) return (r['1'] as string) ?? ''
-  return ''
-}
 
 export default function TranslatePage() {
   const dialog = useConfirm()
@@ -259,7 +246,8 @@ export default function TranslatePage() {
       return
     }
 
-    const r = (await StartAITranslate({
+    // 返回任务 ID 字符串;失败走 reject
+    const r = await StartAITranslate({
       providerId: useProviderId,
       modelId: useModelId,
       text,
@@ -268,10 +256,11 @@ export default function TranslatePage() {
       // 贴图翻译:带上图片,后端走视觉模型(图优先,忽略 text)
       images: hasImage ? pendingImages : undefined,
       // wails 生成的 ts class 还有这两个静态方法,但运行时直接传普通对象就行
-    } as any)) as any
-    // wails 多返回值通常是 array;兜底处理 object {0,1} 与字符串
-    const id = pickFirst(r)
-    const err = pickSecond(r)
+    } as any).then(
+      (v) => ({ id: v as unknown as string, err: '' }),
+      (e) => ({ id: '', err: String(e) }),
+    )
+    const { id, err } = r
     if (err) {
       setStreaming(false)
       await dialog({ title: '启动失败', message: err, confirmLabel: '知道了' })

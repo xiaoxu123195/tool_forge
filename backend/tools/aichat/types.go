@@ -207,8 +207,17 @@ type Message struct {
 	// RoleTool 消息上是"这批调用的执行结果"
 	ToolCalls []ToolCall `json:"toolCalls,omitempty"`
 	// Model 这条消息使用的模型 ID(仅 assistant 有意义)
-	Model     string `json:"model,omitempty"`
-	CreatedAt int64  `json:"createdAt"`
+	Model string `json:"model,omitempty"`
+	// Usage 这条回复的 token 用量。usage.jsonl 里记的是流水总账,
+	// 出问题时("这个模型怎么突然这么贵")翻账本定位不到是哪条,所以也挂一份在消息上
+	Usage *Usage `json:"usage,omitempty"`
+	// DurationMs 从发出请求到流结束的耗时
+	DurationMs int `json:"durationMs,omitempty"`
+	// Truncated 这条回复没写完(用户点了停止,或流中途断了)。
+	// 以前是往正文尾部塞一个 " …" —— 那会污染内容,复制出去带着个莫名其妙的省略号,
+	// 再发给模型时它也会把省略号当成正文的一部分
+	Truncated bool `json:"truncated,omitempty"`
+	CreatedAt  int64 `json:"createdAt"`
 }
 
 // UnmarshalJSON 兼容旧会话文件:早期 thinking 是单个字符串,现在是带 signature 的块数组。

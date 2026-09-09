@@ -247,6 +247,45 @@ func (s *Service) RegenerateLast(ctx context.Context, convID string) (*Conversat
 	return c, nil
 }
 
+// ContinueLast 接着写最后一条被截断的 assistant 消息。
+//
+// 和"重新生成"的区别:重新生成是丢掉重来,这里是保留已有的半截继续往下写。
+// 长回答被 max_tokens 截断、或者用户手滑点了停止时,前者等于白等一遍。
+func (s *Service) ContinueLast(ctx context.Context, convID string) (*Conversation, error) {
+	c, err := loadConversation(convID)
+	if err != nil {
+		return nil, err
+	}
+	if len(c.Messages) == 0 {
+		return nil, fmt.Errorf("没有可继续的消息")
+	}
+	last := &c.Messages[len(c.Messages)-1]
+	if last.Role != RoleAssistant {
+		return nil, fmt.Errorf("最后一条不是助手消息")
+	}
+	if strings.TrimSpace(last.Content) == "" {
+		return nil, fmt.Errorf("这条回复还没有内容,请改用重新生成")
+	}
+	prov, err := s.providerSnapshot(c.ProviderID)
+	if err != nil {
+		return nil, err
+	}
+	if !prov.Enabled {
+		return nil, fmt.Errorf("供应商 %s 未启用", prov.Name)
+	}
+
+	s.cancelStream(convID)
+	last.Truncated = false
+	c.UpdatedAt = time.Now().UnixMilli()
+	if err := saveConversation(c); err != nil {
+		return nil, err
+	}
+
+	convCopy := *c
+	go s.runStream(ctx, prov, convCopy, last.ID, last.Content)
+	return c, nil
+}
+
 // EditAndResend 编辑某条 user 消息内容,截断它之后的所有消息,然后重新发起流。
 //
 //	常用场景:用户发完消息后发现写错了,改一下重答
@@ -321,7 +360,12 @@ func (s *Service) providerSnapshot(id string) (Provider, error) {
 }
 
 // runStream 单个会话的流执行体;一定会发 done 或 error 中的一个,然后清理 registry
-func (s *Service) runStream(parent context.Context, prov Provider, conv Conversation, asstMsgID, _ string) {
+// runStream 跑一次完整的流式回复。
+//
+// continueFrom 非空表示"接着写":这条 assistant 消息已经有一截内容了,新产出要接在它后面。
+// 请求里最后一条就是这半截 assistant 消息,模型看到它会自然往下续 —— Anthropic 管这叫
+// prefill,其余几家虽然没给它起名字,行为是一样的。
+func (s *Service) runStream(parent context.Context, prov Provider, conv Conversation, asstMsgID, continueFrom string) {
 	ctx, cancel := context.WithCancel(parent)
 	s.streams.set(conv.ID, cancel)
 	defer s.streams.clear(conv.ID)
@@ -332,6 +376,11 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 
 	startTime := time.Now()
 	var bText, bThink strings.Builder
+	// 续写:把已有内容垫进累加器,落盘时才是完整的一条。
+	// 注意只垫累加器不补发事件 —— 那段内容前端早就显示着了,再发一遍会重复
+	if continueFrom != "" {
+		bText.WriteString(continueFrom)
+	}
 	var accumUsage Usage
 	var accumImages []ImageBlock
 	var accumThinking []ThinkingBlock
@@ -465,6 +514,8 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 				Citations: accumCitations,
 				Searches:  accumSearches,
 				ToolCalls: accumToolCalls,
+				Usage:     accumUsage,
+				Duration:  time.Since(startTime),
 			})
 			writeUsage()
 			if s.ctx != nil {
@@ -479,6 +530,8 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 				Citations: accumCitations,
 				Searches:  accumSearches,
 				ToolCalls: accumToolCalls,
+				Usage:     accumUsage,
+				Duration:  time.Since(startTime),
 				Truncated: true,
 			}
 			// 用户主动取消(StopAIChat):保留已收到的内容并加截断标记,
@@ -614,6 +667,8 @@ type assistantResult struct {
 	Citations []Citation
 	Searches  []SearchQuery
 	ToolCalls []ToolCall
+	Usage     Usage
+	Duration  time.Duration
 	// Truncated 流被中断(用户取消 / 出错),正文尾部加省略号标记
 	Truncated bool
 }
@@ -640,9 +695,14 @@ func (s *Service) persistAssistant(convID, msgID string, res assistantResult) {
 			if len(res.ToolCalls) > 0 {
 				c.Messages[i].ToolCalls = res.ToolCalls
 			}
-			if res.Truncated {
-				c.Messages[i].Content += " …" // 标记中断
+			if res.Usage != (Usage{}) {
+				u := res.Usage
+				c.Messages[i].Usage = &u
 			}
+			if res.Duration > 0 {
+				c.Messages[i].DurationMs = int(res.Duration.Milliseconds())
+			}
+			c.Messages[i].Truncated = res.Truncated
 			break
 		}
 	}

@@ -79,6 +79,42 @@ func writeJSONAtomic(path string, v any) error {
 	return nil
 }
 
+func assistantsPath() (string, error) {
+	d, err := dataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, "assistants.json"), nil
+}
+
+// loadAssistants 文件不存在时返回 nil(而不是空切片)—— 调用方靠这个区分
+// "还没初始化过"和"用户把内置的全删了",前者要写入内置预设,后者不能再塞回去
+func loadAssistants() ([]Assistant, error) {
+	path, err := assistantsPath()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, nil
+	}
+	list := []Assistant{}
+	if err := readJSON(path, &list); err != nil {
+		return nil, fmt.Errorf("读 assistants.json 失败: %w", err)
+	}
+	return list, nil
+}
+
+func saveAssistants(list []Assistant) error {
+	path, err := assistantsPath()
+	if err != nil {
+		return err
+	}
+	if list == nil {
+		list = []Assistant{}
+	}
+	return writeJSONAtomic(path, list)
+}
+
 func loadProviders() ([]Provider, error) {
 	path, err := providersPath()
 	if err != nil {

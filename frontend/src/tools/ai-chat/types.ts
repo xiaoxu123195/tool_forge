@@ -159,7 +159,21 @@ export interface Message {
   toolCalls?: ToolCall[]
   /** 这条 assistant 消息使用的模型 ID */
   model?: string
+  /** 这条回复的 token 用量 */
+  usage?: MessageUsage
+  /** 从发出请求到流结束的耗时(毫秒) */
+  durationMs?: number
+  /** 这条回复没写完(点了停止,或流中途断了)—— 可以「继续写」 */
+  truncated?: boolean
   createdAt: number
+}
+
+/** 单条回复的 token 用量 */
+export interface MessageUsage {
+  inputTokens: number
+  outputTokens: number
+  reasoningTokens?: number
+  cachedTokens?: number
 }
 
 /**
@@ -268,6 +282,40 @@ export interface ModelSpec {
   reasoning?: ReasoningSpec
   sampling: SamplingSpec
   maxOutput: number
+}
+
+/** 可复用的会话预设:系统提示词 + 一组参数覆盖 */
+export interface Assistant {
+  id: string
+  name: string
+  /** 列表里的小图标,纯装饰 */
+  emoji?: string
+  system: string
+  /** 下面这些为空 / 零值表示"不干预,用会话默认值" */
+  contextCount?: number
+  reasoningEffort?: string
+  temperature?: number
+  topP?: number
+  maxTokens?: number
+  webSearch?: boolean
+  tools?: boolean
+  sortOrder?: number
+  createdAt: number
+  updatedAt: number
+}
+
+/** 「工具」开关背后到底会带什么给模型 */
+export interface ChatToolInfo {
+  name: string
+  description: string
+  /** 空 = 内置工具;否则是 MCP 服务器名 */
+  source?: string
+}
+
+export interface ChatToolsView {
+  tools: ChatToolInfo[]
+  /** 已启用但当前没连上的 MCP 服务器 —— 它们的工具这一轮不会声明 */
+  offline?: string[]
 }
 
 /** Wails 事件名常量 */

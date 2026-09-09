@@ -83,14 +83,11 @@ export default function AIChat() {
   }
 
   const onEditConversation = async (id: string) => {
-    const r = (await GetAIConversation(id)) as any
-    const conv =
-      (Array.isArray(r) ? r[0] : r?.['0'] ?? (r && 'id' in r ? r : null)) as
-        | Conversation
-        | null
-    const err = (Array.isArray(r) ? r[1] : r?.['1']) as string | undefined
-    if (err || !conv) {
-      await dialog({ title: '加载失败', message: err ?? '未知错误', confirmLabel: '知道了' })
+    let conv: Conversation
+    try {
+      conv = (await GetAIConversation(id)) as unknown as Conversation
+    } catch (e) {
+      await dialog({ title: '加载失败', message: String(e), confirmLabel: '知道了' })
       return
     }
     setDialogState({
@@ -117,20 +114,17 @@ export default function AIChat() {
         providerId = usable[0].id
         modelId = usable[0].models[0]
       }
-      const r = (await CreateAIConversation(
-        providerId,
-        modelId,
-        draft.title,
-        draft.system,
-        draft.contextCount,
-      )) as any
-      const created =
-        (Array.isArray(r) ? r[0] : r?.['0'] ?? (r && 'id' in r ? r : null)) as
-          | Conversation
-          | null
-      const err = (Array.isArray(r) ? r[1] : r?.['1']) as string | undefined
-      if (err) {
-        await dialog({ title: '创建失败', message: err, confirmLabel: '知道了' })
+      let created: Conversation
+      try {
+        created = (await CreateAIConversation(
+          providerId,
+          modelId,
+          draft.title,
+          draft.system,
+          draft.contextCount,
+        )) as unknown as Conversation
+      } catch (e) {
+        await dialog({ title: '创建失败', message: String(e), confirmLabel: '知道了' })
         return
       }
       setDialogState(null)

@@ -323,26 +323,26 @@ func (a *App) ClearAIDataModule(key string) string {
 
 // ExportData 把数据目录 + 前端传来的 localStorage 一起打 zip,
 // localStorageJSON 是前端 stringify 后的 JSON 字符串。返回保存路径(空 = 用户取消)
-func (a *App) ExportData(localStorageJSON string) (string, string) {
+func (a *App) ExportData(localStorageJSON string) (string, error) {
 	path, err := system.ExportData(a.ctx, localStorageJSON)
 	if err != nil {
-		return "", err.Error()
+		return "", err
 	}
-	return path, ""
+	return path, nil
 }
 
 // ImportData 选 zip 并恢复到 ~/.toolforge,返回需要前端写回的 localStorage JSON。
 // 返回 (localStorageJSON, errorMsg);用户取消时两个都为空。
 // 注意:调用前会先停止 clipboard service,导入后需要前端提示用户重启 App。
-func (a *App) ImportData() (string, string) {
+func (a *App) ImportData() (string, error) {
 	if a.clipboard != nil {
 		a.clipboard.Stop()
 	}
 	ls, err := system.ImportData(a.ctx)
 	if err != nil {
-		return "", err.Error()
+		return "", err
 	}
-	return ls, ""
+	return ls, nil
 }
 
 // ================ HTTP 请求测试器 ================
@@ -398,15 +398,15 @@ func (a *App) ListProviderPresets() []providerswitch.Preset {
 }
 
 // SaveProvider 新增或更新一条;id 为空 → 新增,否则更新
-func (a *App) SaveProvider(p providerswitch.Provider) (providerswitch.Provider, string) {
+func (a *App) SaveProvider(p providerswitch.Provider) (providerswitch.Provider, error) {
 	if a.provider == nil {
-		return providerswitch.Provider{}, "Provider 服务未初始化"
+		return providerswitch.Provider{}, fmt.Errorf("Provider 服务未初始化")
 	}
 	saved, err := a.provider.Save(p)
 	if err != nil {
-		return providerswitch.Provider{}, err.Error()
+		return providerswitch.Provider{}, err
 	}
-	return saved, ""
+	return saved, nil
 }
 
 // DeleteProvider 删除一条 Provider
@@ -1289,28 +1289,28 @@ func (a *App) ListAIConversations() []aichat.ConversationSummary {
 }
 
 // GetAIConversation 取一条会话(含全部消息)
-func (a *App) GetAIConversation(id string) (aichat.Conversation, string) {
+func (a *App) GetAIConversation(id string) (aichat.Conversation, error) {
 	if a.aichat == nil {
-		return aichat.Conversation{}, "AI 服务未初始化"
+		return aichat.Conversation{}, fmt.Errorf("AI 服务未初始化")
 	}
 	c, err := a.aichat.GetConversation(id)
 	if err != nil {
-		return aichat.Conversation{}, err.Error()
+		return aichat.Conversation{}, err
 	}
-	return *c, ""
+	return *c, nil
 }
 
 // CreateAIConversation 新建会话;providerID + modelID 决定本会话使用的模型;
 // system 系统提示词(可空);contextCount 上下文条数(0 = 不限)
-func (a *App) CreateAIConversation(providerID, modelID, title, system string, contextCount int) (aichat.Conversation, string) {
+func (a *App) CreateAIConversation(providerID, modelID, title, system string, contextCount int) (aichat.Conversation, error) {
 	if a.aichat == nil {
-		return aichat.Conversation{}, "AI 服务未初始化"
+		return aichat.Conversation{}, fmt.Errorf("AI 服务未初始化")
 	}
 	c, err := a.aichat.CreateConversation(providerID, modelID, title, system, contextCount)
 	if err != nil {
-		return aichat.Conversation{}, err.Error()
+		return aichat.Conversation{}, err
 	}
-	return *c, ""
+	return *c, nil
 }
 
 // UpdateAIConversationMeta 一次性更新会话标题 / 系统提示 / 上下文条数 / 采样参数
@@ -1348,6 +1348,43 @@ func (a *App) UpdateAIConversationOptions(id, reasoningEffort string, webSearch,
 
 // ================ MCP ================
 
+// ListAIAssistants 所有助手预设(可复用的系统提示词 + 参数组合)
+func (a *App) ListAIAssistants() ([]aichat.Assistant, error) {
+	if a.aichat == nil {
+		return nil, fmt.Errorf("AI 服务未初始化")
+	}
+	return a.aichat.ListAssistants()
+}
+
+// SaveAIAssistant 新增或更新一条助手预设;ID 为空 → 新增
+func (a *App) SaveAIAssistant(as aichat.Assistant) (aichat.Assistant, error) {
+	if a.aichat == nil {
+		return aichat.Assistant{}, fmt.Errorf("AI 服务未初始化")
+	}
+	return a.aichat.SaveAssistant(as)
+}
+
+// DeleteAIAssistant 删除一条助手预设
+func (a *App) DeleteAIAssistant(id string) error {
+	if a.aichat == nil {
+		return fmt.Errorf("AI 服务未初始化")
+	}
+	return a.aichat.DeleteAssistant(id)
+}
+
+// ReorderAIAssistants 按给定顺序重排助手预设
+func (a *App) ReorderAIAssistants(ids []string) error {
+	if a.aichat == nil {
+		return fmt.Errorf("AI 服务未初始化")
+	}
+	return a.aichat.ReorderAssistants(ids)
+}
+
+// ListAIChatTools 「工具」开关打开后,这一轮实际会声明给模型的工具清单
+func (a *App) ListAIChatTools() aichat.ChatToolsView {
+	return aichat.ToolsView()
+}
+
 // ListMCPServers 所有已配置的 MCP 服务器
 func (a *App) ListMCPServers() []mcp.Server {
 	if a.mcp == nil {
@@ -1361,16 +1398,16 @@ func (a *App) ListMCPServers() []mcp.Server {
 }
 
 // SaveMCPServer 新增或更新一个 MCP 服务器
-func (a *App) SaveMCPServer(s mcp.Server) (mcp.Server, string) {
+func (a *App) SaveMCPServer(s mcp.Server) (mcp.Server, error) {
 	if a.mcp == nil {
-		return mcp.Server{}, "MCP 客户端未初始化"
+		return mcp.Server{}, fmt.Errorf("MCP 客户端未初始化")
 	}
 	saved, err := a.mcp.SaveServer(s)
 	if err != nil {
-		return mcp.Server{}, err.Error()
+		return mcp.Server{}, err
 	}
 	a.mcp.Warm(a.ctx)
-	return saved, ""
+	return saved, nil
 }
 
 // DeleteMCPServer 删除一个 MCP 服务器(会断开连接)
@@ -1443,15 +1480,15 @@ func (a *App) ReconnectMCPServer(id string) string {
 
 // GetAIModelSpec 某个模型的能力画像:能不能看图 / 传 PDF / 调思考档位 / 内置联网。
 // 前端据此决定输入栏上给哪些开关。
-func (a *App) GetAIModelSpec(providerID, modelID string) (aichat.ModelSpec, string) {
+func (a *App) GetAIModelSpec(providerID, modelID string) (aichat.ModelSpec, error) {
 	if a.aichat == nil {
-		return aichat.ModelSpec{}, "AI 服务未初始化"
+		return aichat.ModelSpec{}, fmt.Errorf("AI 服务未初始化")
 	}
 	spec, err := a.aichat.ModelSpec(providerID, modelID)
 	if err != nil {
-		return aichat.ModelSpec{}, err.Error()
+		return aichat.ModelSpec{}, err
 	}
-	return spec, ""
+	return spec, nil
 }
 
 // InsertAIClearMarker 在会话末尾插入"清除上下文"分隔标记
@@ -1463,6 +1500,18 @@ func (a *App) InsertAIClearMarker(id string) string {
 		return err.Error()
 	}
 	return ""
+}
+
+// ContinueAILastChat 接着写最后一条被截断的回复(保留已有内容往下续)
+func (a *App) ContinueAILastChat(convID string) (aichat.Conversation, error) {
+	if a.aichat == nil {
+		return aichat.Conversation{}, fmt.Errorf("AI 服务未初始化")
+	}
+	c, err := a.aichat.ContinueLast(a.ctx, convID)
+	if err != nil {
+		return aichat.Conversation{}, err
+	}
+	return *c, nil
 }
 
 // ReorderAIConversations 按给定顺序重排会话列表(拖动排序)
@@ -1512,15 +1561,15 @@ func (a *App) DeleteAIConversation(id string) string {
 //	userFiles  可选;Text(已解析的文本) 或 Data(base64,主要是 PDF) 二选一
 //	返回的 Conversation 已含 user 消息 + 空 assistant 占位;
 //	后续每个 chunk 通过事件 ai-chat:chunk:{id} / done:{id} / error:{id} 推送
-func (a *App) SendAIChat(convID, userContent string, userImages []aichat.ImageBlock, userFiles []aichat.FileBlock) (aichat.Conversation, string) {
+func (a *App) SendAIChat(convID, userContent string, userImages []aichat.ImageBlock, userFiles []aichat.FileBlock) (aichat.Conversation, error) {
 	if a.aichat == nil {
-		return aichat.Conversation{}, "AI 服务未初始化"
+		return aichat.Conversation{}, fmt.Errorf("AI 服务未初始化")
 	}
 	c, err := a.aichat.SendChat(a.ctx, convID, userContent, userImages, userFiles)
 	if err != nil {
-		return aichat.Conversation{}, err.Error()
+		return aichat.Conversation{}, err
 	}
-	return *c, ""
+	return *c, nil
 }
 
 // UpdateAIConversationSystem 更新会话的系统提示词(空字符串=清除)
@@ -1546,43 +1595,43 @@ func (a *App) DeleteAIChatMessage(convID, msgID string) string {
 }
 
 // EditAndResendAIChat 编辑某条 user 消息并重新发起流(截断该消息之后的所有内容)
-func (a *App) EditAndResendAIChat(convID, msgID, newContent string) (aichat.Conversation, string) {
+func (a *App) EditAndResendAIChat(convID, msgID, newContent string) (aichat.Conversation, error) {
 	if a.aichat == nil {
-		return aichat.Conversation{}, "AI 服务未初始化"
+		return aichat.Conversation{}, fmt.Errorf("AI 服务未初始化")
 	}
 	c, err := a.aichat.EditAndResend(a.ctx, convID, msgID, newContent)
 	if err != nil {
-		return aichat.Conversation{}, err.Error()
+		return aichat.Conversation{}, err
 	}
-	return *c, ""
+	return *c, nil
 }
 
 // RegenerateAILastChat 重新生成最后一条助手回复
 //
 //	要求会话最后一条是 assistant、前一条是 user;复用同一 message ID,前端原地刷新
-func (a *App) RegenerateAILastChat(convID string) (aichat.Conversation, string) {
+func (a *App) RegenerateAILastChat(convID string) (aichat.Conversation, error) {
 	if a.aichat == nil {
-		return aichat.Conversation{}, "AI 服务未初始化"
+		return aichat.Conversation{}, fmt.Errorf("AI 服务未初始化")
 	}
 	c, err := a.aichat.RegenerateLast(a.ctx, convID)
 	if err != nil {
-		return aichat.Conversation{}, err.Error()
+		return aichat.Conversation{}, err
 	}
-	return *c, ""
+	return *c, nil
 }
 
 // StartAITranslate 启动一次翻译;返回 jobID,前端按 jobID 订阅
 //
 //	translate:chunk:{id} / translate:done:{id} / translate:error:{id}
-func (a *App) StartAITranslate(req aichat.TranslateRequest) (string, string) {
+func (a *App) StartAITranslate(req aichat.TranslateRequest) (string, error) {
 	if a.aichat == nil {
-		return "", "AI 服务未初始化"
+		return "", fmt.Errorf("AI 服务未初始化")
 	}
 	id, err := a.aichat.StartTranslate(a.ctx, req)
 	if err != nil {
-		return "", err.Error()
+		return "", err
 	}
-	return id, ""
+	return id, nil
 }
 
 // StopAITranslate 取消进行中的翻译任务
@@ -1597,15 +1646,15 @@ func (a *App) StopAITranslate(jobID string) string {
 }
 
 // DetectAILanguage 用 LLM 识别文本语言,返回英文语言名(Chinese/English/...)
-func (a *App) DetectAILanguage(providerID, modelID, text string) (string, string) {
+func (a *App) DetectAILanguage(providerID, modelID, text string) (string, error) {
 	if a.aichat == nil {
-		return "", "AI 服务未初始化"
+		return "", fmt.Errorf("AI 服务未初始化")
 	}
 	lang, err := a.aichat.DetectLanguageLLM(a.ctx, providerID, modelID, text)
 	if err != nil {
-		return "", err.Error()
+		return "", err
 	}
-	return lang, ""
+	return lang, nil
 }
 
 // StopAIChat 取消正在进行的流;若该会话没有正在进行的流则返回错误
@@ -1630,15 +1679,15 @@ func (a *App) ListOutlookGroups() []outlookmail.Group {
 }
 
 // AddOutlookGroup 新建分组
-func (a *App) AddOutlookGroup(name, color string) (*outlookmail.Group, string) {
+func (a *App) AddOutlookGroup(name, color string) (*outlookmail.Group, error) {
 	if a.outlook == nil {
-		return nil, "Outlook 服务未初始化"
+		return nil, fmt.Errorf("Outlook 服务未初始化")
 	}
 	g, err := a.outlook.AddGroup(name, color)
 	if err != nil {
-		return nil, err.Error()
+		return nil, err
 	}
-	return g, ""
+	return g, nil
 }
 
 // RenameOutlookGroup 重命名分组
@@ -1680,15 +1729,15 @@ func (a *App) ImportOutlookAccounts(req outlookmail.ImportRequest) outlookmail.I
 }
 
 // UpdateOutlookAccount 部分更新账号字段
-func (a *App) UpdateOutlookAccount(id string, patch outlookmail.AccountPatch) (*outlookmail.AccountView, string) {
+func (a *App) UpdateOutlookAccount(id string, patch outlookmail.AccountPatch) (*outlookmail.AccountView, error) {
 	if a.outlook == nil {
-		return nil, "Outlook 服务未初始化"
+		return nil, fmt.Errorf("Outlook 服务未初始化")
 	}
 	v, err := a.outlook.UpdateAccount(id, patch)
 	if err != nil {
-		return nil, err.Error()
+		return nil, err
 	}
-	return v, ""
+	return v, nil
 }
 
 // DeleteOutlookAccount 删除单个账号
@@ -1719,39 +1768,39 @@ func (a *App) RefreshOutlookTokens(ids []string) []outlookmail.RefreshResult {
 }
 
 // ListOutlookMails 列邮件
-func (a *App) ListOutlookMails(accountID string, folder string, page, pageSize int) (*outlookmail.MailPage, string) {
+func (a *App) ListOutlookMails(accountID string, folder string, page, pageSize int) (*outlookmail.MailPage, error) {
 	if a.outlook == nil {
-		return nil, "Outlook 服务未初始化"
+		return nil, fmt.Errorf("Outlook 服务未初始化")
 	}
 	mp, err := a.outlook.ListMails(a.ctx, accountID, outlookmail.Folder(folder), page, pageSize)
 	if err != nil {
-		return nil, err.Error()
+		return nil, err
 	}
-	return mp, ""
+	return mp, nil
 }
 
 // GetOutlookMail 取邮件详情
-func (a *App) GetOutlookMail(accountID, folder, messageID string) (*outlookmail.MailDetail, string) {
+func (a *App) GetOutlookMail(accountID, folder, messageID string) (*outlookmail.MailDetail, error) {
 	if a.outlook == nil {
-		return nil, "Outlook 服务未初始化"
+		return nil, fmt.Errorf("Outlook 服务未初始化")
 	}
 	d, err := a.outlook.GetMail(a.ctx, accountID, outlookmail.Folder(folder), messageID)
 	if err != nil {
-		return nil, err.Error()
+		return nil, err
 	}
-	return d, ""
+	return d, nil
 }
 
 // ExtractOutlookMail 从某封邮件提取验证码 / 链接
-func (a *App) ExtractOutlookMail(accountID, folder, messageID string) (*outlookmail.ExtractResult, string) {
+func (a *App) ExtractOutlookMail(accountID, folder, messageID string) (*outlookmail.ExtractResult, error) {
 	if a.outlook == nil {
-		return nil, "Outlook 服务未初始化"
+		return nil, fmt.Errorf("Outlook 服务未初始化")
 	}
 	r, err := a.outlook.Extract(a.ctx, accountID, outlookmail.Folder(folder), messageID)
 	if err != nil {
-		return nil, err.Error()
+		return nil, err
 	}
-	return r, ""
+	return r, nil
 }
 
 // ExtractOutlookText 从一段文本提取验证码 / 链接(用户粘贴场景)
@@ -1784,15 +1833,15 @@ func (a *App) UpdateOutlookConfig(cfg outlookmail.Config) string {
 // ================ Outlook 邮箱管理 - 扩展 RPC ================
 
 // GetOutlookAccountSecret 拿单账号的 refresh_token + password 明文(给编辑弹窗用)
-func (a *App) GetOutlookAccountSecret(id string) (*outlookmail.AccountSecret, string) {
+func (a *App) GetOutlookAccountSecret(id string) (*outlookmail.AccountSecret, error) {
 	if a.outlook == nil {
-		return nil, "Outlook 服务未初始化"
+		return nil, fmt.Errorf("Outlook 服务未初始化")
 	}
 	sec, err := a.outlook.GetAccountSecret(id)
 	if err != nil {
-		return nil, err.Error()
+		return nil, err
 	}
-	return sec, ""
+	return sec, nil
 }
 
 // SetOutlookRefreshToken 更新 refresh_token(走加密)
@@ -1815,27 +1864,27 @@ func (a *App) BuildOutlookAuthURL(clientID, redirectURI string) outlookmail.Auth
 }
 
 // ExchangeOutlookCode 用授权回调 URL 换 refresh_token(预览,不落库)
-func (a *App) ExchangeOutlookCode(redirectedURL, clientID, redirectURI string) (*outlookmail.ExchangeResult, string) {
+func (a *App) ExchangeOutlookCode(redirectedURL, clientID, redirectURI string) (*outlookmail.ExchangeResult, error) {
 	if a.outlook == nil {
-		return nil, "Outlook 服务未初始化"
+		return nil, fmt.Errorf("Outlook 服务未初始化")
 	}
 	res, err := a.outlook.ExchangeCode(a.ctx, redirectedURL, clientID, redirectURI)
 	if err != nil {
-		return nil, err.Error()
+		return nil, err
 	}
-	return res, ""
+	return res, nil
 }
 
 // SaveOutlookFromAuth 授权 → 换 token → 落库
-func (a *App) SaveOutlookFromAuth(req outlookmail.SaveFromAuthRequest) (*outlookmail.AccountView, string) {
+func (a *App) SaveOutlookFromAuth(req outlookmail.SaveFromAuthRequest) (*outlookmail.AccountView, error) {
 	if a.outlook == nil {
-		return nil, "Outlook 服务未初始化"
+		return nil, fmt.Errorf("Outlook 服务未初始化")
 	}
 	v, err := a.outlook.SaveFromAuth(a.ctx, req)
 	if err != nil {
-		return nil, err.Error()
+		return nil, err
 	}
-	return v, ""
+	return v, nil
 }
 
 // PreviewOutlookExport 列分组及账号数(导出弹窗用)
@@ -1847,15 +1896,15 @@ func (a *App) PreviewOutlookExport() []outlookmail.ExportSummary {
 }
 
 // ExportOutlookAccounts 组装导出文本;前端拿到 content 后走 PickSaveFile 落盘
-func (a *App) ExportOutlookAccounts(groupIDs []string) (*outlookmail.ExportResult, string) {
+func (a *App) ExportOutlookAccounts(groupIDs []string) (*outlookmail.ExportResult, error) {
 	if a.outlook == nil {
-		return nil, "Outlook 服务未初始化"
+		return nil, fmt.Errorf("Outlook 服务未初始化")
 	}
 	r, err := a.outlook.ExportAccounts(groupIDs)
 	if err != nil {
-		return nil, err.Error()
+		return nil, err
 	}
-	return r, ""
+	return r, nil
 }
 
 // PickOutlookExportPath 弹保存对话框,让用户选 .txt 输出位置

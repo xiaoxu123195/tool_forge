@@ -7,6 +7,7 @@ import {
   GetAIModelSpec,
   InsertAIClearMarker,
   ListAIProviders,
+  ContinueAILastChat,
   RegenerateAILastChat,
   SendAIChat,
   StopAIChat,
@@ -31,7 +32,7 @@ import { ChatComposer } from './ChatComposer'
 import { ClearDivider, MessageItem } from './ChatMessage'
 import { WelcomeScreen } from './ChatWelcome'
 import { FilePreviewModal, ImagePreviewModal } from './ChatPreviews'
-import { CHAT_COLUMN, pickFirst, pickSecond } from './chat-utils'
+import { CHAT_COLUMN } from './chat-utils'
 import { useChatStream } from './useChatStream'
 import { useAttachments } from './useAttachments'
 import { cn } from '@/lib/utils'
@@ -71,8 +72,11 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
   }
 
   const load = async () => {
-    const r = (await GetAIConversation(conversationId)) as any
-    const c = pickFirst<Conversation>(r)
+    // 拿不到就保持原样(界面上会停在"加载中"),但错误不再无声无息
+    const c = (await GetAIConversation(conversationId).catch(async (e) => {
+      await dialog({ title: '加载会话失败', message: String(e), confirmLabel: '知道了' })
+      return null
+    })) as unknown as Conversation | null
     if (c?.id) setConv(c)
   }
 
@@ -124,9 +128,13 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
     }
     let alive = true
     void (async () => {
-      const r = (await GetAIModelSpec(providerId, modelId)) as any
+      // 能力画像拉不到时,联网/工具这些开关会跟着消失 —— 那和"模型不支持"长得一模一样,
+      // 所以失败要留个痕迹,不能静悄悄地把按钮藏掉
+      const got = (await GetAIModelSpec(providerId, modelId).catch((e) => {
+        console.error('[ai-chat] 取模型能力画像失败', e)
+        return null
+      })) as unknown as ModelSpec | null
       if (!alive) return
-      const got = pickFirst(r) as ModelSpec | null
       setSpec(got && got.id ? got : null)
     })()
     return () => {
@@ -185,8 +193,12 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
       prev ? { ...prev, messages: [...prev.messages, tmpUser, tmpAsst] } : prev,
     )
 
-    const r = (await SendAIChat(conv.id, content, imagesToSend, filesToSend)) as any
-    const err = pickSecond(r)
+    // 失败走 reject。以前这里的 err 永远是空串,发送失败什么都不弹,
+    // 但乐观更新已经把占位插进去了 —— 界面上留一条永远不出内容的空回复
+    const err = await SendAIChat(conv.id, content, imagesToSend, filesToSend).then(
+      () => '',
+      (e) => String(e),
+    )
     if (err) {
       setStreaming(false)
       // 回滚乐观更新
@@ -236,8 +248,10 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
       }
       return { ...prev, messages: [...kept, tmpAsst] }
     })
-    const r = (await EditAndResendAIChat(conv.id, msgId, newContent)) as any
-    const err = pickSecond(r)
+    const err = await EditAndResendAIChat(conv.id, msgId, newContent).then(
+      () => '',
+      (e) => String(e),
+    )
     if (err) {
       setStreaming(false)
       await dialog({ title: '重新发送失败', message: err, confirmLabel: '知道了' })
@@ -266,11 +280,35 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
       }
       return { ...prev, messages: msgs }
     })
-    const r = (await RegenerateAILastChat(conv.id)) as any
-    const err = pickSecond(r)
+    const err = await RegenerateAILastChat(conv.id).then(
+      () => '',
+      (e) => String(e),
+    )
     if (err) {
       setStreaming(false)
       await dialog({ title: '重新生成失败', message: err, confirmLabel: '知道了' })
+      void load()
+    }
+  }
+
+  // 续写:不清空已有内容,后端把新产出接在后面;界面靠 chunk 事件自然追加
+  const onContinue = async () => {
+    if (!conv || streaming) return
+    setStreaming(true)
+    setConv((prev) => {
+      if (!prev) return prev
+      const msgs = [...prev.messages]
+      const last = msgs[msgs.length - 1]
+      if (last?.role === 'assistant') msgs[msgs.length - 1] = { ...last, truncated: false }
+      return { ...prev, messages: msgs }
+    })
+    const err = await ContinueAILastChat(conv.id).then(
+      () => '',
+      (e) => String(e),
+    )
+    if (err) {
+      setStreaming(false)
+      await dialog({ title: '继续失败', message: err, confirmLabel: '知道了' })
       void load()
     }
   }
@@ -440,6 +478,9 @@ export function ChatPane({ conversationId, onTitleChange }: Props) {
                   streaming={streaming && isLast && isAssistant}
                   onRegenerate={
                     isLast && isAssistant && !streaming ? onRegenerate : undefined
+                  }
+                  onContinue={
+                    isLast && isAssistant && !streaming ? () => void onContinue() : undefined
                   }
                   onEditResend={
                     m.role === 'user' && !streaming

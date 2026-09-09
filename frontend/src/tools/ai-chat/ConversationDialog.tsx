@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Eye, Pencil, X } from 'lucide-react'
+import { ListAIAssistants } from '../../../wailsjs/go/main/App'
 import { MarkdownPreview } from '@/components/tool/MarkdownPreview'
 import { cn } from '@/lib/utils'
-import type { ModelSpec } from './types'
+import type { Assistant, ModelSpec } from './types'
 
 /** 用于"新建会话"和"编辑会话"两个场景 */
 export interface ConversationDraft {
@@ -47,6 +48,29 @@ export function ConversationDialog({
   const [temperature, setTemperature] = useState<number | undefined>(initial.temperature)
   const [topP, setTopP] = useState<number | undefined>(initial.topP)
   const [maxTokens, setMaxTokens] = useState(initial.maxTokens ?? 0)
+  const [assistants, setAssistants] = useState<Assistant[]>([])
+  const [pickedId, setPickedId] = useState('')
+
+  // 预设只在新建时给 —— 编辑已有会话时套一个预设会把用户写过的提示词直接冲掉,
+  // 那不是"选一下"该有的后果
+  useEffect(() => {
+    if (mode !== 'create') return
+    void (async () => {
+      const l = ((await ListAIAssistants().catch(() => [])) ?? []) as unknown as Assistant[]
+      setAssistants(l)
+    })()
+  }, [mode])
+
+  const applyAssistant = (a: Assistant | null) => {
+    setPickedId(a?.id ?? '')
+    if (!a) return
+    setSystem(a.system)
+    if (!title.trim()) setTitle(a.name)
+    if (a.contextCount) setContextCount(a.contextCount)
+    if (a.temperature !== undefined) setTemperature(a.temperature)
+    if (a.topP !== undefined) setTopP(a.topP)
+    if (a.maxTokens) setMaxTokens(a.maxTokens)
+  }
 
   // 采样参数得模型接受才有意义:o 系列 / gpt-5 / Kimi K2.5+ 完全不收,发过去会报错。
   // 拿不到 spec 时(新建会话还没选模型)整块不展示,免得设了个不知道生不生效的值。
@@ -87,6 +111,48 @@ export function ConversationDialog({
         </header>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-auto p-4">
+          {mode === 'create' && assistants.length > 0 && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium">
+                助手预设
+                <span className="ml-2 font-normal text-muted-foreground">
+                  · 选一个套用它的提示词和参数,下面还能继续改
+                </span>
+              </label>
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => applyAssistant(null)}
+                  className={cn(
+                    'h-7 rounded-md border px-2.5 text-xs transition-colors',
+                    pickedId === ''
+                      ? 'border-info/50 bg-info/10 text-info'
+                      : 'border-border hover:bg-secondary',
+                  )}
+                >
+                  不使用
+                </button>
+                {assistants.map((a) => (
+                  <button
+                    key={a.id}
+                    type="button"
+                    onClick={() => applyAssistant(a)}
+                    title={a.system.slice(0, 200)}
+                    className={cn(
+                      'flex h-7 items-center gap-1 rounded-md border px-2.5 text-xs transition-colors',
+                      pickedId === a.id
+                        ? 'border-info/50 bg-info/10 text-info'
+                        : 'border-border hover:bg-secondary',
+                    )}
+                  >
+                    <span className="text-sm leading-none">{a.emoji || '🤖'}</span>
+                    {a.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="space-y-1.5">
             <label className="text-xs font-medium">会话名称</label>
             <input

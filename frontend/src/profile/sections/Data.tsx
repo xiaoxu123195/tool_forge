@@ -154,12 +154,10 @@ export function DataSection() {
     if (busy) return
     setBusy(true)
     try {
-      const [path, err] = await ExportData(gatherLocalStorage())
-      if (err) {
-        alert('导出失败: ' + err)
-      } else if (path) {
-        flashMsg(`已导出到 ${path}`)
-      }
+      // 返回的就是路径字符串。以前解构成 [path, err] 会把字符串拆成首字符和次字符,
+      // 于是 err 永远非空 —— 导出成功也会弹"导出失败"
+      const path = (await ExportData(gatherLocalStorage())) as unknown as string
+      if (path) flashMsg(`已导出到 ${path}`)
     } finally {
       setBusy(false)
     }
@@ -177,11 +175,7 @@ export function DataSection() {
     if (!ok || busy) return
     setBusy(true)
     try {
-      const [ls, err] = await ImportData()
-      if (err) {
-        alert('导入失败: ' + err)
-        return
-      }
+      const ls = (await ImportData()) as unknown as string
       if (!ls) return // 用户取消
       clearLocalStorage()
       applyLocalStorage(ls)

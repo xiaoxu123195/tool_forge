@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import {
+  AlertTriangle,
   Bot,
   Brain,
   Check,
+  CornerDownRight,
   ChevronDown,
   Copy,
   Eraser,
@@ -59,6 +61,7 @@ export function MessageItem({
   fallbackModel,
   streaming,
   onRegenerate,
+  onContinue,
   onEditResend,
   onDelete,
   onPreviewImage,
@@ -68,6 +71,7 @@ export function MessageItem({
   fallbackModel: string
   streaming?: boolean
   onRegenerate?: () => void
+  onContinue?: () => void
   onEditResend?: (newContent: string) => void
   onDelete?: () => void
   onPreviewImage?: (img: ImageBlock) => void
@@ -252,6 +256,25 @@ export function MessageItem({
         <CitationList list={message.citations} />
       )}
 
+      {message.truncated && !streaming && (
+        <div className="flex items-center gap-2 text-[11px] text-amber-600 dark:text-amber-400">
+          <AlertTriangle className="h-3 w-3 shrink-0" />
+          这条回复没写完
+          {onContinue && (
+            <button
+              type="button"
+              onClick={onContinue}
+              className="flex items-center gap-1 rounded border border-amber-500/40 px-1.5 py-0.5 transition-colors hover:bg-amber-500/10"
+            >
+              <CornerDownRight className="h-3 w-3" />
+              继续写
+            </button>
+          )}
+        </div>
+      )}
+
+      {!streaming && <UsageLine message={message} />}
+
       {message.content && !streaming && (
         <MessageActions
           copied={copied}
@@ -263,6 +286,38 @@ export function MessageItem({
       )}
     </li>
   )
+}
+
+/**
+ * 这条回复花了多少 token、用了多久。
+ *
+ * 「AI 用量」页记的是流水总账 —— 发现某天忽然变贵时,从总账里翻不出是哪条对话、
+ * 哪次重新生成干的。挂在消息上才能一眼对上。默认淡显,不跟正文抢注意力。
+ */
+function UsageLine({ message }: { message: Message }) {
+  const u = message.usage
+  if (!u || (!u.inputTokens && !u.outputTokens)) return null
+  const parts = [`↑ ${fmtTokens(u.inputTokens)}`, `↓ ${fmtTokens(u.outputTokens)}`]
+  if (u.reasoningTokens) parts.push(`思考 ${fmtTokens(u.reasoningTokens)}`)
+  if (u.cachedTokens) parts.push(`缓存 ${fmtTokens(u.cachedTokens)}`)
+  if (message.durationMs) parts.push(fmtDuration(message.durationMs))
+  return (
+    <div className="text-[10px] text-muted-foreground/70" title="输入 / 输出 token 与耗时">
+      {parts.join(' · ')}
+    </div>
+  )
+}
+
+function fmtTokens(n: number): string {
+  if (n < 1000) return String(n)
+  return (n / 1000).toFixed(n < 10000 ? 1 : 0) + 'k'
+}
+
+function fmtDuration(ms: number): string {
+  if (ms < 1000) return ms + ' ms'
+  const s = ms / 1000
+  if (s < 60) return s.toFixed(1) + ' s'
+  return Math.floor(s / 60) + ' 分 ' + Math.round(s % 60) + ' 秒'
 }
 
 /**

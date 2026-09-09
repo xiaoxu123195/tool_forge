@@ -2,8 +2,9 @@ import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import { ProvidersTab } from './aichat/ProvidersTab'
 import { DefaultsTab } from './aichat/DefaultsTab'
+import { AssistantsTab } from './aichat/AssistantsTab'
 
-type SubTab = 'providers' | 'defaults'
+type SubTab = 'providers' | 'assistants' | 'defaults'
 
 export function AIChatSection() {
   const [tab, setTab] = useState<SubTab>('providers')
@@ -24,13 +25,22 @@ export function AIChatSection() {
         <SubTabButton active={tab === 'providers'} onClick={() => setTab('providers')}>
           模型服务
         </SubTabButton>
+        <SubTabButton active={tab === 'assistants'} onClick={() => setTab('assistants')}>
+          助手预设
+        </SubTabButton>
         <SubTabButton active={tab === 'defaults'} onClick={() => setTab('defaults')}>
           默认模型
         </SubTabButton>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col">
-        {tab === 'providers' ? <ProvidersTab /> : <DefaultsTab />}
+        {tab === 'providers' ? (
+          <ProvidersTab />
+        ) : tab === 'assistants' ? (
+          <AssistantsTab />
+        ) : (
+          <DefaultsTab />
+        )}
       </div>
     </div>
   )

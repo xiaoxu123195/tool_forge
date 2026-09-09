@@ -69,10 +69,10 @@ export function MCPSection() {
   }, [])
 
   const onSave = async (s: MCPServer) => {
-    const r = (await SaveMCPServer(s as never)) as any
-    const err = ((r?.[1] ?? r?.['1']) as string) || ''
-    if (err) {
-      await dialog({ title: '保存失败', message: err, confirmLabel: '知道了' })
+    try {
+      await SaveMCPServer(s as never)
+    } catch (e) {
+      await dialog({ title: '保存失败', message: String(e), confirmLabel: '知道了' })
       return
     }
     setEditing(null)

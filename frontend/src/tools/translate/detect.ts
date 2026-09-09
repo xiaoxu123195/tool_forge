@@ -18,10 +18,9 @@ export async function detectByLLM(
   if (!providerId || !modelId) return undefined
   if (text.trim().length < 4) return undefined
   try {
-    const r = (await DetectAILanguage(providerId, modelId, text)) as any
-    const name = (Array.isArray(r) ? r[0] : r?.['0']) as string | undefined
-    const err = (Array.isArray(r) ? r[1] : r?.['1']) as string | undefined
-    if (err || !name) return undefined
+    // 返回的就是语言名字符串本身。以前按 r['0'] 解,拿到的是首字符
+    const name = (await DetectAILanguage(providerId, modelId, text)) as unknown as string
+    if (!name) return undefined
     return matchLangByName(name)
   } catch {
     return undefined

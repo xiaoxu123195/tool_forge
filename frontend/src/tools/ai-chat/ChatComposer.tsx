@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Send,
   Square,
@@ -11,6 +11,7 @@ import {
   Wrench,
   X,
 } from 'lucide-react'
+import { ListAIChatTools } from '../../../wailsjs/go/main/App'
 import { formatFileSize, imageSrc, MAX_FILES_PER_MESSAGE } from './file-parsers'
 import { Button } from '@/components/ui/button'
 import { ProviderAvatar } from './ProviderAvatar'
@@ -23,6 +24,7 @@ import {
   type ModelSpec,
   type Provider,
   type ReasoningEffort,
+  type ChatToolsView,
 } from './types'
 import { cn } from '@/lib/utils'
 
@@ -292,20 +294,10 @@ export function ChatComposer({
               )}
 
               {canUseTools && (
-                <button
-                  type="button"
-                  onClick={() => onSetOptions(currentEffort, webSearch, !toolsOn)}
-                  className={cn(
-                    'flex h-7 items-center gap-1 rounded-md px-2 text-xs transition-colors',
-                    toolsOn
-                      ? 'bg-info/10 text-info'
-                      : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
-                  )}
-                  title="允许模型调用本地工具(如查询当前时间);调用过程会显示在回复里"
-                >
-                  <Wrench className="h-3.5 w-3.5" />
-                  工具
-                </button>
+                <ToolsToggle
+                  on={toolsOn}
+                  onToggle={() => onSetOptions(currentEffort, webSearch, !toolsOn)}
+                />
               )}
             </div>
 
@@ -330,5 +322,108 @@ export function ChatComposer({
         </div>
       </div>
     </footer>
+  )
+}
+
+/**
+ * 「工具」开关 + 一个能看清背后有什么的浮层。
+ *
+ * 原来这就是个纯粹的黑盒:打开之后模型手里有哪些工具、哪台 MCP 服务器没连上
+ * 因而这一轮用不了,界面上一个字都没有。而没连上的服务器是**静默跳过**的
+ * (聊天路径只用已连好的连接,绝不现连),用户根本不知道自己少了东西。
+ *
+ * 清单是点开时才拉的 —— 常开的话每次渲染都要问一次后端,而这信息只有想看时才有用。
+ */
+function ToolsToggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [view, setView] = useState<ChatToolsView | null>(null)
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    void (async () => {
+      const v = (await ListAIChatTools().catch(() => null)) as unknown as ChatToolsView | null
+      setView(v ?? { tools: [] })
+    })()
+    const onDown = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  return (
+    <div ref={boxRef} className="relative">
+      <div
+        className={cn(
+          'flex h-7 items-center rounded-md text-xs transition-colors',
+          on ? 'bg-info/10 text-info' : 'text-muted-foreground hover:bg-secondary',
+        )}
+      >
+        <button
+          type="button"
+          onClick={onToggle}
+          className="flex h-7 items-center gap-1 rounded-l-md pl-2 pr-1 hover:text-foreground"
+          title="允许模型调用工具(内置 + MCP);调用过程会实时显示在回复里"
+        >
+          <Wrench className="h-3.5 w-3.5" />
+          工具
+        </button>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex h-7 items-center rounded-r-md pl-0.5 pr-1.5 hover:text-foreground"
+          title="看看这一轮会带哪些工具"
+        >
+          <ChevronDown className={cn('h-3 w-3 transition-transform', open && 'rotate-180')} />
+        </button>
+      </div>
+
+      {open && (
+        <div className="absolute bottom-9 left-0 z-20 max-h-72 w-[300px] overflow-auto rounded-lg border border-border bg-card p-2 shadow-lg">
+          {!view ? (
+            <div className="px-1 py-2 text-xs text-muted-foreground">读取中...</div>
+          ) : (
+            <>
+              <div className="px-1 pb-1.5 text-[11px] text-muted-foreground">
+                {on
+                  ? `本轮会声明 ${view.tools.length} 个工具给模型`
+                  : `开关关着,这 ${view.tools.length} 个工具不会带给模型`}
+              </div>
+              <ul className="space-y-0.5">
+                {view.tools.map((t) => (
+                  <li key={t.name} className="rounded px-1 py-1 hover:bg-secondary/50">
+                    <div className="flex items-center gap-1.5">
+                      <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
+                        {t.name}
+                      </span>
+                      <span className="shrink-0 rounded bg-secondary px-1 text-[10px] text-muted-foreground">
+                        {t.source || '内置'}
+                      </span>
+                    </div>
+                    {t.description && (
+                      <div className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-muted-foreground">
+                        {t.description}
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              {view.offline && view.offline.length > 0 && (
+                <div className="mt-1.5 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[10px] leading-snug text-amber-600 dark:text-amber-400">
+                  {view.offline.join('、')} 还没连上,这一轮不会带它们的工具。
+                  到「个人中心 → MCP 服务器」点重连,或稍等片刻再发。
+                </div>
+              )}
+              {view.tools.length === 0 && (
+                <div className="px-1 py-2 text-xs text-muted-foreground">
+                  没有可用工具。可以到「个人中心 → MCP 服务器」接入。
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
   )
 }

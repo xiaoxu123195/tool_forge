@@ -396,6 +396,16 @@ func (s *Service) Warm(ctx context.Context) {
 	}()
 }
 
+// EnabledServerNames 已启用的服务器名。上层拿它和 CachedTools 里出现过的名字对比,
+// 就能算出"启用了但这一轮用不上"的那些。
+func (s *Service) EnabledServerNames() []string {
+	out := []string{}
+	for _, srv := range s.enabledServers() {
+		out = append(out, srv.Name)
+	}
+	return out
+}
+
 func (s *Service) enabledServers() []Server {
 	s.mu.Lock()
 	defer s.mu.Unlock()

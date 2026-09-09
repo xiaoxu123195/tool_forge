@@ -444,9 +444,9 @@ function ModelCapabilityPanel({
   useEffect(() => {
     let alive = true
     void (async () => {
-      const r = (await GetAIModelSpec(providerId, modelId)) as any
+      const r = (await GetAIModelSpec(providerId, modelId).catch(() => null)) as unknown
       if (!alive) return
-      const got = (Array.isArray(r) ? r[0] : r?.['0']) as ModelSpec | null
+      const got = r as ModelSpec | null
       if (got?.id) {
         setSpec(got)
         setCaps(new Set(got.capabilities))
