@@ -312,6 +312,9 @@ func streamOpenAI(ctx context.Context, req chatRequest, useResponses bool, cb st
 			if u := parseOpenAIResponsesUsage(payload); u != nil {
 				cb.onUsage(*u)
 			}
+			if parseOpenAIResponsesLengthCapped(payload) {
+				cb.onTruncated()
+			}
 			images = append(images, parseOpenAIResponsesImages(payload)...)
 		} else {
 			text, thinking = parseOpenAIChatDelta(payload)
@@ -332,6 +335,9 @@ func streamOpenAI(ctx context.Context, req chatRequest, useResponses bool, cb st
 			}
 			if u := parseOpenAIChatUsage(payload); u != nil {
 				cb.onUsage(*u)
+			}
+			if parseOpenAIChatLengthCapped(payload) {
+				cb.onTruncated()
 			}
 			images = append(images, parseOpenAIChatImages(payload)...)
 			// 通用兜底:如果仍没解析出图,从 payload 里挖一遍可能的 base64/URL 字段
@@ -537,6 +543,52 @@ func parseOpenAIChatDelta(payload string) (text, thinking string) {
 		return d.Content, d.ReasoningContent + d.Reasoning
 	}
 	return "", ""
+}
+
+// parseOpenAIChatLengthCapped chat-completions 的 finish_reason == "length",
+// 即回复是被 max_tokens 掐掉的。"stop" / "tool_calls" 都是正常收尾。
+func parseOpenAIChatLengthCapped(payload string) bool {
+	var ev struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil || len(ev.Choices) == 0 {
+		return false
+	}
+	return ev.Choices[0].FinishReason == "length"
+}
+
+// parseOpenAIResponsesLengthCapped /v1/responses 说"没写完"的方式和 chat 完全不同:
+// 事件是 response.incomplete(有的中转仍发 response.completed),
+// 真正的依据在 response.status == "incomplete" 加上
+// response.incomplete_details.reason == "max_output_tokens"。
+//
+// 两个条件都认、任一成立即算数 —— 中转实现参差,有的只给 status,
+// 有的只给 incomplete_details。要求两个都齐等于对一半中转失效。
+func parseOpenAIResponsesLengthCapped(payload string) bool {
+	var ev struct {
+		Type     string `json:"type"`
+		Response struct {
+			Status            string `json:"status"`
+			IncompleteDetails struct {
+				Reason string `json:"reason"`
+			} `json:"incomplete_details"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+		return false
+	}
+	if !strings.HasPrefix(ev.Type, "response.") {
+		return false
+	}
+	if ev.Response.IncompleteDetails.Reason == "max_output_tokens" {
+		return true
+	}
+	// 光看 status=incomplete 是不够的:安全拦截、上游断开也是这个状态。
+	// 但 responses 的 incomplete 绝大多数就是撞上限,而"多给一个继续写按钮"
+	// 的代价远小于"该给的时候不给",所以这里从宽
+	return ev.Type == "response.incomplete" || ev.Response.Status == "incomplete"
 }
 
 // parseOpenAIChatUsage 从 chat-completions 最后一帧解析 usage

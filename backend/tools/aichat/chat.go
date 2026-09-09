@@ -35,8 +35,15 @@ type streamCallbacks struct {
 	// 拼完才知道完整形态);runStream 收齐后执行,再带着结果发下一轮
 	onToolCall func(ToolCall)
 	onUsage    func(Usage) // 各协议在拿到 usage 时(可能多次)调用,runStream 取最新非零值
-	onDone     func()
-	onError    func(error)
+	// onTruncated 供应商明确说了"这条是被 token 上限截断的"(而不是模型自己说完了)。
+	//
+	// 四家的说法各不相同:chat-completions 是 finish_reason=length,
+	// responses 是 status=incomplete + incomplete_details.reason=max_output_tokens,
+	// Anthropic 是 stop_reason=max_tokens,Gemini 是 finishReason=MAX_TOKENS。
+	// 统一成一个"发生了"的信号 —— 调用方只关心要不要给「继续写」,不关心谁怎么叫它。
+	onTruncated func()
+	onDone      func()
+	onError     func(error)
 }
 
 // withDefaults 把没设置的回调补成空实现。协议层可以无脑调用而不用逐个判空,
@@ -65,6 +72,9 @@ func (c streamCallbacks) withDefaults() streamCallbacks {
 	}
 	if c.onUsage == nil {
 		c.onUsage = func(Usage) {}
+	}
+	if c.onTruncated == nil {
+		c.onTruncated = func() {}
 	}
 	if c.onDone == nil {
 		c.onDone = func() {}
@@ -395,6 +405,9 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 	var accumSearches []SearchQuery
 	// roundCalls 本轮模型请求的工具调用;每轮开始前清空
 	var roundCalls []ToolCall
+	// lengthCapped 这一轮的回复是被 token 上限截断的。
+	// 每轮(以及换密钥重来时)清零 —— 只有最后一轮的结论才代表这条消息的最终状态
+	var lengthCapped bool
 	// accumToolCalls 整次提问里所有轮次的调用+结果,落盘用
 	var accumToolCalls []ToolCall
 	// finalThinking 落盘用的思考块。协议层能给出带 signature 的完整块时以它为准;
@@ -496,6 +509,7 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 				wailsruntime.EventsEmit(s.ctx, EventSearchPrefix+conv.ID, q)
 			}
 		},
+		onTruncated: func() { lengthCapped = true },
 		onUsage: func(u Usage) {
 			// 同一次请求 usage 可能多次到达(Anthropic message_start 给 input、
 			// message_delta 给 output);取每个字段的最新非零值即可
@@ -522,6 +536,9 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 				ToolCalls: accumToolCalls,
 				Usage:     accumUsage,
 				Duration:  time.Since(startTime),
+				// 模型自己写到上限停下的,流是正常结束的,但这条确实没写完 ——
+				// 同样该给「继续写」,否则用户只能重新生成、把已有的几千字扔掉
+				Truncated: lengthCapped,
 			})
 			writeUsage()
 			if s.ctx != nil {
@@ -590,6 +607,7 @@ func (s *Service) runStream(parent context.Context, prov Provider, conv Conversa
 		for {
 			roundCalls = nil
 			roundErr = nil
+			lengthCapped = false
 			mark := progressMark{
 				text: bText.Len(), think: bThink.Len(),
 				images: len(accumImages), citations: len(accumCitations),

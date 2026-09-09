@@ -110,6 +110,8 @@ type anthropicEvent struct {
 		Signature string `json:"signature"`
 		// PartialJSON tool_use 的参数分片
 		PartialJSON string `json:"partial_json"`
+		// StopReason 只在 message_delta 上有;max_tokens = 撞到上限被截断
+		StopReason string `json:"stop_reason"`
 		Citation  struct {
 			URL       string `json:"url"`
 			Title     string `json:"title"`
@@ -277,6 +279,12 @@ func streamAnthropic(ctx context.Context, req chatRequest, cb streamCallbacks) {
 							Snippet: ev.Delta.Citation.CitedText,
 						})
 					}
+				}
+			case "message_delta":
+				// max_tokens:模型还没说完就到上限了。其余(end_turn / tool_use /
+				// stop_sequence)都是正常收尾,不作截断处理
+				if ev.Delta.StopReason == "max_tokens" {
+					cb.onTruncated()
 				}
 			case "content_block_stop":
 				if block != nil && (block.kind == "thinking" || block.kind == "redacted_thinking") {

@@ -160,6 +160,9 @@ func streamGemini(ctx context.Context, req chatRequest, cb streamCallbacks) {
 		if u := parseGeminiUsage(payload); u != nil {
 			cb.onUsage(*u)
 		}
+		if parseGeminiLengthCapped(payload) {
+			cb.onTruncated()
+		}
 		for _, img := range parseGeminiImages(payload) {
 			cb.onImage(img)
 			probe.mark()
@@ -204,6 +207,21 @@ func geminiEmptyReason(blocked string) string {
 //
 //	usageMetadata 通常在最后一帧出现,字段:
 //	  promptTokenCount / candidatesTokenCount / thoughtsTokenCount / cachedContentTokenCount
+// parseGeminiLengthCapped candidates[0].finishReason == MAX_TOKENS,
+// 即回复是被输出上限掐掉的。其余取值(STOP / SAFETY / RECITATION)另有去处:
+// 拦截类的由 parseGeminiBlock 翻成错误文案,正常结束的什么都不用做。
+func parseGeminiLengthCapped(payload string) bool {
+	var ev struct {
+		Candidates []struct {
+			FinishReason string `json:"finishReason"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal([]byte(payload), &ev); err != nil || len(ev.Candidates) == 0 {
+		return false
+	}
+	return ev.Candidates[0].FinishReason == "MAX_TOKENS"
+}
+
 func parseGeminiUsage(payload string) *Usage {
 	var ev struct {
 		UsageMetadata *struct {
