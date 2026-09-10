@@ -137,8 +137,8 @@ func TestGetMissingSession(t *testing.T) {
 
 func TestConnectRejectsBadInput(t *testing.T) {
 	m := NewManager()
-	if _, err := m.Connect(ConnectOptions{Platform: "android"}); err == nil {
-		t.Error("目前只支持 ios,别的该明确拒绝")
+	if _, err := m.Connect(ConnectOptions{Platform: "symbian"}); err == nil {
+		t.Error("不认识的平台该明确拒绝")
 	}
 	if _, err := m.Connect(ConnectOptions{Platform: "ios"}); err == nil {
 		t.Error("没给密码该报错")

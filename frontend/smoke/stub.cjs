@@ -119,9 +119,14 @@ const special = {
   PickLocalFile: () => Promise.resolve('C:/tmp/sample'),
 
   // ---- 真机浏览 ----
-  ConnectDevice: () => Promise.resolve(fx.deviceSession),
+  ConnectDevice: (opt) =>
+    Promise.resolve(
+      opt && opt.platform === 'android' ? fx.deviceSessionAndroid : fx.deviceSession,
+    ),
   DisconnectDevice: () => Promise.resolve(),
-  ListDeviceDir: () => Promise.resolve(fx.deviceListing),
+  // 按会话 id 分平台:Android 那条会话回 /data/data,不然换了平台还看到 iOS 的目录
+  ListDeviceDir: (id) =>
+    Promise.resolve(id === 'dev-2' ? fx.deviceListingAndroid : fx.deviceListing),
   SearchDeviceFiles: () => Promise.resolve(fx.deviceSearch),
   PreviewDeviceFile: (_id, p) =>
     Promise.resolve(

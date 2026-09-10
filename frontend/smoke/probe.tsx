@@ -495,6 +495,26 @@ async function main() {
     }
   })
 
+  // 18) Android:换平台后连接面板要变(不要 SSH 密码、要 adb 路径),
+  // 连上之后 root 状态必须一眼看得到 —— 没 root 就看不到 /data,这是最关键的状态
+  await mount('真机浏览 · Android', <DeviceBrowser />, async () => {
+    await mustClick('断开') // 上一条用例留着 iOS 会话,先断掉回到连接面板
+    await mustClick('Android')
+    const panel = document.body.textContent || ''
+    if (panel.includes('SSH 密码')) throw new Error('Android 不该要 SSH 密码')
+    if (!panel.includes('adb 路径')) throw new Error('Android 该给 adb 路径的入口')
+    await mustClick('连接')
+    const txt = document.body.textContent || ''
+    // 面包屑是一段段渲染的,整条路径不会作为连续文本出现;断言列出来的内容
+    if (!txt.includes('com.tencent.mm')) throw new Error('没有列出 Android 起始目录的内容')
+    if (txt.includes('com.apple.springboard')) throw new Error('还在显示 iOS 那台的目录')
+    if (!txt.includes('root')) throw new Error('root 状态没显示')
+    if (!txt.includes('22041216C')) throw new Error('设备型号没显示')
+    // 常用位置要换成 Android 那套
+    if (!txt.includes('应用数据')) throw new Error('常用位置没换成 Android 的')
+    if (txt.includes('通讯录捐赠')) throw new Error('Android 下还在显示 iOS 的常用位置')
+  })
+
   console.log(failed ? '\n有异常' : '\n全部通过')
   process.exit(failed ? 1 : 0)
 }

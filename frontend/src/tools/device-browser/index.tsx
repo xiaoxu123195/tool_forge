@@ -27,7 +27,7 @@ import type { devicefs } from '../../../wailsjs/go/models'
 import { meta } from './meta'
 import { ConnectPanel } from './ConnectPanel'
 import { PreviewPane, fmtSize } from './PreviewPane'
-import { IOS_PATH_PRESETS } from '../mobile-forensic/ios-presets'
+import { presetsFor } from './presets'
 
 // 直接翻连着的手机,而不是"先导出再看"。
 // 现场是先翻、翻到有价值的再取 —— 反过来意味着你得先猜对要导哪个目录。
@@ -36,6 +36,9 @@ import { IOS_PATH_PRESETS } from '../mobile-forensic/ios-presets'
 
 export default function DeviceBrowser() {
   const sessionId = useDeviceBrowserStore((s) => s.sessionId)
+  const platform = useDeviceBrowserStore((s) => s.platform)
+  const adbPath = useDeviceBrowserStore((s) => s.adbPath)
+  const rooted = useDeviceBrowserStore((s) => s.rooted)
   const cwd = useDeviceBrowserStore((s) => s.cwd)
   const user = useDeviceBrowserStore((s) => s.user)
   const deviceId = useDeviceBrowserStore((s) => s.deviceId)
@@ -44,6 +47,8 @@ export default function DeviceBrowser() {
   const setCwd = useDeviceBrowserStore((s) => s.setCwd)
   const setUser = useDeviceBrowserStore((s) => s.setUser)
   const setDeviceId = useDeviceBrowserStore((s) => s.setDeviceId)
+  const setPlatform = useDeviceBrowserStore((s) => s.setPlatform)
+  const setAdbPath = useDeviceBrowserStore((s) => s.setAdbPath)
   const binaryPath = useForensicStore((s) => s.binaryPath)
 
   const [connecting, setConnecting] = useState(false)
@@ -59,6 +64,7 @@ export default function DeviceBrowser() {
   const [exporting, setExporting] = useState(false)
   const [exportedTo, setExportedTo] = useState('')
 
+  const [deviceLabel, setDeviceLabel] = useState('')
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<devicefs.SearchResult | null>(null)
   const [searching, setSearching] = useState(false)
@@ -92,14 +98,16 @@ export default function DeviceBrowser() {
     setConnectError('')
     try {
       const s = await ConnectDevice({
-        platform: 'ios',
+        platform,
         deviceId,
         user,
         password,
         binaryPath,
+        adbPath,
         remotePort: 0,
       } as devicefs.ConnectOptions)
-      setSession(s.id, s.startPath)
+      setSession(s.id, s.startPath, s.rooted)
+      setDeviceLabel([s.model, s.deviceId].filter(Boolean).join(' · '))
       setListing(null)
     } catch (e) {
       setConnectError(String(e))
@@ -169,12 +177,16 @@ export default function DeviceBrowser() {
     return (
       <ToolShell title={meta.title} description={meta.description}>
         <ConnectPanel
+          platform={platform}
           user={user}
           deviceId={deviceId}
+          adbPath={adbPath}
           busy={connecting}
           error={connectError}
+          onPlatformChange={setPlatform}
           onUserChange={setUser}
           onDeviceIdChange={setDeviceId}
+          onAdbPathChange={setAdbPath}
           onConnect={connect}
         />
       </ToolShell>
@@ -187,6 +199,26 @@ export default function DeviceBrowser() {
       description={meta.description}
       actions={
         <div className="flex items-center gap-1.5">
+          {/* 有没有 root 决定了看不看得到 /data —— 这是最需要一眼看到的状态 */}
+          <span className="mr-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <span className="rounded-sm bg-muted px-1.5 py-0.5 font-medium">
+              {platform === 'android' ? 'Android' : 'iOS'}
+            </span>
+            {platform === 'android' && (
+              <span
+                className={cn(
+                  'rounded-sm px-1.5 py-0.5 font-medium',
+                  rooted
+                    ? 'bg-emerald-200/60 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+                    : 'bg-amber-200/60 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                )}
+                title={rooted ? '可以读 /data 下面的应用数据' : '没有 root,只看得到 /sdcard'}
+              >
+                {rooted ? 'root' : '无 root'}
+              </span>
+            )}
+            {deviceLabel && <span className="max-w-[180px] truncate">{deviceLabel}</span>}
+          </span>
           <Button variant="ghost" size="sm" onClick={() => load(cwd)} disabled={listLoading}>
             <RefreshCw className={cn('h-3.5 w-3.5', listLoading && 'animate-spin')} />
             刷新
@@ -226,18 +258,16 @@ export default function DeviceBrowser() {
 
         {/* 常用位置:iOS 的路径又长又容易打错,让人每次手敲是这个功能没人用的主因 */}
         <div className="flex flex-wrap gap-1">
-          {IOS_PATH_PRESETS.flatMap((g) => g.items)
-            .slice(0, 8)
-            .map((p) => (
-              <button
-                key={p.path}
-                onClick={() => load(p.path)}
-                title={p.note ?? p.path}
-                className="rounded-sm bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              >
-                {p.label}
-              </button>
-            ))}
+          {presetsFor(platform, rooted).map((p) => (
+            <button
+              key={p.path}
+              onClick={() => load(p.path)}
+              title={p.note ?? p.path}
+              className="rounded-sm bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              {p.label}
+            </button>
+          ))}
         </div>
 
         {listError && (

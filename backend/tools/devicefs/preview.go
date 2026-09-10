@@ -54,10 +54,6 @@ type Preview struct {
 }
 
 const (
-	// previewPullLimit 预览最多从设备上拉多少字节。
-	// 8MB 足够覆盖 plist / MMKV / 配置类文件;再大的多半是数据库或媒体,
-	// 那种要看完整的应该走"导出"而不是预览
-	previewPullLimit = 8 << 20
 	// textPreviewLimit 文本最多显示多少字节
 	textPreviewLimit = 256 << 10
 	// imagePreviewLimit 超过这个大小就不内嵌成 data URI 了
@@ -73,16 +69,18 @@ func (m *Manager) Preview(sessionID, remote, cacheDir string) (*Preview, error) 
 		return nil, err
 	}
 	remote = cleanRemote(remote)
-	st, err := s.sftp.Stat(remote)
+	st, err := s.t.stat(remote)
 	if err != nil {
 		return nil, err
 	}
-	if st.IsDir() {
+	if st.IsDir {
 		return nil, fmt.Errorf("%s 是个目录", remote)
 	}
 
 	local := filepath.Join(cacheDir, safeLocalName(remote))
-	_, truncated, err := m.Pull(sessionID, remote, local, previewPullLimit)
+	// 上限由传输方式决定:SFTP 能跑满 USB,而 Android 那边预览走的是
+	// base64 文本通道,同样的上限会让人对着转圈等好几秒
+	_, truncated, err := m.Pull(sessionID, remote, local, s.t.previewLimit())
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +88,7 @@ func (m *Manager) Preview(sessionID, remote, cacheDir string) (*Preview, error) 
 	p := &Preview{
 		Path:      remote,
 		Name:      path.Base(remote),
-		Size:      st.Size(),
+		Size:      st.Size,
 		LocalPath: local,
 		Truncated: truncated,
 	}
@@ -165,7 +163,7 @@ func (p *Preview) parsePlist() {
 		// 截断的文件解不开是意料之中的:bplist 的偏移表在文件末尾,
 		// 只拉了开头就一定读不了。这句话得说出来,不然人会以为文件坏了
 		if p.Truncated {
-			p.Note = "只拉了开头 8MB,而二进制 plist 的偏移表在文件末尾 —— " +
+			p.Note = "只拉了开头一段,而二进制 plist 的偏移表在文件末尾 —— " +
 				"要看完整内容得先把整个文件导出来。" + err.Error()
 		} else {
 			p.Note = err.Error()
@@ -268,8 +266,7 @@ func unviewableHint(info *filehash.FileInfo) string {
 // looksLikeMMKV MMKV 文件没有魔数 —— 开头就是个长度字段,和随便什么二进制没区别。
 // 唯一可靠的旁证是它旁边有个同名的 .crc
 func (m *Manager) looksLikeMMKV(s *Session, remote string) bool {
-	_, err := s.sftp.Stat(remote + ".crc")
-	return err == nil
+	return s.t.exists(remote + ".crc")
 }
 
 func looksLikeXMLPlist(head []byte) bool {

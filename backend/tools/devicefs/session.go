@@ -2,56 +2,72 @@
 //
 // 为什么不是"浏览导出结果":先导出再看,意味着你得先猜对要导哪个目录。
 // 而取证现场恰恰是反过来的 —— 先翻,翻到有价值的再取。
-// go-forensic 只有 export,没有列目录的命令,所以这一层是自己实现的。
 //
-// iOS 这条路的形状:
+// 两个平台的路子完全不同,但上层要的东西一样,所以用 transport 抽一层:
 //
-//	go-forensic ios proxy   把设备的 22 端口经 USB 转到本机一个端口
-//	        ↓
-//	SSH(root/密码)         越狱设备上的 OpenSSH
-//	        ↓
-//	SFTP 子系统             列目录、读文件
+//	iOS      USB 转发设备的 22 端口 → SSH → SFTP
+//	Android  adb shell → su → 设备自带的 toybox
 //
-// 用 SFTP 而不是 exec "ls":文件名里出现空格、换行、引号在取证场景里是常态,
-// 靠解析 ls 的输出迟早会读错;SFTP 给的是带类型的结构,没有 shell 引用这回事。
+// 落到具体实现上的差别比看起来大:iOS 那边 SFTP 给的是带类型的结构化响应;
+// Android 那边只有一个 shell,所有信息都得从命令输出里解析出来。
 package devicefs
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"net"
-	"os/exec"
 	"sync"
-	"time"
-
-	"github.com/pkg/sftp"
-	"golang.org/x/crypto/ssh"
 )
 
-// Session 一个连上的设备。
+// transport 一台设备上的文件访问方式。
 //
-// proxy 是 go-forensic 起的转发进程,它必须活到会话结束 —— 它一死,
-// SSH 连接下面的管子就断了
+// 抽这一层不是为了好看:两个平台唯一的共同点就是这几个动作,
+// 别的全不一样。把差异按在这条线以下,上面的目录树、预览、搜索才能只写一份。
+type transport interface {
+	// list 列一个目录
+	list(dir string) (*Listing, error)
+	// stat 单个条目的信息
+	stat(p string) (*Entry, error)
+	// pull 把设备上的文件拉到本地;limit > 0 表示只要开头那么多字节。
+	// 返回实际字节数和是否被截断
+	pull(remote, local string, limit int64) (int64, bool, error)
+	// search 按文件名递归查找
+	search(root, pattern string, limit int) (*SearchResult, error)
+	// exists 判断一个路径在不在(MMKV 认 .crc 要用)
+	exists(p string) bool
+	// startPath 打开时落在哪个目录
+	startPath() string
+	// previewLimit 预览最多从设备上拉多少字节。
+	// 两个平台差一个数量级:SFTP 能跑满 USB,而 Android 那边预览走的是
+	// base64 文本通道(约 1.4 MB/s),同样的上限会让人对着转圈等好几秒
+	previewLimit() int64
+	close() error
+}
+
+// Session 一个连上的设备
 type Session struct {
 	ID       string `json:"id"`
 	Platform string `json:"platform"`
-	// DeviceID 设备 UDID;空表示用检测到的第一台
+	// DeviceID 设备标识:iOS 是 UDID,Android 是序列号
 	DeviceID string `json:"deviceId"`
-	// Addr 实际连上的本机地址,排查问题时有用
+	// Addr 连上去的地址,排查问题时有用。
+	// iOS 是本机转发端口,Android 是 adb 序列号
 	Addr string `json:"addr"`
 	// StartPath 建议的起始目录
 	StartPath string `json:"startPath"`
+	// Rooted Android 上 su 能不能用。用不了的话只看得到 /sdcard,
+	// 而有价值的数据全在 /data/data 下面 —— 这个必须让人一眼看到
+	Rooted bool `json:"rooted"`
+	// Model 设备型号,连了多台时用来确认连对了没有
+	Model string `json:"model,omitempty"`
 
-	proxy *exec.Cmd
-	ssh   *ssh.Client
-	sftp  *sftp.Client
+	t transport
 }
 
 // Manager 管着所有活着的会话。
 //
 // 前端拿到的是 session id,后续每次调用都带着它回来 —— 连接是有状态的
-// (一个转发进程 + 一条 SSH),不可能每次调用重建一遍
+// (iOS 下面挂着转发进程,Android 下面记着序列号和 root 状态),
+// 不可能每次调用重建一遍
 type Manager struct {
 	mu       sync.Mutex
 	sessions map[string]*Session
@@ -64,75 +80,46 @@ func NewManager() *Manager {
 
 // ConnectOptions 连接参数
 type ConnectOptions struct {
-	// Platform 目前只支持 ios
+	// Platform ios | android
 	Platform string `json:"platform"`
-	// DeviceID 设备 UDID;空 = 第一台
+	// DeviceID iOS 的 UDID 或 Android 的序列号;空 = 第一台
 	DeviceID string `json:"deviceId"`
-	// User SSH 用户名,越狱设备一般是 root
+	// User SSH 用户名,仅 iOS
 	User string `json:"user"`
-	// Password SSH 密码
+	// Password SSH 密码,仅 iOS
 	Password string `json:"password"`
-	// BinaryPath go-forensic 路径;空 = 走 PATH
+	// BinaryPath go-forensic 路径,仅 iOS(用它做 USB 端口转发);空 = 走 PATH
 	BinaryPath string `json:"binaryPath"`
-	// RemotePort 设备上的 SSH 端口,默认 22
+	// AdbPath adb 路径,仅 Android;空 = 走 PATH
+	AdbPath string `json:"adbPath"`
+	// RemotePort 设备上的 SSH 端口,仅 iOS,默认 22
 	RemotePort int `json:"remotePort"`
 }
 
-// sshTimeout 握手超时。设备没开 SSH 时会一直连不上,
-// 不设超时的话界面就是一直转圈,什么都不说
-const sshTimeout = 20 * time.Second
-
 // Connect 连上一台设备
 func (m *Manager) Connect(opt ConnectOptions) (*Session, error) {
-	if opt.Platform != "" && opt.Platform != "ios" {
-		return nil, fmt.Errorf("暂时只支持 ios,不支持 %q", opt.Platform)
+	var (
+		t   transport
+		s   *Session
+		err error
+	)
+	switch opt.Platform {
+	case "android":
+		t, s, err = connectAndroid(opt)
+	case "ios", "":
+		t, s, err = connectIOS(opt)
+	default:
+		return nil, fmt.Errorf("不认识的平台 %q,可选 ios / android", opt.Platform)
 	}
-	if opt.User == "" {
-		opt.User = "root"
-	}
-	if opt.Password == "" {
-		return nil, errors.New("需要 SSH 密码 —— 越狱设备默认是 alpine,改过就填改后的")
-	}
-	if opt.RemotePort == 0 {
-		opt.RemotePort = 22
-	}
-
-	// 端口让系统分配,不写死 2222:导出功能默认也用 2222,
-	// 两边同时开着的话后起的那个直接绑不上
-	port, err := freePort()
-	if err != nil {
-		return nil, err
-	}
-	proxy, err := startProxy(opt, port)
 	if err != nil {
 		return nil, err
 	}
 
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	client, err := dialSSH(addr, opt.User, opt.Password)
-	if err != nil {
-		stopProxy(proxy)
-		return nil, err
-	}
-	sf, err := sftp.NewClient(client)
-	if err != nil {
-		client.Close()
-		stopProxy(proxy)
-		return nil, fmt.Errorf("SFTP 子系统起不来(设备上的 sshd 可能没开 sftp): %w", err)
-	}
-
+	s.t = t
+	s.StartPath = t.startPath()
 	m.mu.Lock()
 	m.seq++
-	s := &Session{
-		ID:        fmt.Sprintf("dev-%d", m.seq),
-		Platform:  "ios",
-		DeviceID:  opt.DeviceID,
-		Addr:      addr,
-		StartPath: iosStartPath,
-		proxy:     proxy,
-		ssh:       client,
-		sftp:      sf,
-	}
+	s.ID = fmt.Sprintf("dev-%d", m.seq)
 	m.sessions[s.ID] = s
 	m.mu.Unlock()
 	return s, nil
@@ -149,20 +136,21 @@ func (m *Manager) get(id string) (*Session, error) {
 	return s, nil
 }
 
-// Disconnect 断开并清理。SFTP、SSH、转发进程一个都不能漏 ——
-// 转发进程漏了会一直占着 USB 通道,下次连接直接失败
+// Disconnect 断开并清理
 func (m *Manager) Disconnect(id string) error {
 	m.mu.Lock()
 	s, ok := m.sessions[id]
 	delete(m.sessions, id)
 	m.mu.Unlock()
 	if !ok {
-		return nil // already gone
+		return nil // 已经没了,重复点断开不该报错
 	}
-	return s.close()
+	return s.t.close()
 }
 
-// CloseAll 应用退出时调,把所有转发进程收干净
+// CloseAll 应用退出时调。
+// iOS 那边下面挂着 go-forensic 的转发进程,不收的话它会活过 app,
+// 一直占着设备的通道,下次连接直接失败
 func (m *Manager) CloseAll() {
 	m.mu.Lock()
 	all := make([]*Session, 0, len(m.sessions))
@@ -172,91 +160,8 @@ func (m *Manager) CloseAll() {
 	m.sessions = map[string]*Session{}
 	m.mu.Unlock()
 	for _, s := range all {
-		_ = s.close()
+		_ = s.t.close()
 	}
 }
 
-func (s *Session) close() error {
-	if s.sftp != nil {
-		_ = s.sftp.Close()
-	}
-	if s.ssh != nil {
-		_ = s.ssh.Close()
-	}
-	stopProxy(s.proxy)
-	return nil
-}
-
-// freePort 让系统分配一个空闲端口。
-//
-// 拿到之后立刻关掉再交给子进程去绑,中间有一段谁都能抢走的窗口。
-// 这是端口分配的老问题,没有干净解法;好在这里的竞争者只有本机的其他程序,
-// 撞上了表现是"连接失败"而不是连到别的东西上
-func freePort() (int, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, fmt.Errorf("找不到空闲端口: %w", err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-	return port, nil
-}
-
-func dialSSH(addr, user, password string) (*ssh.Client, error) {
-	cfg := &ssh.ClientConfig{
-		User: user,
-		Auth: []ssh.AuthMethod{
-			ssh.Password(password),
-			// 有些 sshd 只开 keyboard-interactive,不开 password。
-			// 两个都挂上,省得因为服务端配置差异连不上
-			ssh.KeyboardInteractive(func(_, _ string, qs []string, _ []bool) ([]string, error) {
-				answers := make([]string, len(qs))
-				for i := range answers {
-					answers[i] = password
-				}
-				return answers, nil
-			}),
-		},
-		// 设备的主机密钥不校验:连的是自己刚用 USB 转发起来的本机端口,
-		// 中间人要能插进来的话它早就在这台机器上了。校验反而会因为
-		// 每次换设备主机密钥都变而一直报错
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         sshTimeout,
-	}
-	conn, err := net.DialTimeout("tcp", addr, sshTimeout)
-	if err != nil {
-		return nil, fmt.Errorf("连不上转发端口 %s —— 设备可能没插好,或者 go-forensic 的代理没起来: %w", addr, err)
-	}
-	c, chans, reqs, err := ssh.NewClientConn(conn, addr, cfg)
-	if err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("SSH 认证失败(用户 %s):%w —— 检查密码,以及设备上装没装 OpenSSH", user, err)
-	}
-	return ssh.NewClient(c, chans, reqs), nil
-}
-
-// run 在设备上跑一条命令,分开拿 stdout / stderr。
-//
-// 超时不是可选项:find 扫全盘时可能几分钟不返回,而 SSH 会话本身没有超时 ——
-// 不设的话界面就永远转圈。超时后关掉会话把命令打断。
-func (s *Session) run(cmd string, timeout time.Duration) (stdout, stderr string, err error) {
-	sess, err := s.ssh.NewSession()
-	if err != nil {
-		return "", "", err
-	}
-	var outBuf, errBuf bytes.Buffer
-	sess.Stdout = &outBuf
-	sess.Stderr = &errBuf
-
-	done := make(chan error, 1)
-	go func() { done <- sess.Run(cmd) }()
-
-	select {
-	case err = <-done:
-	case <-time.After(timeout):
-		_ = sess.Close()
-		return outBuf.String(), errBuf.String(), fmt.Errorf("命令超过 %s 还没结束", timeout)
-	}
-	_ = sess.Close()
-	return outBuf.String(), errBuf.String(), err
-}
+var errNoPassword = errors.New("需要 SSH 密码 —— 越狱设备默认是 alpine,改过就填改后的")

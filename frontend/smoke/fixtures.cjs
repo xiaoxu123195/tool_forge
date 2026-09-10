@@ -416,6 +416,16 @@ const deviceSession = {
   startPath: '/private/var/mobile/Library',
 }
 
+const deviceSessionAndroid = {
+  id: 'dev-2',
+  platform: 'android',
+  deviceId: 'Y9U469XKRK6XNFGY',
+  addr: 'Y9U469XKRK6XNFGY',
+  startPath: '/data/data',
+  rooted: true,
+  model: '22041216C',
+}
+
 const deviceListing = {
   path: '/private/var/mobile/Library',
   parent: '/private/var/mobile',
@@ -455,6 +465,32 @@ const deviceListing = {
       modTime: 1780000000,
       mode: 'Lrwxrwxrwx',
       symlink: '/private/var/mobile/LegacyData',
+    },
+  ],
+}
+
+// Android 的目录长得完全不一样:一屏包名,没有软链那些 iOS 特色
+const deviceListingAndroid = {
+  path: '/data/data',
+  parent: '/data',
+  truncated: false,
+  total: 2,
+  entries: [
+    {
+      name: 'com.tencent.mm',
+      path: '/data/data/com.tencent.mm',
+      isDir: true,
+      size: 3452,
+      modTime: 1782812272,
+      mode: 'directory',
+    },
+    {
+      name: 'com.android.settings',
+      path: '/data/data/com.android.settings',
+      isDir: true,
+      size: 3452,
+      modTime: 1780000000,
+      mode: 'directory',
     },
   ],
 }
@@ -524,7 +560,9 @@ module.exports = {
   mmkvFile,
   plistResult,
   deviceSession,
+  deviceSessionAndroid,
   deviceListing,
+  deviceListingAndroid,
   devicePreviewPlist,
   devicePreviewEmptyMmkv,
   deviceSearch,
