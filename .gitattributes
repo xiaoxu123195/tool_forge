@@ -28,3 +28,8 @@
 *.ttf   binary
 *.otf   binary
 *.eot   binary
+
+# 内置 adb 的载荷。上面的 *.gz 已经覆盖到了，这里再点名一次是因为它特殊：
+# 里面是 8MB 的可执行文件，而本机 core.autocrlf=true —— 一旦哪天被当成文本，
+# 换行符转换会把 adb.exe 改坏，而且要等到用户那台机器上才看得出来
+backend/tools/adbx/bundled/platform-tools.tar.gz binary

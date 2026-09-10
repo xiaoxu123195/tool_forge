@@ -110,7 +110,12 @@ func BundledPath() string {
 func ResolveBinary(explicit string) (string, error) {
 	adb := strings.TrimSpace(explicit)
 	if adb == "" {
+		// 顺序是有讲究的:自带的排在 PATH 前面。
+		// Windows 的系统目录里常年躺着手机助手装的老 adb,真让 PATH 说了算,
+		// 结果就是设备列表一直空着、还不报错
 		if b := BundledPath(); b != "" {
+			adb = b
+		} else if b, err := EnsureBundled(); err == nil {
 			adb = b
 		} else {
 			adb = "adb"
