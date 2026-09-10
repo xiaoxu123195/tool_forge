@@ -5,6 +5,8 @@ import (
 	"os"
 	"path"
 	"strings"
+
+	"tool_forge/backend/tools/adbx"
 )
 
 // Entry 设备上的一个条目
@@ -151,13 +153,8 @@ func toSlash(p string) string {
 	return strings.ReplaceAll(p, "\\", "/")
 }
 
-// shellQuote 把一个值包成单引号字符串。
-//
-// 路径和模式都是用户输入的,直接拼进命令行等于把 shell 交给对方 ——
-// 一个 `; rm -rf /` 就能在别人的设备上执行。单引号里除了单引号本身
-// 什么都不特殊,所以只需要处理单引号:闭合、转义、再开。
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
+// shellQuote 把一个值包成单引号字符串,防止用户输入的路径把设备的 shell 接管过去。
+// 实现在 adbx 里,两个平台共用一份 —— 转义规则各写一遍迟早会有一处写漏
+func shellQuote(s string) string { return adbx.Quote(s) }
 
 var errNeedPattern = fmt.Errorf("要找什么?给个文件名或片段")

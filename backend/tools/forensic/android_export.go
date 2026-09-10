@@ -1,0 +1,422 @@
+package forensic
+
+import (
+	"archive/tar"
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"path"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"time"
+
+	"github.com/electricbubble/gadb"
+
+	"tool_forge/backend/tools/adbx"
+)
+
+// 安卓导出走 adb 协议本身,不再 fork adb 命令行。
+//
+// 打包这一步仍然在设备上做:要取的是一整个应用目录,几千个小文件一个个拉,
+// 每个都是一次协议往返,USB 上慢得没法用。先在设备内 tar 成一个,
+// 再一次性拉回来,快一到两个数量级。
+//
+// 代价是会在设备的 /sdcard 上留一个临时 tar,拉完就删 —— 这一点得说在明处,
+// 取证场景里"往被取证的设备写东西"不是可以随手做的事。
+
+const (
+	// stageDir 设备上放临时 tar 的位置。
+	// /sdcard 是 FUSE 挂载,不认 Unix 属主,shell 用户读得到 root 写的文件 ——
+	// 换成 /data/local/tmp 的话 root 打出来的包 shell 反而读不了
+	stageDir = "/sdcard"
+	// cmdTimeout 普通命令的上限
+	cmdTimeout = 60 * time.Second
+	// packTimeout 打包一个应用目录可能要好几分钟
+	packTimeout = 10 * time.Minute
+	// searchDepth 关键词模式下往下翻几层。
+	// 应用目录都在 /data/data/<包名> 或 /sdcard/Android/data/<包名> 这样的
+	// 第一层上,再深就是在扫应用内部的缓存,又慢又没用
+	searchDepth = 1
+)
+
+// androidRoots 关键词模式下扫哪些地方。
+//
+// 顺序是按"命中价值"排的:私有目录里的东西最完整,外部存储次之。
+// 没 root 时前两个进不去,会被自动跳过
+var androidRoots = []struct {
+	path     string
+	needRoot bool
+}{
+	{"/data/data", true},
+	{"/data/user/0", true},
+	{"/sdcard/Android/data", false},
+	{"/sdcard/Android/media", false},
+	{"/sdcard/Android/obb", false},
+}
+
+// androidExporter 一次安卓导出
+type androidExporter struct {
+	dev    gadb.Device
+	root   bool
+	output string
+	log    func(format string, a ...any)
+}
+
+// runAndroidExport 原生执行一次安卓导出。
+// log 每被调用一次,前端就多一行输出 —— 契约和以前从子进程 stdout 捞行时一样
+func runAndroidExport(ctx context.Context, opt exportOptions, log func(string, ...any)) error {
+	log("connecting...")
+	client, err := adbx.Dial(opt.adbPath)
+	if err != nil {
+		return err
+	}
+	dev, model, err := adbx.PickDevice(client, opt.deviceID)
+	if err != nil {
+		return err
+	}
+	e := &androidExporter{dev: dev, output: opt.output, log: log}
+	e.root = adbx.HasRoot(dev, cmdTimeout)
+	log("device %s (%s), root=%v", dev.Serial(), model, e.root)
+
+	if err := os.MkdirAll(e.output, 0o755); err != nil {
+		return err
+	}
+
+	targets := opt.paths
+	if len(targets) == 0 {
+		if len(opt.keywords) == 0 {
+			return fmt.Errorf("既没给路径也没给关键词,不知道要导什么")
+		}
+		if targets, err = e.findByKeywords(ctx, opt.keywords); err != nil {
+			return err
+		}
+		if len(targets) == 0 {
+			return fmt.Errorf("按关键词 %s 没有找到任何目录", strings.Join(opt.keywords, ", "))
+		}
+		log("matched %d path(s) by keywords", len(targets))
+	}
+
+	var failed int
+	for _, p := range targets {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err := e.exportOne(ctx, p); err != nil {
+			// 一条失败不该让整批停下:取证时常有几个目录读不了,
+			// 剩下的照样有价值
+			log("ERROR %s: %v", p, err)
+			failed++
+		}
+	}
+	if failed == len(targets) {
+		return fmt.Errorf("%d 个目标全部失败", failed)
+	}
+	log("export done, %d ok / %d failed", len(targets)-failed, failed)
+	return nil
+}
+
+// findByKeywords 按关键词找应用目录。
+//
+// 一条 find 解决,而不是逐层 ls 再递归 —— 后者每层都是一次协议往返,
+// 在几百个包名的目录上会慢到无法接受
+func (e *androidExporter) findByKeywords(ctx context.Context, keywords []string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	// 同一份数据只扫一次。现代安卓上 /data/data 就是 /data/user/0 的软链,
+	// 两个都扫会把整个应用目录打包、拉取、解包两遍 —— 微信那种量级白白多花两分多钟,
+	// 而且后一遍还会把前一遍解出来的覆盖掉
+	scanned := map[string]bool{}
+	for _, r := range androidRoots {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if r.needRoot && !e.root {
+			continue
+		}
+		real := e.realPath(r.path)
+		if scanned[real] {
+			e.log("skipping %s (和已扫过的 %s 是同一个位置)", r.path, real)
+			continue
+		}
+		scanned[real] = true
+		// 每个关键词一个 -iname,用 -o 连起来,一次 find 全找完
+		var conds []string
+		for _, k := range keywords {
+			conds = append(conds, "-iname "+adbx.Quote("*"+k+"*"))
+		}
+		script := fmt.Sprintf("find %s -maxdepth %d \\( %s \\) 2>/dev/null",
+			adbx.Quote(r.path), searchDepth, strings.Join(conds, " -o "))
+		e.log("searching %s", r.path)
+		res, err := adbx.Text(e.dev, script, e.root, cmdTimeout)
+		if err != nil {
+			e.log("ERROR search %s: %v", r.path, err)
+			continue
+		}
+		for _, line := range strings.Split(res, "\n") {
+			p := strings.TrimSpace(line)
+			// find 会把被搜的目录自己也算一条,得排掉
+			if p == "" || p == r.path || seen[p] {
+				continue
+			}
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// realPath 给一个路径算出"它到底是文件系统上的哪个位置",用来判断两个入口是不是同一份数据。
+//
+// 用设备号 + inode,不用 readlink:/data/data 和 /data/user/0 谁都不是软链,
+// 它们是指向同一处的 bind mount —— readlink -f 会老老实实各返回各的路径,
+// 分辨不出来。inode 才认得出(实测两边都是 107)。
+//
+// 取不到就退回原路径 —— 那样最多是少去一次重,不会漏扫
+func (e *androidExporter) realPath(p string) string {
+	out, err := adbx.Text(e.dev, "stat -c '%d:%i' "+adbx.Quote(p)+" 2>/dev/null", e.root, cmdTimeout)
+	if err != nil {
+		return p
+	}
+	if s := strings.TrimSpace(out); s != "" && s != ":" {
+		return s
+	}
+	return p
+}
+
+// exportOne 导出一个目录或文件:设备内打包 → 拉回来 → 解包 → 删掉设备上那份
+func (e *androidExporter) exportOne(ctx context.Context, remote string) error {
+	name := path.Base(strings.TrimSuffix(remote, "/"))
+	if name == "" || name == "." || name == "/" {
+		name = "root"
+	}
+	stage := fmt.Sprintf("%s/.toolforge-%s-%d.tar", stageDir, sanitize(name), time.Now().UnixNano())
+	localTar := filepath.Join(e.output, sanitize(name)+".tar")
+
+	e.log("packing %s", remote)
+	// -C 到父目录再打包,包里就是相对路径;不然解出来会多出一长串目录层级
+	parent := path.Dir(strings.TrimSuffix(remote, "/"))
+	script := fmt.Sprintf("tar -cf %s -C %s %s && chmod 666 %s",
+		adbx.Quote(stage), adbx.Quote(parent), adbx.Quote(name), adbx.Quote(stage))
+	if _, err := adbx.Text(e.dev, script, e.root, packTimeout); err != nil {
+		return fmt.Errorf("在设备上打包失败%s: %w", e.rootHint(), err)
+	}
+	// 无论后面成不成,设备上那份临时包都要删掉
+	defer func() {
+		if _, err := adbx.Text(e.dev, "rm -f "+adbx.Quote(stage), e.root, cmdTimeout); err != nil {
+			e.log("WARN 设备上的临时包没删掉 %s: %v", stage, err)
+		}
+	}()
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	e.log("pulling %s", stage)
+	f, err := os.Create(localTar)
+	if err != nil {
+		return err
+	}
+	if err := e.dev.Pull(stage, f); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("拉取失败: %w", err)
+	}
+	_ = f.Close()
+
+	e.log("extracting %s", filepath.Base(localTar))
+	res, err := untar(localTar, e.output)
+	if err != nil {
+		return fmt.Errorf("解包失败: %w", err)
+	}
+	e.log("extracted %d file(s)", res.files)
+	// 改过名的必须说出来。取证里文件名本身就是证据的一部分,
+	// 悄悄换掉几百个名字而不吭声,是在给后面的人埋雷
+	if res.renamed > 0 {
+		e.log("WARN %d 个名字在本地文件系统上非法,已替换其中的字符;例如 %s",
+			res.renamed, strings.Join(res.samples, " / "))
+	}
+	if res.skipped > 0 {
+		e.log("WARN 跳过 %d 个成员(软链、设备节点之类)", res.skipped)
+	}
+	// 解完就不留 tar 了,不然输出目录里每个应用都多一份重复的压缩包
+	if err := os.Remove(localTar); err != nil {
+		e.log("WARN 本地临时包没删掉 %s: %v", localTar, err)
+	}
+	return nil
+}
+
+func (e *androidExporter) rootHint() string {
+	if e.root {
+		return ""
+	}
+	return "(当前没有 root,/data 下面读不了)"
+}
+
+// sanitize 把设备上的名字压成能当本地文件名的东西
+func sanitize(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|':
+			b.WriteByte('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// untarResult 一次解包的统计
+type untarResult struct {
+	files   int
+	renamed int
+	skipped int
+	// samples 前几条改名记录,写进日志给人看
+	samples []string
+}
+
+// maxRenameSamples 日志里最多举几个改名的例子。
+// 微信那种目录一改就是几百个,全打出来只会把日志淹掉
+const maxRenameSamples = 3
+
+// untar 解开一个 tar 到 dest。
+//
+// 两件事必须做,都是被真实数据逼出来的:
+//
+//  1. 逐条校验路径落在 dest 里面。tar 包里可以写 ../../ 这样的成员名,
+//     不拦的话解包会把文件写到目标目录之外。这个包是从被取证的设备上拿来的,
+//     内容不可信,这道检查不能省。
+//
+//  2. 安卓上合法的名字在 Windows 上未必合法。微信就有个目录叫
+//     com.tencent.mm:appbrand0 —— 冒号在 Windows 上是非法字符,
+//     mkdir 直接失败,而原来的写法会让整包解包中断,前面拉下来的全丢。
+//     现在改成替换非法字符并计数上报:数据留住,改动如实说出来。
+func untar(tarPath, dest string) (untarResult, error) {
+	var res untarResult
+	f, err := os.Open(tarPath)
+	if err != nil {
+		return res, err
+	}
+	defer f.Close()
+
+	absDest, err := filepath.Abs(dest)
+	if err != nil {
+		return res, err
+	}
+	tr := tar.NewReader(f)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return res, nil
+		}
+		if err != nil {
+			return res, err
+		}
+
+		cleaned, renamed := localSafePath(hdr.Name)
+		target := filepath.Join(absDest, filepath.FromSlash(cleaned))
+		absTarget, err := filepath.Abs(target)
+		if err != nil {
+			return res, err
+		}
+		if !strings.HasPrefix(absTarget, absDest+string(os.PathSeparator)) && absTarget != absDest {
+			return res, fmt.Errorf("包里有指向目标目录之外的成员: %s", hdr.Name)
+		}
+		if renamed {
+			res.renamed++
+			if len(res.samples) < maxRenameSamples {
+				res.samples = append(res.samples, hdr.Name+" → "+cleaned)
+			}
+		}
+
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(absTarget, 0o755); err != nil {
+				return res, err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(absTarget), 0o755); err != nil {
+				return res, err
+			}
+			out, err := os.Create(absTarget)
+			if err != nil {
+				return res, err
+			}
+			// tar 是流式读的,再大的成员也不会整个进内存
+			if _, err := io.Copy(out, tr); err != nil {
+				_ = out.Close()
+				return res, err
+			}
+			if err := out.Close(); err != nil {
+				return res, err
+			}
+			res.files++
+		default:
+			// 软链、设备节点之类跳过:落到本地文件系统上没有意义,
+			// 而软链还可能指到目标目录之外
+			res.skipped++
+		}
+	}
+}
+
+// windowsIllegal Windows 文件名里不能出现的字符。
+// 安卓那边这些全是合法的 —— 冒号尤其常见,应用的多进程目录就叫 <包名>:<进程名>
+const windowsIllegal = `<>:"|?*`
+
+// windowsReserved Windows 上不能当文件名的保留字(不分大小写,带扩展名也不行)
+var windowsReserved = map[string]bool{
+	"con": true, "prn": true, "aux": true, "nul": true,
+	"com1": true, "com2": true, "com3": true, "com4": true, "com5": true,
+	"com6": true, "com7": true, "com8": true, "com9": true,
+	"lpt1": true, "lpt2": true, "lpt3": true, "lpt4": true, "lpt5": true,
+	"lpt6": true, "lpt7": true, "lpt8": true, "lpt9": true,
+}
+
+// localSafePath 把 tar 里的成员名改成本地文件系统能接受的。
+//
+// 只在 Windows 上真的改。Linux / macOS 上冒号之类都是合法的,
+// 在那儿改名反而是把原始证据改坏了。
+func localSafePath(name string) (string, bool) {
+	if runtime.GOOS != "windows" {
+		return name, false
+	}
+	parts := strings.Split(name, "/")
+	changed := false
+	for i, seg := range parts {
+		fixed := safeSegment(seg)
+		if fixed != seg {
+			changed = true
+			parts[i] = fixed
+		}
+	}
+	return strings.Join(parts, "/"), changed
+}
+
+func safeSegment(seg string) string {
+	if seg == "" || seg == "." || seg == ".." {
+		return seg
+	}
+	var b strings.Builder
+	for _, r := range seg {
+		if r < 0x20 || strings.ContainsRune(windowsIllegal, r) {
+			b.WriteByte('_')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	out := b.String()
+	// 结尾的点和空格 Windows 会自己吞掉,留着会造成两个不同的名字撞在一起
+	out = strings.TrimRight(out, ". ")
+	if out == "" {
+		return "_"
+	}
+	// 保留字要加个后缀躲开;带扩展名的也算(con.txt 同样开不了)
+	base := strings.ToLower(out)
+	if i := strings.IndexByte(base, '.'); i >= 0 {
+		base = base[:i]
+	}
+	if windowsReserved[base] {
+		out += "_"
+	}
+	return out
+}

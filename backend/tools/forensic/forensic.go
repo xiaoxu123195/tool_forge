@@ -202,7 +202,11 @@ func (s *Service) Check(customPath string) Info {
 	}
 }
 
-// Run 启动一个取证任务，返回 jobID；后续通过事件推送输出
+// Run 启动一个取证任务，返回 jobID；后续通过事件推送输出。
+//
+// 安卓的 export 走原生实现(adb 协议),其余仍然调命令行。
+// 两条路对外是一样的:同一个 jobID、同一串 forensic:log / forensic:done 事件、
+// 同一个 Cancel —— 界面和 MCP 那头都感觉不到区别。
 func (s *Service) Run(args []string) (string, error) {
 	if s.ctx == nil {
 		return "", errors.New("取证服务还没初始化(缺少上下文)")
@@ -211,6 +215,72 @@ func (s *Service) Run(args []string) (string, error) {
 		return "", errors.New("空参数")
 	}
 
+	if opt, ok := parseExportArgs(args); nativeSupported(opt, ok) {
+		return s.runNative(opt)
+	}
+	return s.runCLI(args)
+}
+
+// runNative 用原生实现跑,不 fork 任何进程
+func (s *Service) runNative(opt exportOptions) (string, error) {
+	jobID := newJobID()
+	runCtx, cancel := context.WithCancel(s.ctx)
+
+	s.mu.Lock()
+	s.jobs[jobID] = &job{cancel: cancel}
+	s.mu.Unlock()
+
+	logf := func(format string, a ...any) {
+		line := fmt.Sprintf(format, a...)
+		stream := "stdout"
+		// 沿用命令行那套约定:错误走 stderr,界面据此标红
+		if strings.HasPrefix(line, "ERROR") || strings.HasPrefix(line, "WARN") {
+			stream = "stderr"
+		}
+		s.pushLine(jobID, stream, line)
+	}
+
+	go func() {
+		logf("%s", opt.describe())
+		err := runAndroidExport(runCtx, opt, logf)
+
+		s.mu.Lock()
+		j := s.jobs[jobID]
+		delete(s.jobs, jobID)
+		s.mu.Unlock()
+		if j != nil {
+			j.cancel()
+		}
+
+		done := DoneEvent{JobID: jobID}
+		switch {
+		case errors.Is(runCtx.Err(), context.Canceled):
+			done.Canceled = true
+			done.ExitCode = -1
+		case err != nil:
+			done.ExitCode = 1
+			done.Error = err.Error()
+			s.pushLine(jobID, "stderr", err.Error())
+		default:
+			done.ExitCode = 0
+		}
+		s.emitWails(EventDone, done)
+		s.emitToSubscribers(jobID, EventEnvelope{Type: "done", Done: &done})
+		s.closeSubscribers(jobID)
+	}()
+
+	return jobID, nil
+}
+
+// pushLine 把一行输出同时推给桌面页和订阅者(本地 API / MCP)
+func (s *Service) pushLine(jobID, stream, line string) {
+	l := LogLine{JobID: jobID, Stream: stream, Line: line}
+	s.emitWails(EventLog, l)
+	s.emitToSubscribers(jobID, EventEnvelope{Type: "log", Log: &l})
+}
+
+// runCLI 老路:fork go-forensic
+func (s *Service) runCLI(args []string) (string, error) {
 	bin := s.resolveBinary()
 	if _, err := exec.LookPath(bin); err != nil {
 		return "", fmt.Errorf("找不到 go-forensic，请在 Profile → 外部工具 中配置路径")
