@@ -9,5 +9,6 @@ export const meta: ToolMeta = {
   icon: KeyRound,
   category: 'crypto',
   order: 10,
-  defaultVisible: true,
+  // 默认关闭:一次性解码,问 AI 更快。想用就在首页「管理」里打开
+  defaultVisible: false,
 }

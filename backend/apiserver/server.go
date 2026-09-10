@@ -145,6 +145,8 @@ func (s *Server) startLocked() error {
 	mux.HandleFunc("/api/v1/healthz", s.handleHealth)
 	mux.HandleFunc("/api/v1/tools", s.handleListTools)
 	mux.HandleFunc("/api/v1/tools/", s.handleToolCall) // 注意尾斜杠 = 前缀路由
+	// MCP 端点:同一批工具、同一套鉴权,换 JSON-RPC 说一遍(见 mcp.go)
+	mux.HandleFunc(mcpPath, s.handleMCP)
 
 	httpSrv := &http.Server{
 		Handler:      s.withMiddleware(mux),

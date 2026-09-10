@@ -9,5 +9,6 @@ export const meta: ToolMeta = {
   icon: Fingerprint,
   category: 'gen',
   order: 10,
-  defaultVisible: true,
+  // 默认关闭:一行命令 / 一句话就能生成。想用就在首页「管理」里打开
+  defaultVisible: false,
 }

@@ -9,5 +9,6 @@ export const meta: ToolMeta = {
   icon: Clock4,
   category: 'time',
   order: 13,
-  defaultVisible: true,
+  // 默认关闭:解释 cron 表达式 AI 讲得更清楚。想用就在首页「管理」里打开
+  defaultVisible: false,
 }

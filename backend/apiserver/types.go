@@ -42,6 +42,19 @@ type StreamHandler interface {
 	HandleStream(ctx context.Context, body []byte, emit func(ev StreamEvent) error) error
 }
 
+// SchemaProvider 可选接口:提供入参的 JSON Schema。
+//
+// 做成可选而不是塞进 ToolHandler,是为了不惊动已有实现 —— 没实现的照旧能跑,
+// MCP 那边给一个"任意对象"的宽松 schema 兜着。
+//
+// 但新工具最好都实现它:agent 是照着 schema 决定传什么的,
+// 只给一句 description 等于让它猜,猜错了就是一次白跑。
+type SchemaProvider interface {
+	// InputSchema 返回一个 JSON Schema 对象(type 通常是 "object");
+	// 返回 nil 视为没有提供
+	InputSchema() map[string]any
+}
+
 // StreamEvent 一个 SSE 事件载荷
 type StreamEvent struct {
 	// Type 事件类型,如 "log" / "progress" / "done" / "error",由 handler 自定义

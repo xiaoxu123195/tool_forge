@@ -77,7 +77,7 @@ export function LocalAPISection() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [showToken, setShowToken] = useState(false)
-  const [copied, setCopied] = useState<'token' | ''>('')
+  const [copied, setCopied] = useState<'token' | 'mcp' | ''>('')
   const [error, setError] = useState('')
   const [dialogTool, setDialogTool] = useState<ToolInfo | null>(null)
 
@@ -156,7 +156,7 @@ export function LocalAPISection() {
     void save(next)
   }
 
-  const copyText = async (text: string, key: 'token') => {
+  const copyText = async (text: string, key: 'token' | 'mcp') => {
     await navigator.clipboard.writeText(text)
     setCopied(key)
     setTimeout(() => setCopied(''), 1500)
@@ -293,6 +293,43 @@ export function LocalAPISection() {
             </Button>
           </div>
         </div>
+      </Card>
+
+      {/* MCP 端点 —— 让 Claude Code / Codex 直接调这些工具 */}
+      <Card
+        title="MCP 端点"
+        description="把下面这段配进 Claude Code 或 Codex,勾选的工具就能被它们直接调用。开了 Token 鉴权的话配置里要带上 Authorization 头。"
+      >
+        <pre className="overflow-x-auto rounded-md border border-border bg-background p-3 font-mono text-[11px] leading-relaxed">
+          {mcpConfigSnippet(cfg)}
+        </pre>
+        <div className="mt-2 flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => copyText(mcpConfigSnippet(cfg), 'mcp')}
+          >
+            {copied === 'mcp' ? (
+              <>
+                <Check className="h-3.5 w-3.5" />
+                已复制
+              </>
+            ) : (
+              <>
+                <Copy className="h-3.5 w-3.5" />
+                复制配置
+              </>
+            )}
+          </Button>
+          <span className="font-mono text-[11px] text-muted-foreground">
+            http://127.0.0.1:{cfg.port}/mcp
+          </span>
+        </div>
+        {!cfg.enabled && (
+          <p className="mt-2 text-[11px] text-amber-600 dark:text-amber-400">
+            本地 API 服务还没启用,上面的地址现在连不上 —— 先把最上面那个开关打开。
+          </p>
+        )}
       </Card>
 
       {/* 工具列表 */}
@@ -481,4 +518,22 @@ function PortRow({
       <span className="text-xs text-muted-foreground">监听 127.0.0.1:{value}</span>
     </div>
   )
+}
+
+/**
+ * 生成一段能直接粘进 Claude Code / Codex 的 MCP 配置。
+ *
+ * 给的是 http 传输而不是 stdio:这个应用本来就常驻,stdio 还要再包一层启动器。
+ * 开了鉴权就把 Authorization 头一起写进去 —— 少了它客户端会连上但一个工具都列不出来,
+ * 而那种"连上了却是空的"最难猜是哪儿不对。
+ */
+function mcpConfigSnippet(cfg: APIConfig): string {
+  const server: Record<string, unknown> = {
+    type: 'http',
+    url: `http://127.0.0.1:${cfg.port}/mcp`,
+  }
+  if (cfg.auth_enabled && cfg.token) {
+    server.headers = { Authorization: `Bearer ${cfg.token}` }
+  }
+  return JSON.stringify({ mcpServers: { 'tool-forge': server } }, null, 2)
 }

@@ -59,3 +59,40 @@ func needsQimaiPhpSessIDLocal(sources []SourceID) bool {
 	}
 	return false
 }
+
+// InputSchema 给 MCP 用的入参描述。
+//
+// agent 是照着这个决定传什么的,所以每个字段的说明要写成"给不认识这个工具的人看"
+// 的样子 —— 光写字段名等于让它猜,猜错就是一次白跑。
+func (h *Handler) InputSchema() map[string]any {
+	return map[string]any{
+		"type":     "object",
+		"required": []string{"keyword"},
+		"properties": map[string]any{
+			"keyword": map[string]any{
+				"type":        "string",
+				"description": "要搜的应用名或关键词,如「微信」「WhatsApp」",
+			},
+			"sources": map[string]any{
+				"type":        "array",
+				"description": "指定搜索源;留空则用默认组合。itunes/qimai_ios 查 iOS,qimai_android/yingyongbao/googleplay 查 Android",
+				"items": map[string]any{
+					"type": "string",
+					"enum": []string{"itunes", "qimai_ios", "qimai_android", "yingyongbao", "googleplay"},
+				},
+			},
+			"country": map[string]any{
+				"type":        "string",
+				"description": "iOS 国家码,如 cn / us / jp / gb;只对 iOS 源有效",
+			},
+			"market": map[string]any{
+				"type":        "integer",
+				"description": "Android 厂商市场 ID(仅七麦用):华为=6 应用宝=3 小米=4 OPPO=9 VIVO=8 魅族=7 百度=2 360=1 豌豆荚=5 GooglePlay=10 鸿蒙=11",
+			},
+			"limit_per_source": map[string]any{
+				"type":        "integer",
+				"description": "每个源最多返回几条,默认 5,上限 50",
+			},
+		},
+	}
+}

@@ -9,5 +9,6 @@ export const meta: ToolMeta = {
   icon: Braces,
   category: 'data',
   order: 10,
-  defaultVisible: true,
+  // 默认关闭:一次性生成,AI 还能顺带把字段名改合适。想用就在首页「管理」里打开
+  defaultVisible: false,
 }

@@ -9,5 +9,6 @@ export const meta: ToolMeta = {
   icon: GitCompare,
   category: 'text',
   order: 10,
-  defaultVisible: true,
+  // 默认关闭:在编辑器 / Claude Code 里对比更顺手。想用就在首页「管理」里打开
+  defaultVisible: false,
 }

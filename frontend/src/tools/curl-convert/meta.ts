@@ -9,5 +9,6 @@ export const meta: ToolMeta = {
   icon: TerminalSquare,
   category: 'network',
   order: 10,
-  defaultVisible: true,
+  // 默认关闭:一次性转换,AI 还能顺带适配你的项目风格。想用就在首页「管理」里打开
+  defaultVisible: false,
 }

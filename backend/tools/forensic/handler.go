@@ -113,3 +113,25 @@ func (h *StreamHandler) HandleStream(
 		}
 	}
 }
+
+// InputSchema 给 MCP 用的入参描述。
+//
+// 这个工具本质是"代跑一条 go-forensic 命令",所以 schema 能给的最有用的东西
+// 不是字段类型,而是几条真实可用的命令样例 —— agent 照着改比凭空拼靠谱得多。
+func (h *StreamHandler) InputSchema() map[string]any {
+	return map[string]any{
+		"type":     "object",
+		"required": []string{"args"},
+		"properties": map[string]any{
+			"args": map[string]any{
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"description": "go-forensic 的完整 CLI 参数,一个参数一个元素(不要把整条命令塞成一个字符串)",
+				"examples": []any{
+					[]string{"android", "export", "-k", "wechat", "-o", "/tmp/out"},
+					[]string{"ios", "export", "-s", "/private/var/mobile/Library/Mail/", "-o", "/tmp/out"},
+				},
+			},
+		},
+	}
+}
