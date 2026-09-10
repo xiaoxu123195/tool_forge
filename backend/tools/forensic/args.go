@@ -25,31 +25,44 @@ const (
 	engineCLI engine = "cli"
 )
 
-// engineFlagPrefix 选引擎用的伪 flag。
+// 我们自己加的几个伪 flag。
 //
-// 走 flag 而不是给 RunForensic 加一个参数:入口签名一动,Wails 绑定、
-// MCP 的入参 schema、已经照着它写的 agent 全要跟着改。
-// 它不是 go-forensic 认识的参数,回落到命令行之前必须摘掉
-const engineFlagPrefix = "--engine="
+// 走 flag 而不是给 RunForensic 加参数:入口签名一动,Wails 绑定、MCP 的入参
+// schema、已经照着它写的 agent 全要跟着改。它们都不是 go-forensic 认识的参数,
+// 回落到命令行之前必须摘干净
+const (
+	engineFlagPrefix = "--engine="
+	clearFlag        = "--clear"
+)
 
-// splitEngine 把 --engine=xxx 从参数里摘出来,返回剩下的参数和选中的引擎。
-// 值不认识就当没写过(回到 auto)—— 比直接报错宽容,行为也还是安全的
-func splitEngine(args []string) ([]string, engine) {
-	eng := engineAuto
+// ownFlags 从参数里摘出来的、只属于我们自己的选项
+type ownFlags struct {
+	engine engine
+	// clear 导出前清空输出目录
+	clear bool
+}
+
+// splitOwnFlags 把我们自己的伪 flag 摘出来,返回剩下的参数。
+// --engine 的值不认识就当没写过(回到 auto)—— 比直接报错宽容,行为也还是安全的
+func splitOwnFlags(args []string) ([]string, ownFlags) {
+	var own ownFlags
 	out := make([]string, 0, len(args))
 	for _, a := range args {
-		if !strings.HasPrefix(a, engineFlagPrefix) {
+		switch {
+		case a == clearFlag:
+			own.clear = true
+		case strings.HasPrefix(a, engineFlagPrefix):
+			switch engine(strings.TrimPrefix(a, engineFlagPrefix)) {
+			case engineBuiltin:
+				own.engine = engineBuiltin
+			case engineCLI:
+				own.engine = engineCLI
+			}
+		default:
 			out = append(out, a)
-			continue
-		}
-		switch engine(strings.TrimPrefix(a, engineFlagPrefix)) {
-		case engineBuiltin:
-			eng = engineBuiltin
-		case engineCLI:
-			eng = engineCLI
 		}
 	}
-	return out, eng
+	return out, own
 }
 
 // exportOptions 一次导出要的东西
@@ -61,6 +74,8 @@ type exportOptions struct {
 	deviceID string
 	// adbPath 仅 Android;空 = 自己找
 	adbPath string
+	// clear 导出前清空输出目录
+	clear bool
 }
 
 // nativeSupported 这套参数能不能用原生实现跑。

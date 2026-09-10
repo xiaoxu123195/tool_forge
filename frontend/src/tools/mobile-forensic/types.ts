@@ -28,6 +28,8 @@ export interface FormState {
   engine: Engine
   keywords: string
   outputDir: string
+  /** 导出前清空输出目录。默认关 —— 这是删东西,而且删完没法撤 */
+  clearOutput: boolean
   specifyPaths: string
   // iOS only
   sshAddr: string
@@ -43,6 +45,7 @@ export function defaultFormState(): FormState {
     engine: 'builtin',
     keywords: '',
     outputDir: '',
+    clearOutput: false,
     specifyPaths: '',
     sshAddr: 'root@127.0.0.1:22',
     sshPassword: '',
@@ -80,6 +83,10 @@ export function buildArgs(form: FormState): string[] {
   // 和后端的默认行为一致 —— 参数里少一样东西,MCP 那头照着抄也简单些
   if (needsCLI(form.platform, form.engine)) {
     args.push('--engine=cli')
+  }
+  // go-forensic 自己总是先清空,不需要也不认识这个 flag
+  if (form.clearOutput && !needsCLI(form.platform, form.engine)) {
+    args.push('--clear')
   }
   // -k 和 -s 在 go-forensic 里都是 pflag 的 strings 类型。把整串逗号文本当**一个**
   // 参数传过去的话,pflag 会自己按 CSV 规则切 —— 而人自然会敲"A, B"(逗号后带空格),
@@ -143,6 +150,9 @@ function previewBuiltin(form: FormState): string {
   if (keywords.length > 0) {
     parts.push(`按关键词搜 ${keywords.join('、')}`)
   }
-  parts.push(`导出到 ${form.outputDir.trim() || '（还没选输出目录）'}，按设备上的原路径存放`)
+  parts.push(
+    `导出到 ${form.outputDir.trim() || '（还没选输出目录）'}，按设备上的原路径存放` +
+      (form.clearOutput ? '（先清空该目录）' : ''),
+  )
   return parts.join('\n')
 }

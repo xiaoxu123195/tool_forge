@@ -218,14 +218,16 @@ func (s *Service) Run(args []string) (string, error) {
 		return "", errors.New("空参数")
 	}
 
-	args, eng := splitEngine(args)
-	if eng == engineCLI {
+	args, own := splitOwnFlags(args)
+	if own.engine == engineCLI {
+		// go-forensic 自己就会先清空输出目录,--clear 对它是多余的,摘掉即可
 		return s.runCLI(args)
 	}
 	if opt, ok := parseExportArgs(args); nativeSupported(opt, ok) {
+		opt.clear = own.clear
 		return s.runNative(opt)
 	}
-	if eng == engineBuiltin {
+	if own.engine == engineBuiltin {
 		// 明确点了内置却跑不了,就得说清楚。悄悄换成 go-forensic 是在骗人:
 		// 那是另一个程序、另一套行为,用户未必装了,装了也未必想用
 		return "", errors.New("这条命令还没有内置实现(目前只有 Android 的 export),请改用 go-forensic 引擎")

@@ -113,40 +113,56 @@ func TestJobReportsFailure(t *testing.T) {
 	}
 }
 
-// --engine 是我们自己加的伪 flag,go-forensic 不认识它。
+// --engine / --clear 都是我们自己加的伪 flag,go-forensic 不认识它们。
 // 回落到命令行之前必须摘干净,否则它会因为一个不认识的参数直接罢工
-func TestSplitEngine(t *testing.T) {
+func TestSplitOwnFlags(t *testing.T) {
 	cases := []struct {
-		in   []string
-		rest []string
-		want engine
+		in    []string
+		rest  []string
+		eng   engine
+		clear bool
 	}{
 		{
 			in:   []string{"android", "export", "-o", "D:/out"},
 			rest: []string{"android", "export", "-o", "D:/out"},
-			want: engineAuto,
+			eng:  engineAuto,
 		},
 		{
 			in:   []string{"android", "export", "--engine=cli", "-o", "D:/out"},
 			rest: []string{"android", "export", "-o", "D:/out"},
-			want: engineCLI,
+			eng:  engineCLI,
 		},
 		{
 			in:   []string{"--engine=builtin", "android", "export", "-o", "D:/out"},
 			rest: []string{"android", "export", "-o", "D:/out"},
-			want: engineBuiltin,
+			eng:  engineBuiltin,
 		},
 		{
 			// 值不认识就当没写过,别把整条命令卡死
 			in:   []string{"android", "export", "--engine=什么", "-o", "D:/out"},
 			rest: []string{"android", "export", "-o", "D:/out"},
-			want: engineAuto,
+			eng:  engineAuto,
+		},
+		{
+			in:    []string{"android", "export", "--clear", "-o", "D:/out"},
+			rest:  []string{"android", "export", "-o", "D:/out"},
+			eng:   engineAuto,
+			clear: true,
+		},
+		{
+			in:    []string{"android", "export", "--clear", "--engine=cli", "-o", "D:/out"},
+			rest:  []string{"android", "export", "-o", "D:/out"},
+			eng:   engineCLI,
+			clear: true,
 		},
 	}
 	for _, c := range cases {
-		rest, got := splitEngine(c.in)
-		if got != c.want {
-			t.Errorf("%v: 引擎解成 %q,想要 %q", c.in, got, c.want)
+		rest, own := splitOwnFlags(c.in)
+		if own.engine != c.eng {
+			t.Errorf("%v: 引擎解成 %q,想要 %q", c.in, own.engine, c.eng)
+		}
+		if own.clear != c.clear {
+			t.Errorf("%v: clear 解成 %v,想要 %v", c.in, own.clear, c.clear)
 		}
 		if strings.Join(rest, " ") != strings.Join(c.rest, " ") {
 			t.Errorf("%v: 剩下的参数是 %v,想要 %v", c.in, rest, c.rest)

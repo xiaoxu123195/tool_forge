@@ -134,7 +134,10 @@ export function ConnectPanel({
               </label>
             </>
           ) : (
-            <Field label="adb 路径（留空 = 用系统 PATH 里的）">
+            // 留空并不是"走 PATH":自带的那份优先,没有才回退 PATH。
+            // 这个区别是要紧的 —— Windows 系统目录里常年躺着一个 2012 年的
+            // adb.exe,真走了 PATH 就是设备列表一直空着
+            <Field label="adb 路径（留空 = 优先用自带的，没有再走 PATH）">
               <div className="flex items-center gap-2">
                 <input
                   value={adbPath}

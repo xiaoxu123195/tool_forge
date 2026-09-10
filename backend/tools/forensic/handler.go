@@ -128,7 +128,8 @@ func (h *StreamHandler) InputSchema() map[string]any {
 				"type":  "array",
 				"items": map[string]any{"type": "string"},
 				"description": "完整参数,一个参数一个元素(不要把整条命令塞成一个字符串)。" +
-					"Android 的 export 默认走内置实现;加 --engine=cli 可以强制改调 go-forensic",
+					"Android 的 export 默认走内置实现;加 --engine=cli 可以强制改调 go-forensic;" +
+					"加 --clear 会在导出前清空输出目录(不可撤销,根目录会被拒绝)",
 				"examples": []any{
 					[]string{"android", "export", "-k", "wechat", "-o", "/tmp/out"},
 					[]string{"android", "export", "--engine=cli", "-k", "wechat", "-o", "/tmp/out"},

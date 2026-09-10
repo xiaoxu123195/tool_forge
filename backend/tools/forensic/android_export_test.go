@@ -2,6 +2,7 @@ package forensic
 
 import (
 	"archive/tar"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -248,5 +249,89 @@ func TestContainedIn(t *testing.T) {
 		if outer, ok := containedIn(p, list); ok {
 			t.Errorf("%q 不该被当成 %q 的子目录", p, outer)
 		}
+	}
+}
+
+// 清空是不可撤销的操作,路径少打一层就成了别的目录。
+// 根目录必须拦住 —— 那是最容易打出来、后果也最大的一种
+func TestSafeToClearRefusesRoots(t *testing.T) {
+	bad := []string{string(os.PathSeparator)}
+	if runtime.GOOS == "windows" {
+		bad = append(bad, `C:\`, `D:\`, `c:\`)
+	}
+	for _, p := range bad {
+		if err := safeToClear(p); err == nil {
+			t.Errorf("%q 是根目录,应该拒绝清空", p)
+		}
+	}
+	// 正常的输出目录不该被误伤
+	dir := t.TempDir()
+	if err := safeToClear(dir); err != nil {
+		t.Errorf("%q 是个普通目录,不该被拦: %v", dir, err)
+	}
+	// 文件不是目录
+	f := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := safeToClear(f); err == nil {
+		t.Error("目标是文件时应该拒绝")
+	}
+}
+
+// 清空要真的清干净,而且要把删了多少说出来 ——
+// 取证里"这个目录原来有东西"本身就是需要留痕的事
+func TestClearOutputReportsWhatItRemoved(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "旧的一次", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "旧的一次", "sub", "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("y"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var logged []string
+	e := &androidExporter{output: dir, log: func(f string, a ...any) {
+		logged = append(logged, fmt.Sprintf(f, a...))
+	}}
+	if err := e.clearOutput(); err != nil {
+		t.Fatal(err)
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 0 {
+		t.Errorf("没清干净,还剩 %d 个", len(ents))
+	}
+	if len(logged) == 0 || !strings.Contains(logged[0], "2") {
+		t.Errorf("删了多少要说出来,日志是: %v", logged)
+	}
+	// 目录本身要留着,不然接下来没地方写
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		t.Errorf("输出目录本身被删掉了: %v", err)
+	}
+}
+
+// 没要求清空时,一个字节都不许动
+func TestNoClearKeepsEverything(t *testing.T) {
+	dir := t.TempDir()
+	keep := filepath.Join(dir, "上一次取的证.txt")
+	if err := os.WriteFile(keep, []byte("重要"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var logged []string
+	e := &androidExporter{output: dir, log: func(f string, a ...any) {
+		logged = append(logged, fmt.Sprintf(f, a...))
+	}}
+	e.warnIfNotEmpty()
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("只是提醒,不该删东西: %v", err)
+	}
+	if len(logged) != 1 || !strings.HasPrefix(logged[0], "WARN") {
+		t.Errorf("目录非空该警告一声,日志是: %v", logged)
 	}
 }

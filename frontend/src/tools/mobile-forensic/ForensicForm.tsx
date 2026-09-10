@@ -3,6 +3,7 @@ import { Check, ChevronDown, FolderOpen, ListPlus, Play, Plus, X } from 'lucide-
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { ModeToggle } from '@/components/tool/ModeToggle'
+import { useConfirm } from '@/components/ui/confirm'
 import {
   GetPassword,
   PickDirectory,
@@ -15,6 +16,7 @@ import {
 } from '@/stores/forensic'
 import {
   buildArgs,
+  needsCLI,
   normalizePath,
   previewCommand,
   splitList,
@@ -40,6 +42,7 @@ interface Props {
 }
 
 export function ForensicForm({ form, onChange, onRun, disabled, blockReason }: Props) {
+  const confirm = useConfirm()
   const defaultSshAddr = useForensicStore((s) => s.defaultSshAddr)
   const defaultOutputBase = useForensicStore((s) => s.defaultOutputBase)
   const [passwordLoaded, setPasswordLoaded] = useState(false)
@@ -75,7 +78,34 @@ export function ForensicForm({ form, onChange, onRun, disabled, blockReason }: P
     if (picked) setField('outputDir', picked)
   }
 
+  // go-forensic 是无条件先清空输出目录的,不给关;内置引擎默认不清,由这个勾决定
+  const cliAlwaysClears = needsCLI(form.platform, form.engine)
+  const willClear = cliAlwaysClears || form.clearOutput
+
   const run = async () => {
+    // 删东西之前问一句。这是用户手打的路径,少打一层就是别的目录,
+    // 而且删完没有回收站可翻
+    if (willClear) {
+      const ok = await confirm({
+        title: '导出前会清空输出目录',
+        message: (
+          <div className="space-y-1.5">
+            <p>
+              <span className="font-mono text-xs">{form.outputDir}</span>{' '}
+              里现有的内容会被全部删掉，删了没法撤。
+            </p>
+            {cliAlwaysClears && (
+              <p className="text-muted-foreground">
+                go-forensic 总是先清空目录，这一步关不掉。
+              </p>
+            )}
+          </div>
+        ),
+        confirmLabel: '清空并开始',
+        danger: true,
+      })
+      if (!ok) return
+    }
     if (form.platform === 'ios' && form.sshPassword) {
       const key = sshPasswordKey(form.sshAddr)
       if (form.rememberPassword) {
@@ -181,6 +211,27 @@ export function ForensicForm({ form, onChange, onRun, disabled, blockReason }: P
               浏览
             </Button>
           </div>
+          <label
+            className={cn(
+              'mt-1.5 flex w-fit items-center gap-1.5 text-xs',
+              cliAlwaysClears ? 'text-muted-foreground' : 'cursor-pointer',
+            )}
+            title={
+              cliAlwaysClears
+                ? 'go-forensic 总是先清空输出目录，关不掉'
+                : '勾上后，这次导出前会把该目录里现有的内容全部删掉'
+            }
+          >
+            <input
+              type="checkbox"
+              checked={willClear}
+              disabled={cliAlwaysClears}
+              onChange={(e) => setField('clearOutput', e.target.checked)}
+              className="h-3.5 w-3.5"
+            />
+            导出前清空该目录
+            {cliAlwaysClears && <span className="opacity-70">· go-forensic 总是这样，关不掉</span>}
+          </label>
         </Field>
 
         <Field

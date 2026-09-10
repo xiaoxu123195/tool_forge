@@ -80,6 +80,7 @@ type androidExporter struct {
 // runAndroidExport 原生执行一次安卓导出。
 // log 每被调用一次,前端就多一行输出 —— 契约和以前从子进程 stdout 捞行时一样
 func runAndroidExport(ctx context.Context, opt exportOptions, log func(string, ...any)) error {
+	started := time.Now()
 	log("connecting...")
 	client, err := adbx.Dial(opt.adbPath)
 	if err != nil {
@@ -96,7 +97,13 @@ func runAndroidExport(ctx context.Context, opt exportOptions, log func(string, .
 	if err := os.MkdirAll(e.output, 0o755); err != nil {
 		return err
 	}
-	e.warnIfNotEmpty()
+	if opt.clear {
+		if err := e.clearOutput(); err != nil {
+			return err
+		}
+	} else {
+		e.warnIfNotEmpty()
+	}
 
 	targets := opt.paths
 	if len(targets) == 0 {
@@ -128,8 +135,27 @@ func runAndroidExport(ctx context.Context, opt exportOptions, log func(string, .
 	if failed == len(targets) {
 		return fmt.Errorf("%d 个目标全部失败", failed)
 	}
-	log("export done, %d ok / %d failed", len(targets)-failed, failed)
+	log("export done, %d ok / %d failed, 共 %s", len(targets)-failed, failed, round(time.Since(started)))
 	return nil
+}
+
+// round 把耗时截到 0.1 秒,日志里不需要纳秒
+func round(d time.Duration) time.Duration {
+	return d.Round(100 * time.Millisecond)
+}
+
+// humanSize 拉回来多大,取证报告里要写的数字之一
+func humanSize(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
 }
 
 // findByKeywords 按关键词找应用目录。
@@ -256,9 +282,58 @@ func containedIn(p string, list []string) (string, bool) {
 	return "", false
 }
 
+// clearOutput 导出前清空输出目录。
+//
+// 默认不做这件事,只有明确要求了才做:这是用户自己填的路径,填错一个字
+// 就是删掉不相干的东西,而且删完没法撤。所以这里比"照做"多两层:
+// 明显会闯祸的目标直接拒绝,真删了也要把删掉多少如实说出来
+func (e *androidExporter) clearOutput() error {
+	if err := safeToClear(e.output); err != nil {
+		return err
+	}
+	ents, err := os.ReadDir(e.output)
+	if err != nil {
+		return err
+	}
+	if len(ents) == 0 {
+		return nil
+	}
+	for _, ent := range ents {
+		if err := os.RemoveAll(filepath.Join(e.output, ent.Name())); err != nil {
+			return fmt.Errorf("清空输出目录失败: %w", err)
+		}
+	}
+	e.log("cleared %d 个已有条目", len(ents))
+	return nil
+}
+
+// safeToClear 拦住那些一看就会闯祸的清空目标。
+//
+// 盘符根、文件系统根是底线 —— 路径少打几个字就会变成它们,
+// 而"清空 D:\"和"清空 D:\exhibits\案件一"在代码里长得一模一样
+func safeToClear(dir string) error {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	abs = filepath.Clean(abs)
+	root := filepath.VolumeName(abs) + string(os.PathSeparator)
+	if abs == root || abs == string(os.PathSeparator) {
+		return fmt.Errorf("拒绝清空 %s:这是根目录,不像是要放取证结果的地方", abs)
+	}
+	st, err := os.Stat(abs)
+	if err != nil {
+		return err
+	}
+	if !st.IsDir() {
+		return fmt.Errorf("%s 不是目录", abs)
+	}
+	return nil
+}
+
 // warnIfNotEmpty 输出目录里已经有东西时提醒一声。
 //
-// 不替用户清空:那是他指定的目录,里面可能是上一次取的证。
+// 没要求清空就不替他清:里面可能是上一次取的证。
 // 但混在一起也不能不吭声 —— 旧文件看上去和这次取的一模一样,分不出来
 func (e *androidExporter) warnIfNotEmpty() {
 	ents, err := os.ReadDir(e.output)
@@ -301,9 +376,11 @@ func (e *androidExporter) exportOne(ctx context.Context, remote string) error {
 	// 不靠 tar 自己剥掉开头的斜杠 —— 那是各家实现自便的行为,写明确的更稳
 	script := fmt.Sprintf("tar -cf %s -C / %s && chmod 666 %s",
 		adbx.Quote(stage), adbx.Quote(rel), adbx.Quote(stage))
+	packStart := time.Now()
 	if _, err := adbx.Text(e.dev, script, e.root, packTimeout); err != nil {
 		return fmt.Errorf("在设备上打包失败%s: %w", e.rootHint(), err)
 	}
+	packTook := time.Since(packStart)
 	// 无论后面成不成,设备上那份临时包都要删掉
 	defer func() {
 		if _, err := adbx.Text(e.dev, "rm -f "+adbx.Quote(stage), e.root, cmdTimeout); err != nil {
@@ -319,18 +396,26 @@ func (e *androidExporter) exportOne(ctx context.Context, remote string) error {
 	if err != nil {
 		return err
 	}
+	pullStart := time.Now()
 	if err := e.dev.Pull(stage, f); err != nil {
 		_ = f.Close()
 		return fmt.Errorf("拉取失败: %w", err)
 	}
+	size, _ := f.Seek(0, io.SeekCurrent)
 	_ = f.Close()
+	pullTook := time.Since(pullStart)
 
 	e.log("extracting → %s", rel)
+	untarStart := time.Now()
 	res, err := untar(localTar, e.output)
 	if err != nil {
 		return fmt.Errorf("解包失败: %w", err)
 	}
-	e.log("extracted %d file(s)", res.files)
+	// 三段耗时写在一起。取证经常是几分钟起步的活,不给分段的话
+	// 只能盯着一行不动的日志猜是卡住了还是本来就慢
+	e.log("extracted %d file(s), %s (打包 %s / 拉取 %s / 解包 %s)",
+		res.files, humanSize(size),
+		round(packTook), round(pullTook), round(time.Since(untarStart)))
 	// 改过名的必须说出来。取证里文件名本身就是证据的一部分,
 	// 悄悄换掉几百个名字而不吭声,是在给后面的人埋雷
 	if res.renamed > 0 {
