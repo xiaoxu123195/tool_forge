@@ -3,19 +3,18 @@ export type Platform = 'android' | 'ios'
 /**
  * 用哪套实现拉数据。
  *
- * builtin 是内置的:直接说 adb 协议,不依赖外部程序。
+ * builtin 是内置的:Android 直接说 adb 协议,iOS 直接说 usbmuxd 协议,
+ * 两边都不依赖外部程序。
  * cli 走 go-forensic 可执行文件 —— 内置实现在某台设备上不好使时的退路,
  * 也让用惯了它的人可以继续用。
- *
- * iOS 目前只有 cli 一条路。
  */
 export type Engine = 'builtin' | 'cli'
 
 export type RunStatus = 'idle' | 'running' | 'success' | 'canceled' | 'failed'
 
-/** 这个平台 + 引擎的组合需不需要外部的 go-forensic */
-export function needsCLI(platform: Platform, engine: Engine): boolean {
-  return platform === 'ios' || engine === 'cli'
+/** 这个组合需不需要外部的 go-forensic */
+export function needsCLI(_platform: Platform, engine: Engine): boolean {
+  return engine === 'cli'
 }
 
 export interface LogEntry {
@@ -141,7 +140,11 @@ export function previewCommand(form: FormState): string {
 }
 
 function previewBuiltin(form: FormState): string {
-  const parts = ['内置引擎 · 直接走 adb 协议，不依赖外部程序']
+  const parts = [
+    form.platform === 'ios'
+      ? '内置引擎 · 直接走 usbmuxd 协议，设备上不落任何临时文件'
+      : '内置引擎 · 直接走 adb 协议，不依赖外部程序',
+  ]
   const paths = splitList(form.specifyPaths).map(normalizePath)
   const keywords = splitList(form.keywords)
   if (paths.length > 0) {

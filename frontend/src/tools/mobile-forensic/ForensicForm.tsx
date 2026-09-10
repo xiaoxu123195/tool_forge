@@ -78,9 +78,10 @@ export function ForensicForm({ form, onChange, onRun, disabled, blockReason }: P
     if (picked) setField('outputDir', picked)
   }
 
-  // go-forensic 是无条件先清空输出目录的,不给关;内置引擎默认不清,由这个勾决定
-  const cliAlwaysClears = needsCLI(form.platform, form.engine)
-  const willClear = cliAlwaysClears || form.clearOutput
+  // 这次跑的是不是 go-forensic。它无条件先清空输出目录、也需要本机转发端口,
+  // 内置那条两样都不是,所以界面上好几处要按它分叉
+  const usingCLI = needsCLI(form.platform, form.engine)
+  const willClear = usingCLI || form.clearOutput
 
   const run = async () => {
     // 删东西之前问一句。这是用户手打的路径,少打一层就是别的目录,
@@ -94,7 +95,7 @@ export function ForensicForm({ form, onChange, onRun, disabled, blockReason }: P
               <span className="font-mono text-xs">{form.outputDir}</span>{' '}
               里现有的内容会被全部删掉，删了没法撤。
             </p>
-            {cliAlwaysClears && (
+            {usingCLI && (
               <p className="text-muted-foreground">
                 go-forensic 总是先清空目录，这一步关不掉。
               </p>
@@ -150,24 +151,14 @@ export function ForensicForm({ form, onChange, onRun, disabled, blockReason }: P
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2">
         <span className="text-xs font-medium text-muted-foreground">任务参数</span>
         <div className="flex items-center gap-2">
-          {form.platform === 'android' ? (
-            <ModeToggle
-              value={form.engine}
-              onChange={(e) => setField('engine', e as Engine)}
-              options={[
-                { value: 'builtin', label: '内置' },
-                { value: 'cli', label: 'go-forensic' },
-              ]}
-            />
-          ) : (
-            // iOS 还没有内置实现。这里不给选,免得选了个跑不了的组合
-            <span
-              className="rounded-md border border-dashed border-border px-2 py-1 text-[11px] text-muted-foreground"
-              title="iOS 目前只能走 go-forensic，内置实现还没做"
-            >
-              go-forensic
-            </span>
-          )}
+          <ModeToggle
+            value={form.engine}
+            onChange={(e) => setField('engine', e as Engine)}
+            options={[
+              { value: 'builtin', label: '内置' },
+              { value: 'cli', label: 'go-forensic' },
+            ]}
+          />
           <ModeToggle
             value={form.platform}
             onChange={(p) => setField('platform', p as Platform)}
@@ -214,10 +205,10 @@ export function ForensicForm({ form, onChange, onRun, disabled, blockReason }: P
           <label
             className={cn(
               'mt-1.5 flex w-fit items-center gap-1.5 text-xs',
-              cliAlwaysClears ? 'text-muted-foreground' : 'cursor-pointer',
+              usingCLI ? 'text-muted-foreground' : 'cursor-pointer',
             )}
             title={
-              cliAlwaysClears
+              usingCLI
                 ? 'go-forensic 总是先清空输出目录，关不掉'
                 : '勾上后，这次导出前会把该目录里现有的内容全部删掉'
             }
@@ -225,12 +216,12 @@ export function ForensicForm({ form, onChange, onRun, disabled, blockReason }: P
             <input
               type="checkbox"
               checked={willClear}
-              disabled={cliAlwaysClears}
+              disabled={usingCLI}
               onChange={(e) => setField('clearOutput', e.target.checked)}
               className="h-3.5 w-3.5"
             />
             导出前清空该目录
-            {cliAlwaysClears && <span className="opacity-70">· go-forensic 总是这样，关不掉</span>}
+            {usingCLI && <span className="opacity-70">· go-forensic 总是这样，关不掉</span>}
           </label>
         </Field>
 
@@ -263,7 +254,15 @@ export function ForensicForm({ form, onChange, onRun, disabled, blockReason }: P
 
         {form.platform === 'ios' && (
           <>
-            <Field label="SSH 地址" required>
+            <Field
+              label="SSH 地址"
+              required
+              hint={
+                usingCLI
+                  ? undefined
+                  : '内置引擎只取里面的用户名，走 USB 直连；填成别的机器会自动改用 go-forensic'
+              }
+            >
               <input
                 value={form.sshAddr}
                 onChange={(e) => setField('sshAddr', e.target.value)}
@@ -295,6 +294,8 @@ export function ForensicForm({ form, onChange, onRun, disabled, blockReason }: P
               </div>
             </Field>
 
+            {/* 内置引擎本身就是走 USB 的,再给一个"要不要用 USB 代理"的开关只会让人困惑 */}
+            {usingCLI && (
             <Field label="USB 代理">
               <label
                 className={cn(
@@ -313,6 +314,7 @@ export function ForensicForm({ form, onChange, onRun, disabled, blockReason }: P
                 自动通过 USB 建立代理（推荐）
               </label>
             </Field>
+            )}
 
             <Field label="设备 ID（可选）">
               <input

@@ -40,13 +40,13 @@ func TestParseExportArgs(t *testing.T) {
 func TestParseExportArgsFallsBackOnUnknownFlag(t *testing.T) {
 	cases := [][]string{
 		{"android", "export", "-o", "D:/out", "--some-new-flag", "x"},
-		{"ios", "export", "-o", "D:/out", "-a", "root@127.0.0.1:22"},
-		{"android", "export", "-o"},           // flag 后面没值
-		{"android", "device", "list"},         // 不是 export
-		{"windows", "export", "-o", "D:/out"}, // 不认识的平台
-		{"android", "export", "-k", "wechat"}, // 没给输出目录
-		{"android"},                           // 不完整
-		{},                                    // 空
+		{"ios", "export", "-o", "D:/out", "-a", "root@192.168.1.9:22"}, // 地址指向别处
+		{"android", "export", "-o"},                                    // flag 后面没值
+		{"android", "device", "list"},                                  // 不是 export
+		{"windows", "export", "-o", "D:/out"},                          // 不认识的平台
+		{"android", "export", "-k", "wechat"},                          // 没给输出目录
+		{"android"},                                                    // 不完整
+		{},                                                             // 空
 	}
 	for _, args := range cases {
 		if opt, ok := parseExportArgs(args); nativeSupported(opt, ok) {
@@ -55,14 +55,42 @@ func TestParseExportArgsFallsBackOnUnknownFlag(t *testing.T) {
 	}
 }
 
-// iOS 解得出来,但目前不走原生 —— 必须回落
-func TestIOSStillFallsBackToCLI(t *testing.T) {
-	opt, ok := parseExportArgs([]string{"ios", "export", "-s", "/var/mobile", "-o", "D:/out"})
-	if !ok {
-		t.Fatal("iOS 的参数本身是能解的")
+// iOS 走原生,而且要把 SSH 账号从地址里拆出来
+func TestIOSGoesNative(t *testing.T) {
+	opt, ok := parseExportArgs([]string{
+		"ios", "export", "-s", "/var/mobile", "-o", "D:/out",
+		"-a", "root@127.0.0.1:22", "-p", "123456",
+	})
+	if !ok || !nativeSupported(opt, ok) {
+		t.Fatal("iOS 的 export 现在有原生实现了")
 	}
-	if nativeSupported(opt, ok) {
-		t.Error("iOS 还没有原生实现,不该走原生那条")
+	if opt.user != "root" || opt.password != "123456" {
+		t.Errorf("SSH 账号没解出来: user=%q password=%q", opt.user, opt.password)
+	}
+}
+
+// 地址指向别处时必须回落到命令行。
+//
+// 原生这条路是顺着 USB 找设备的,而一个指向网络上某台机器的地址,
+// 说的是完全另一件事 —— 悄悄换成 USB 就是连错了对象,
+// 而且连错之后还会一切正常地导出另一台设备的数据
+func TestIOSRemoteAddrFallsBackToCLI(t *testing.T) {
+	for _, addr := range []string{
+		"root@192.168.1.9:22",
+		"root@10.0.0.2",
+		"mobile@my-iphone.local:2222",
+	} {
+		opt, ok := parseExportArgs([]string{"ios", "export", "-s", "/var/mobile", "-o", "D:/out", "-a", addr})
+		if nativeSupported(opt, ok) {
+			t.Errorf("%s 指向的不是本机,不该走原生", addr)
+		}
+	}
+	// 本机的几种写法都该算本机
+	for _, addr := range []string{"root@127.0.0.1:22", "root@localhost:22", "root@127.0.0.1"} {
+		opt, ok := parseExportArgs([]string{"ios", "export", "-s", "/var/mobile", "-o", "D:/out", "-a", addr})
+		if !nativeSupported(opt, ok) {
+			t.Errorf("%s 是本机地址,应该走原生", addr)
+		}
 	}
 }
 
@@ -294,10 +322,8 @@ func TestClearOutputReportsWhatItRemoved(t *testing.T) {
 	}
 
 	var logged []string
-	e := &androidExporter{output: dir, log: func(f string, a ...any) {
-		logged = append(logged, fmt.Sprintf(f, a...))
-	}}
-	if err := e.clearOutput(); err != nil {
+	log := func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
+	if err := clearDir(dir, log); err != nil {
 		t.Fatal(err)
 	}
 	ents, err := os.ReadDir(dir)
@@ -324,10 +350,8 @@ func TestNoClearKeepsEverything(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logged []string
-	e := &androidExporter{output: dir, log: func(f string, a ...any) {
-		logged = append(logged, fmt.Sprintf(f, a...))
-	}}
-	e.warnIfNotEmpty()
+	log := func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
+	warnIfNotEmpty(dir, log)
 	if _, err := os.Stat(keep); err != nil {
 		t.Fatalf("只是提醒,不该删东西: %v", err)
 	}

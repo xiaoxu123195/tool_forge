@@ -13,7 +13,6 @@ import { ToolShell } from '@/components/tool/ToolShell'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useDeviceBrowserStore } from '@/stores/device-browser'
-import { useForensicStore } from '@/stores/forensic'
 import {
   ConnectDevice,
   DisconnectDevice,
@@ -49,7 +48,6 @@ export default function DeviceBrowser() {
   const setDeviceId = useDeviceBrowserStore((s) => s.setDeviceId)
   const setPlatform = useDeviceBrowserStore((s) => s.setPlatform)
   const setAdbPath = useDeviceBrowserStore((s) => s.setAdbPath)
-  const binaryPath = useForensicStore((s) => s.binaryPath)
 
   const [connecting, setConnecting] = useState(false)
   const [connectError, setConnectError] = useState('')
@@ -102,7 +100,6 @@ export default function DeviceBrowser() {
         deviceId,
         user,
         password,
-        binaryPath,
         adbPath,
         remotePort: 0,
       } as devicefs.ConnectOptions)

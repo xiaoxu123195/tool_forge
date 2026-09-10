@@ -176,9 +176,10 @@ func TestBuiltinEngineRefusesWhatItCannotRun(t *testing.T) {
 	s := New()
 	s.SetRunContext(context.Background())
 
-	_, err := s.Run([]string{"ios", "export", "--engine=builtin", "-s", "/var/mobile", "-o", "D:/out"})
+	// proxy 这类命令没有内置实现(也不需要有 —— 内置那条根本不用转发端口)
+	_, err := s.Run([]string{"ios", "proxy", "--engine=builtin", "-l", "2222"})
 	if err == nil {
-		t.Fatal("iOS 还没有内置实现,应该明确报错而不是默默跑别的")
+		t.Fatal("这条命令没有内置实现,应该明确报错而不是默默跑别的")
 	}
 	if !strings.Contains(err.Error(), "内置") {
 		t.Errorf("错误信息该说清楚是内置实现的问题: %v", err)

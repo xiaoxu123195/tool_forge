@@ -98,11 +98,11 @@ func runAndroidExport(ctx context.Context, opt exportOptions, log func(string, .
 		return err
 	}
 	if opt.clear {
-		if err := e.clearOutput(); err != nil {
+		if err := clearDir(e.output, log); err != nil {
 			return err
 		}
 	} else {
-		e.warnIfNotEmpty()
+		warnIfNotEmpty(e.output, log)
 	}
 
 	targets := opt.paths
@@ -287,11 +287,11 @@ func containedIn(p string, list []string) (string, bool) {
 // 默认不做这件事,只有明确要求了才做:这是用户自己填的路径,填错一个字
 // 就是删掉不相干的东西,而且删完没法撤。所以这里比"照做"多两层:
 // 明显会闯祸的目标直接拒绝,真删了也要把删掉多少如实说出来
-func (e *androidExporter) clearOutput() error {
-	if err := safeToClear(e.output); err != nil {
+func clearDir(dir string, log func(string, ...any)) error {
+	if err := safeToClear(dir); err != nil {
 		return err
 	}
-	ents, err := os.ReadDir(e.output)
+	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return err
 	}
@@ -299,11 +299,11 @@ func (e *androidExporter) clearOutput() error {
 		return nil
 	}
 	for _, ent := range ents {
-		if err := os.RemoveAll(filepath.Join(e.output, ent.Name())); err != nil {
+		if err := os.RemoveAll(filepath.Join(dir, ent.Name())); err != nil {
 			return fmt.Errorf("清空输出目录失败: %w", err)
 		}
 	}
-	e.log("cleared %d 个已有条目", len(ents))
+	log("cleared %d 个已有条目", len(ents))
 	return nil
 }
 
@@ -335,8 +335,8 @@ func safeToClear(dir string) error {
 //
 // 没要求清空就不替他清:里面可能是上一次取的证。
 // 但混在一起也不能不吭声 —— 旧文件看上去和这次取的一模一样,分不出来
-func (e *androidExporter) warnIfNotEmpty() {
-	ents, err := os.ReadDir(e.output)
+func warnIfNotEmpty(dir string, log func(string, ...any)) {
+	ents, err := os.ReadDir(dir)
 	if err != nil || len(ents) == 0 {
 		return
 	}
@@ -347,8 +347,22 @@ func (e *androidExporter) warnIfNotEmpty() {
 		}
 		names = append(names, ent.Name())
 	}
-	e.log("WARN 输出目录里已经有 %d 个条目(%s…),这次导出会和它们混在一起",
+	log("WARN 输出目录里已经有 %d 个条目(%s…),这次导出会和它们混在一起",
 		len(ents), strings.Join(names, ", "))
+}
+
+// reportUntar 把一次解包里"动过手脚"的部分如实说出来。
+// 两个平台共用 —— 改名和跳过在哪边都一样要交代
+func reportUntar(res untarResult, log func(string, ...any)) {
+	// 改过名的必须说出来。取证里文件名本身就是证据的一部分,
+	// 悄悄换掉几百个名字而不吭声,是在给后面的人埋雷
+	if res.renamed > 0 {
+		log("WARN %d 个名字在本地文件系统上非法,已替换其中的字符;例如 %s",
+			res.renamed, strings.Join(res.samples, " / "))
+	}
+	if res.skipped > 0 {
+		log("WARN 跳过 %d 个成员(软链、设备节点之类)", res.skipped)
+	}
 }
 
 // exportOne 导出一个目录或文件:设备内打包 → 拉回来 → 解包 → 删掉设备上那份。
@@ -416,15 +430,7 @@ func (e *androidExporter) exportOne(ctx context.Context, remote string) error {
 	e.log("extracted %d file(s), %s (打包 %s / 拉取 %s / 解包 %s)",
 		res.files, humanSize(size),
 		round(packTook), round(pullTook), round(time.Since(untarStart)))
-	// 改过名的必须说出来。取证里文件名本身就是证据的一部分,
-	// 悄悄换掉几百个名字而不吭声,是在给后面的人埋雷
-	if res.renamed > 0 {
-		e.log("WARN %d 个名字在本地文件系统上非法,已替换其中的字符;例如 %s",
-			res.renamed, strings.Join(res.samples, " / "))
-	}
-	if res.skipped > 0 {
-		e.log("WARN 跳过 %d 个成员(软链、设备节点之类)", res.skipped)
-	}
+	reportUntar(res, e.log)
 	// 解完就不留 tar 了,不然输出目录里每个应用都多一份重复的压缩包
 	if err := os.Remove(localTar); err != nil {
 		e.log("WARN 本地临时包没删掉 %s: %v", localTar, err)
@@ -479,18 +485,29 @@ const maxRenameSamples = 3
 //     mkdir 直接失败,而原来的写法会让整包解包中断,前面拉下来的全丢。
 //     现在改成替换非法字符并计数上报:数据留住,改动如实说出来。
 func untar(tarPath, dest string) (untarResult, error) {
-	var res untarResult
 	f, err := os.Open(tarPath)
 	if err != nil {
-		return res, err
+		return untarResult{}, err
 	}
 	defer f.Close()
+	return untarFrom(f, dest)
+}
 
+// untarFrom 从一个流里解包。
+//
+// iOS 那条路用它:tar 直接从设备的 ssh 通道流过来,边收边解,
+// 设备上不落任何文件 —— 取证时"不往被取证的设备写东西"是硬要求,
+// 能做到就该做到
+func untarFrom(r io.Reader, dest string) (untarResult, error) {
+	var res untarResult
 	absDest, err := filepath.Abs(dest)
 	if err != nil {
 		return res, err
 	}
-	tr := tar.NewReader(f)
+	if err := os.MkdirAll(absDest, 0o755); err != nil {
+		return res, err
+	}
+	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {

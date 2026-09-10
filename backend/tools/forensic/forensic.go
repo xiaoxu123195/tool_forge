@@ -230,15 +230,18 @@ func (s *Service) Run(args []string) (string, error) {
 	if own.engine == engineBuiltin {
 		// 明确点了内置却跑不了,就得说清楚。悄悄换成 go-forensic 是在骗人:
 		// 那是另一个程序、另一套行为,用户未必装了,装了也未必想用
-		return "", errors.New("这条命令还没有内置实现(目前只有 Android 的 export),请改用 go-forensic 引擎")
+		return "", errors.New("这条命令还没有内置实现(目前只有 android / ios 的 export),请改用 go-forensic 引擎")
 	}
 	return s.runCLI(args)
 }
 
-// runNative 用内置实现跑安卓导出,不 fork 任何进程
+// runNative 用内置实现跑导出,不 fork 任何进程
 func (s *Service) runNative(opt exportOptions) (string, error) {
 	return s.runJob(func(ctx context.Context, log func(string, ...any)) error {
 		log("%s", opt.describe())
+		if opt.platform == "ios" {
+			return runIOSExport(ctx, opt, log)
+		}
 		return runAndroidExport(ctx, opt, log)
 	})
 }

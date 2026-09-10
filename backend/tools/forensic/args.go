@@ -74,16 +74,19 @@ type exportOptions struct {
 	deviceID string
 	// adbPath 仅 Android;空 = 自己找
 	adbPath string
+	// user / password 仅 iOS:越狱设备上 sshd 的账号
+	user     string
+	password string
 	// clear 导出前清空输出目录
 	clear bool
 }
 
 // nativeSupported 这套参数能不能用原生实现跑。
 //
-// 目前只有安卓的 export。别的(iOS 的 export / proxy / device list)仍然
-// 交给命令行 —— 认不出来就老老实实回落,而不是猜着执行
+// 两个平台的 export 都有了。别的(ios proxy、device list)仍然交给命令行 ——
+// 认不出来就老老实实回落,而不是猜着执行
 func nativeSupported(opt exportOptions, ok bool) bool {
-	return ok && opt.platform == "android"
+	return ok && (opt.platform == "android" || opt.platform == "ios")
 }
 
 // parseExportArgs 把 CLI 形状的参数解回结构。
@@ -102,6 +105,7 @@ func parseExportArgs(args []string) (exportOptions, bool) {
 	}
 
 	rest := args[2:]
+	var addr string
 	for i := 0; i < len(rest); i++ {
 		a := rest[i]
 		// 只认这几个;出现别的 flag 说明调用方用了我们没实现的功能,
@@ -117,6 +121,10 @@ func parseExportArgs(args []string) (exportOptions, bool) {
 			single = &opt.output
 		case a == "-d" || a == "--device-id":
 			single = &opt.deviceID
+		case a == "-p" || a == "--password":
+			single = &opt.password
+		case a == "-a" || a == "--addr":
+			single = &addr
 		default:
 			return opt, false
 		}
@@ -133,7 +141,37 @@ func parseExportArgs(args []string) (exportOptions, bool) {
 	if strings.TrimSpace(opt.output) == "" {
 		return opt, false
 	}
+	if addr != "" {
+		user, local := splitSSHAddr(addr)
+		// 地址指向别处时不能走原生:原生是顺着 USB 找设备的,
+		// 而这个地址说的是"连到网络上的某台机器"。悄悄换成 USB 就是连错了对象
+		if !local {
+			return opt, false
+		}
+		opt.user = user
+	}
 	return opt, true
+}
+
+// splitSSHAddr 拆 user@host:port,返回用户名,以及这个地址是不是指向本机。
+//
+// 本机地址在原生这条路上是没有意义的占位 —— 以前要靠它连转发端口,
+// 现在直接走 USB。但指向别处的地址是真的要连别处,那种只能交给命令行
+func splitSSHAddr(addr string) (user string, local bool) {
+	host := strings.TrimSpace(addr)
+	if i := strings.LastIndex(host, "@"); i >= 0 {
+		user = host[:i]
+		host = host[i+1:]
+	}
+	if i := strings.LastIndex(host, ":"); i >= 0 {
+		host = host[:i]
+	}
+	host = strings.TrimSpace(host)
+	switch host {
+	case "", "127.0.0.1", "localhost", "::1", "[::1]":
+		return user, true
+	}
+	return user, false
 }
 
 // describe 给日志开头用的一句话,说清楚这次要干什么

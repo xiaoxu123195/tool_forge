@@ -5,7 +5,7 @@
 //
 // 两个平台的路子完全不同,但上层要的东西一样,所以用 transport 抽一层:
 //
-//	iOS      USB 转发设备的 22 端口 → SSH → SFTP
+//	iOS      usbmuxd 直连设备的 22 端口 → SSH → SFTP
 //	Android  adb shell → su → 设备自带的 toybox
 //
 // 落到具体实现上的差别比看起来大:iOS 那边 SFTP 给的是带类型的结构化响应;
@@ -49,8 +49,8 @@ type Session struct {
 	Platform string `json:"platform"`
 	// DeviceID 设备标识:iOS 是 UDID,Android 是序列号
 	DeviceID string `json:"deviceId"`
-	// Addr 连上去的地址,排查问题时有用。
-	// iOS 是本机转发端口,Android 是 adb 序列号
+	// Addr 连到哪儿了,排查问题时有用。
+	// iOS 是 usb:<UDID 缩写>:<端口>,Android 是 adb 序列号
 	Addr string `json:"addr"`
 	// StartPath 建议的起始目录
 	StartPath string `json:"startPath"`
@@ -66,7 +66,7 @@ type Session struct {
 // Manager 管着所有活着的会话。
 //
 // 前端拿到的是 session id,后续每次调用都带着它回来 —— 连接是有状态的
-// (iOS 下面挂着转发进程,Android 下面记着序列号和 root 状态),
+// (iOS 下面挂着一条 SSH/SFTP 连接,Android 下面记着序列号和 root 状态),
 // 不可能每次调用重建一遍
 type Manager struct {
 	mu       sync.Mutex
@@ -88,8 +88,6 @@ type ConnectOptions struct {
 	User string `json:"user"`
 	// Password SSH 密码,仅 iOS
 	Password string `json:"password"`
-	// BinaryPath go-forensic 路径,仅 iOS(用它做 USB 端口转发);空 = 走 PATH
-	BinaryPath string `json:"binaryPath"`
 	// AdbPath adb 路径,仅 Android;空 = 走 PATH
 	AdbPath string `json:"adbPath"`
 	// RemotePort 设备上的 SSH 端口,仅 iOS,默认 22
@@ -149,8 +147,7 @@ func (m *Manager) Disconnect(id string) error {
 }
 
 // CloseAll 应用退出时调。
-// iOS 那边下面挂着 go-forensic 的转发进程,不收的话它会活过 app,
-// 一直占着设备的通道,下次连接直接失败
+// iOS 那边下面挂着一条经 USB 通到设备的连接,不收的话它会一直占着设备的通道
 func (m *Manager) CloseAll() {
 	m.mu.Lock()
 	all := make([]*Session, 0, len(m.sessions))
