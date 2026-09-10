@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertCircle, CheckCircle2, RefreshCw, Settings } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Cpu, RefreshCw, Settings } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { CheckForensic } from '../../../wailsjs/go/main/App'
 import { useForensicStore } from '@/stores/forensic'
@@ -8,9 +8,16 @@ import type { forensic } from '../../../wailsjs/go/models'
 
 interface Props {
   onReady: (info: forensic.Info) => void
+  /**
+   * 一键换回内置引擎。
+   *
+   * Android 上必须给这条路:内置引擎根本不需要 go-forensic,
+   * 要是没装就把人堵在这一页、还只给"去配置"一个出口,那才是真的没路走。
+   */
+  onUseBuiltin?: () => void
 }
 
-export function SetupGuide({ onReady }: Props) {
+export function SetupGuide({ onReady, onUseBuiltin }: Props) {
   const binaryPath = useForensicStore((s) => s.binaryPath)
   const cache = useForensicStore((s) => s.checkCache)
   const setCheckCache = useForensicStore((s) => s.setCheckCache)
@@ -54,13 +61,14 @@ export function SetupGuide({ onReady }: Props) {
   }, [])
 
   return (
-    <div className="mx-auto max-w-xl space-y-4">
-      <div className="rounded-lg border border-border bg-card p-6">
-        <h2 className="text-base font-semibold">需要先配置 go-forensic</h2>
+    <div className="space-y-4">
+      <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-5">
+        <h2 className="text-base font-semibold">这次的选择需要 go-forensic</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          移动取证工具依赖外部的{' '}
+          iOS 取证、以及 Android 选了{' '}
           <code className="rounded bg-muted px-1 py-0.5 text-xs">go-forensic</code>{' '}
-          可执行文件。请先在设置中指定它的位置。
+          引擎时，要用到这个外部可执行文件；请在设置中指定它的位置。
+          Android 的<strong className="font-medium text-foreground">内置引擎不需要它</strong>。
         </p>
 
         <div className="mt-5 rounded-md border border-dashed border-border p-4">
@@ -84,8 +92,14 @@ export function SetupGuide({ onReady }: Props) {
           </div>
         </div>
 
-        <div className="mt-5 flex gap-2">
-          <Button asChild size="sm">
+        <div className="mt-5 flex flex-wrap gap-2">
+          {onUseBuiltin && (
+            <Button size="sm" onClick={onUseBuiltin}>
+              <Cpu className="h-3.5 w-3.5" />
+              改用内置引擎
+            </Button>
+          )}
+          <Button asChild size="sm" variant={onUseBuiltin ? 'outline' : 'default'}>
             <Link to="/profile">
               <Settings className="h-3.5 w-3.5" />
               去配置

@@ -13,6 +13,7 @@ import { OutputPane } from './OutputPane'
 import {
   buildArgs,
   defaultFormState,
+  needsCLI,
   type FormState,
   type LogEntry,
   type RunStatus,
@@ -36,7 +37,9 @@ export default function MobileForensic() {
   const binaryPath = useForensicStore((s) => s.binaryPath)
   const pushHistory = useForensicStore((s) => s.pushHistory)
 
-  const [ready, setReady] = useState(false)
+  // go-forensic 装没装。只有真要用它的时候才拦人 —— 默认的内置引擎
+  // 不依赖任何外部程序,再拿"先去配置 go-forensic"挡在前面纯属白挡
+  const [cliReady, setCliReady] = useState(false)
   const [form, setForm] = useState<FormState>(defaultFormState)
   const [status, setStatus] = useState<RunStatus>('idle')
   const [logs, setLogs] = useState<LogEntry[]>([])
@@ -99,14 +102,6 @@ export default function MobileForensic() {
     await CancelForensic(jobIdRef.current).catch(() => {})
   }
 
-  if (!ready) {
-    return (
-      <ToolShell title={meta.title} description={meta.description}>
-        <SetupGuide onReady={() => setReady(true)} />
-      </ToolShell>
-    )
-  }
-
   const resetLogs = () => {
     setLogs([])
     setStatus('idle')
@@ -117,6 +112,8 @@ export default function MobileForensic() {
     resetLogs()
   }
 
+  const blocked = needsCLI(form.platform, form.engine) && !cliReady
+
   return (
     <ToolShell
       title={meta.title}
@@ -124,11 +121,22 @@ export default function MobileForensic() {
       onClear={resetAll}
     >
       <div className="flex flex-col gap-4">
+        {blocked && (
+          <SetupGuide
+            onReady={() => setCliReady(true)}
+            onUseBuiltin={
+              form.platform === 'android'
+                ? () => setForm({ ...form, engine: 'builtin' })
+                : undefined
+            }
+          />
+        )}
         <ForensicForm
           form={form}
           onChange={setForm}
           onRun={handleRun}
           disabled={status === 'running'}
+          blockReason={blocked ? '这个组合要用 go-forensic，先按上面的提示配置好' : ''}
         />
         <OutputPane
           status={status}

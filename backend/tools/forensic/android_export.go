@@ -35,25 +35,38 @@ const (
 	cmdTimeout = 60 * time.Second
 	// packTimeout 打包一个应用目录可能要好几分钟
 	packTimeout = 10 * time.Minute
-	// searchDepth 关键词模式下往下翻几层。
-	// 应用目录都在 /data/data/<包名> 或 /sdcard/Android/data/<包名> 这样的
-	// 第一层上,再深就是在扫应用内部的缓存,又慢又没用
-	searchDepth = 1
+	// maxDirSamples 输出目录已有内容时,提示里举几个例子
+	maxDirSamples = 3
 )
 
-// androidRoots 关键词模式下扫哪些地方。
+// androidRoots 关键词模式下扫哪些地方,以及每处往下翻几层。
 //
-// 顺序是按"命中价值"排的:私有目录里的东西最完整,外部存储次之。
-// 没 root 时前两个进不去,会被自动跳过
+// depth 是相对这个根的层数:应用目录在 /data/user/0/<包名>、
+// /sdcard/Android/data/<包名> 上,要两层才够得着;/sdcard/Download 这类
+// 一层就到。再往下就是在翻应用自己的缓存,又慢又不会因此多找到一个应用。
+//
+// 顺序有意义:同一份数据被多个入口命中时留先扫到的那个,所以
+// /data/user 排在 /data/data 前面 —— 现代安卓上两者是同一处,
+// 而 /data/user/0 才是规范路径(多用户/分身在 /data/user/10 这样的位置)。
+//
+// 没 root 时 /data 下面全进不去,会被自动跳过
 var androidRoots = []struct {
 	path     string
+	depth    int
 	needRoot bool
 }{
-	{"/data/data", true},
-	{"/data/user/0", true},
-	{"/sdcard/Android/data", false},
-	{"/sdcard/Android/media", false},
-	{"/sdcard/Android/obb", false},
+	{"/data/user", 2, true},
+	// 老路径,和 /data/user/0 指向同一处。留着是为了兜住 /data/user
+	// 不存在的老设备;两边都在的话命中项会被 inode 去重掉
+	{"/data/data", 1, true},
+	{"/sdcard/Android", 2, false},
+	// 用户自己看得见的那几个目录:应用名、包名常常出现在这里的文件夹上,
+	// 而这些数据往往正是要找的(下载的文件、导出的图片)
+	{"/sdcard/Download", 1, false},
+	{"/sdcard/Pictures", 1, false},
+	{"/sdcard/Movies", 1, false},
+	{"/sdcard/Music", 1, false},
+	{"/sdcard", 1, false},
 }
 
 // androidExporter 一次安卓导出
@@ -83,6 +96,7 @@ func runAndroidExport(ctx context.Context, opt exportOptions, log func(string, .
 	if err := os.MkdirAll(e.output, 0o755); err != nil {
 		return err
 	}
+	e.warnIfNotEmpty()
 
 	targets := opt.paths
 	if len(targets) == 0 {
@@ -97,6 +111,7 @@ func runAndroidExport(ctx context.Context, opt exportOptions, log func(string, .
 		}
 		log("matched %d path(s) by keywords", len(targets))
 	}
+	targets = e.dedupeTargets(targets)
 
 	var failed int
 	for _, p := range targets {
@@ -124,10 +139,6 @@ func runAndroidExport(ctx context.Context, opt exportOptions, log func(string, .
 func (e *androidExporter) findByKeywords(ctx context.Context, keywords []string) ([]string, error) {
 	var out []string
 	seen := map[string]bool{}
-	// 同一份数据只扫一次。现代安卓上 /data/data 就是 /data/user/0 的软链,
-	// 两个都扫会把整个应用目录打包、拉取、解包两遍 —— 微信那种量级白白多花两分多钟,
-	// 而且后一遍还会把前一遍解出来的覆盖掉
-	scanned := map[string]bool{}
 	for _, r := range androidRoots {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -135,19 +146,13 @@ func (e *androidExporter) findByKeywords(ctx context.Context, keywords []string)
 		if r.needRoot && !e.root {
 			continue
 		}
-		real := e.realPath(r.path)
-		if scanned[real] {
-			e.log("skipping %s (和已扫过的 %s 是同一个位置)", r.path, real)
-			continue
-		}
-		scanned[real] = true
 		// 每个关键词一个 -iname,用 -o 连起来,一次 find 全找完
 		var conds []string
 		for _, k := range keywords {
 			conds = append(conds, "-iname "+adbx.Quote("*"+k+"*"))
 		}
 		script := fmt.Sprintf("find %s -maxdepth %d \\( %s \\) 2>/dev/null",
-			adbx.Quote(r.path), searchDepth, strings.Join(conds, " -o "))
+			adbx.Quote(r.path), r.depth, strings.Join(conds, " -o "))
 		e.log("searching %s", r.path)
 		res, err := adbx.Text(e.dev, script, e.root, cmdTimeout)
 		if err != nil {
@@ -167,38 +172,135 @@ func (e *androidExporter) findByKeywords(ctx context.Context, keywords []string)
 	return out, nil
 }
 
-// realPath 给一个路径算出"它到底是文件系统上的哪个位置",用来判断两个入口是不是同一份数据。
+// dedupeTargets 去掉会把同一份数据导两遍的目标。
 //
-// 用设备号 + inode,不用 readlink:/data/data 和 /data/user/0 谁都不是软链,
-// 它们是指向同一处的 bind mount —— readlink -f 会老老实实各返回各的路径,
-// 分辨不出来。inode 才认得出(实测两边都是 107)。
+// 两种重复,都真实发生过:
 //
-// 取不到就退回原路径 —— 那样最多是少去一次重,不会漏扫
-func (e *androidExporter) realPath(p string) string {
-	out, err := adbx.Text(e.dev, "stat -c '%d:%i' "+adbx.Quote(p)+" 2>/dev/null", e.root, cmdTimeout)
-	if err != nil {
-		return p
+//  1. /data/data/<包名> 和 /data/user/0/<包名> 是指向同一处的 bind mount。
+//     readlink -f 分辨不出来 —— 谁都不是软链,它老老实实各返回各的路径;
+//     设备号 + inode 才认得出(实测两边都是 107)。
+//  2. 一个目标落在另一个目标里面时,父目录那一包已经含了它。
+//
+// 认不出来就全留着:多导一遍浪费时间,漏导一个是丢证据,两者不对等
+func (e *androidExporter) dedupeTargets(paths []string) []string {
+	if len(paths) < 2 {
+		return paths
 	}
-	if s := strings.TrimSpace(out); s != "" && s != ":" {
-		return s
+	ids := e.fileIDs(paths)
+
+	var out []string
+	firstAt := map[string]string{}
+	for i, p := range paths {
+		// 被已选中的目标包住的,跳过
+		if outer, ok := containedIn(p, out); ok {
+			e.log("skipping %s (已经包含在 %s 里)", p, outer)
+			continue
+		}
+		id := ids[i]
+		if id != "" {
+			if prev, dup := firstAt[id]; dup {
+				e.log("skipping %s (和 %s 是同一处)", p, prev)
+				continue
+			}
+			firstAt[id] = p
+		}
+		out = append(out, p)
 	}
-	return p
+	return out
 }
 
-// exportOne 导出一个目录或文件:设备内打包 → 拉回来 → 解包 → 删掉设备上那份
-func (e *androidExporter) exportOne(ctx context.Context, remote string) error {
-	name := path.Base(strings.TrimSuffix(remote, "/"))
-	if name == "" || name == "." || name == "/" {
-		name = "root"
+// fileIDs 一次问出一批路径的"设备号:inode",取不到的那条给空串。
+//
+// 一条命令问完而不是一条路径一次:每次往返都要几十毫秒,
+// 命中几十个目标时就是好几秒
+func (e *androidExporter) fileIDs(paths []string) []string {
+	var b strings.Builder
+	b.WriteString("for p in")
+	for _, p := range paths {
+		b.WriteString(" " + adbx.Quote(p))
 	}
-	stage := fmt.Sprintf("%s/.toolforge-%s-%d.tar", stageDir, sanitize(name), time.Now().UnixNano())
-	localTar := filepath.Join(e.output, sanitize(name)+".tar")
+	// stat 失败时补一个空行,保证"一个路径一行",否则行和路径就对不上号了
+	b.WriteString(`; do stat -c '%d:%i' "$p" 2>/dev/null || echo; done`)
 
-	e.log("packing %s", remote)
-	// -C 到父目录再打包,包里就是相对路径;不然解出来会多出一长串目录层级
-	parent := path.Dir(strings.TrimSuffix(remote, "/"))
-	script := fmt.Sprintf("tar -cf %s -C %s %s && chmod 666 %s",
-		adbx.Quote(stage), adbx.Quote(parent), adbx.Quote(name), adbx.Quote(stage))
+	out, err := adbx.Text(e.dev, b.String(), e.root, cmdTimeout)
+	if err != nil {
+		return make([]string, len(paths))
+	}
+	lines := strings.Split(strings.ReplaceAll(out, "\r\n", "\n"), "\n")
+	// 行数对不上说明这套输出没法信,宁可一个都不去重
+	if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) != len(paths) {
+		return make([]string, len(paths))
+	}
+	for i := range lines {
+		lines[i] = strings.TrimSpace(lines[i])
+	}
+	return lines
+}
+
+// containedIn p 是不是落在 list 里某一条的下面。
+//
+// 比的是路径分段,不是字符串前缀 —— /sdcard/Download 和 /sdcard/Downloads
+// 前缀是包含关系,位置上却毫无关系,按前缀比会把后者整个漏掉
+func containedIn(p string, list []string) (string, bool) {
+	for _, outer := range list {
+		if p == outer {
+			return outer, true
+		}
+		if strings.HasPrefix(p, strings.TrimSuffix(outer, "/")+"/") {
+			return outer, true
+		}
+	}
+	return "", false
+}
+
+// warnIfNotEmpty 输出目录里已经有东西时提醒一声。
+//
+// 不替用户清空:那是他指定的目录,里面可能是上一次取的证。
+// 但混在一起也不能不吭声 —— 旧文件看上去和这次取的一模一样,分不出来
+func (e *androidExporter) warnIfNotEmpty() {
+	ents, err := os.ReadDir(e.output)
+	if err != nil || len(ents) == 0 {
+		return
+	}
+	var names []string
+	for _, ent := range ents {
+		if len(names) >= maxDirSamples {
+			break
+		}
+		names = append(names, ent.Name())
+	}
+	e.log("WARN 输出目录里已经有 %d 个条目(%s…),这次导出会和它们混在一起",
+		len(ents), strings.Join(names, ", "))
+}
+
+// exportOne 导出一个目录或文件:设备内打包 → 拉回来 → 解包 → 删掉设备上那份。
+//
+// 包里存的是去掉开头斜杠的完整设备路径(data/user/0/<包名>/...),解到输出目录后
+// 正好复原成设备上的目录树。不能只存最后一层:同一个应用在 /data/user/0、
+// /sdcard/Android/data、/sdcard/Android/media 下各有一个同名目录,只存最后一层
+// 的话三份会解到同一个地方相互覆盖 —— 既丢数据,也再也说不清哪个文件原来在哪。
+// 取证结果要能对着设备核对,路径本身就是证据的一部分
+func (e *androidExporter) exportOne(ctx context.Context, remote string) error {
+	// 归一化成 /a/b/c 的形状,再转成 tar 里用的相对路径 a/b/c
+	clean := path.Clean("/" + strings.TrimSpace(remote))
+	rel := strings.TrimPrefix(clean, "/")
+	if rel == "" {
+		return fmt.Errorf("不能导出根目录")
+	}
+	stage := fmt.Sprintf("%s/.toolforge-%s-%d.tar", stageDir,
+		sanitize(path.Base(clean)), time.Now().UnixNano())
+	// 本地临时包按完整路径命名:三个目标的最后一层同名,只用最后一层的话
+	// 后一个会覆盖前一个正在用的包
+	localTar := filepath.Join(e.output, ".toolforge-"+sanitize(rel)+".tar")
+
+	e.log("packing %s", clean)
+	// -C / 之后给相对路径,包里就是完整的设备路径。
+	// 不靠 tar 自己剥掉开头的斜杠 —— 那是各家实现自便的行为,写明确的更稳
+	script := fmt.Sprintf("tar -cf %s -C / %s && chmod 666 %s",
+		adbx.Quote(stage), adbx.Quote(rel), adbx.Quote(stage))
 	if _, err := adbx.Text(e.dev, script, e.root, packTimeout); err != nil {
 		return fmt.Errorf("在设备上打包失败%s: %w", e.rootHint(), err)
 	}
@@ -223,7 +325,7 @@ func (e *androidExporter) exportOne(ctx context.Context, remote string) error {
 	}
 	_ = f.Close()
 
-	e.log("extracting %s", filepath.Base(localTar))
+	e.log("extracting → %s", rel)
 	res, err := untar(localTar, e.output)
 	if err != nil {
 		return fmt.Errorf("解包失败: %w", err)

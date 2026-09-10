@@ -23,6 +23,7 @@ import { DefaultsTab } from '../src/profile/sections/aichat/DefaultsTab'
 import MmkvTool from '../src/tools/mmkv/index'
 import PlistTool from '../src/tools/plist/index'
 import DeviceBrowser from '../src/tools/device-browser/index'
+import MobileForensic from '../src/tools/mobile-forensic/index'
 import { ConfirmProvider } from '../src/components/ui/confirm'
 import { conversations } from './fixtures.cjs'
 // 直接引桩本体拿事件把手。build.cjs 只把含 "wailsjs" 的路径重定向到这里,
@@ -513,6 +514,30 @@ async function main() {
     // 常用位置要换成 Android 那套
     if (!txt.includes('应用数据')) throw new Error('常用位置没换成 Android 的')
     if (txt.includes('通讯录捐赠')) throw new Error('Android 下还在显示 iOS 的常用位置')
+  })
+
+  // 19) 移动取证:Android 默认走内置引擎,没装 go-forensic 也照样能用。
+  //
+  // 这一页原来整个被"先去配置 go-forensic"挡在前面 —— 内置实现做出来之后
+  // 那道门就是白挡一道;而挡住之后连切引擎的开关都摸不到,是条死路
+  // SetupGuide 里的「去配置」是个 <Link>,没有 Router 上下文会当场炸
+  await mount('移动取证 · 内置引擎不被拦', <MemoryRouter><MobileForensic /></MemoryRouter>, async () => {
+    const txt = () => document.body.textContent || ''
+    if (!txt().includes('任务参数')) throw new Error('表单没出来,还被 go-forensic 的配置页挡着')
+    if (txt().includes('这次的选择需要 go-forensic')) {
+      throw new Error('默认的内置引擎不该要求配置 go-forensic')
+    }
+    if (!txt().includes('内置引擎')) throw new Error('执行预览没说清楚这次走的是内置')
+
+    // 切到 go-forensic:桩里它是找不到的,这时候才该拦,而且要给得回去
+    await mustClick('go-forensic')
+    if (!txt().includes('这次的选择需要 go-forensic')) {
+      throw new Error('选了 go-forensic 却没提示它还没配置')
+    }
+    await mustClick('改用内置引擎')
+    if (txt().includes('这次的选择需要 go-forensic')) {
+      throw new Error('点了「改用内置引擎」还没退回来 —— 那就成死路了')
+    }
   })
 
   console.log(failed ? '\n有异常' : '\n全部通过')

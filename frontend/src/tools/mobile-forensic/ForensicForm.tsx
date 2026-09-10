@@ -18,6 +18,7 @@ import {
   normalizePath,
   previewCommand,
   splitList,
+  type Engine,
   type FormState,
   type Platform,
 } from './types'
@@ -34,9 +35,11 @@ interface Props {
   onChange: (next: FormState) => void
   onRun: () => void
   disabled: boolean
+  /** 非空表示现在跑不了,内容就是原因;为空表示没拦 */
+  blockReason?: string
 }
 
-export function ForensicForm({ form, onChange, onRun, disabled }: Props) {
+export function ForensicForm({ form, onChange, onRun, disabled, blockReason }: Props) {
   const defaultSshAddr = useForensicStore((s) => s.defaultSshAddr)
   const defaultOutputBase = useForensicStore((s) => s.defaultOutputBase)
   const [passwordLoaded, setPasswordLoaded] = useState(false)
@@ -93,6 +96,7 @@ export function ForensicForm({ form, onChange, onRun, disabled }: Props) {
   // 的数据不属于任何 App,没有包名可搜,只能按绝对路径取
   const canRun =
     !disabled &&
+    !blockReason &&
     (keywordList.length > 0 || pathList.length > 0) &&
     form.outputDir.trim().length > 0 &&
     (form.platform === 'android' || form.sshAddr.trim().length > 0)
@@ -113,16 +117,36 @@ export function ForensicForm({ form, onChange, onRun, disabled }: Props) {
 
   return (
     <div className="rounded-lg border border-border bg-card">
-      <div className="flex items-center justify-between border-b border-border px-4 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2">
         <span className="text-xs font-medium text-muted-foreground">任务参数</span>
-        <ModeToggle
-          value={form.platform}
-          onChange={(p) => setField('platform', p as Platform)}
-          options={[
-            { value: 'android', label: 'Android' },
-            { value: 'ios', label: 'iOS' },
-          ]}
-        />
+        <div className="flex items-center gap-2">
+          {form.platform === 'android' ? (
+            <ModeToggle
+              value={form.engine}
+              onChange={(e) => setField('engine', e as Engine)}
+              options={[
+                { value: 'builtin', label: '内置' },
+                { value: 'cli', label: 'go-forensic' },
+              ]}
+            />
+          ) : (
+            // iOS 还没有内置实现。这里不给选,免得选了个跑不了的组合
+            <span
+              className="rounded-md border border-dashed border-border px-2 py-1 text-[11px] text-muted-foreground"
+              title="iOS 目前只能走 go-forensic，内置实现还没做"
+            >
+              go-forensic
+            </span>
+          )}
+          <ModeToggle
+            value={form.platform}
+            onChange={(p) => setField('platform', p as Platform)}
+            options={[
+              { value: 'android', label: 'Android' },
+              { value: 'ios', label: 'iOS' },
+            ]}
+          />
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-4 p-4 md:grid-cols-2">
@@ -253,11 +277,14 @@ export function ForensicForm({ form, onChange, onRun, disabled }: Props) {
       </div>
 
       <div className="border-t border-border bg-muted/30 px-4 py-3">
-        <div className="mb-2 text-xs font-medium text-muted-foreground">命令预览</div>
-        <code className="block break-all rounded bg-background px-3 py-2 font-mono text-[12px]">
+        <div className="mb-2 text-xs font-medium text-muted-foreground">执行预览</div>
+        <code className="block whitespace-pre-wrap break-all rounded bg-background px-3 py-2 font-mono text-[12px]">
           {previewCommand(form)}
         </code>
-        <div className="mt-3 flex justify-end">
+        <div className="mt-3 flex items-center justify-end gap-3">
+          {blockReason && (
+            <span className="text-[11px] text-muted-foreground">{blockReason}</span>
+          )}
           <Button onClick={run} disabled={!canRun}>
             <Play className="h-3.5 w-3.5" />
             {disabled ? '执行中…' : '开始取证'}

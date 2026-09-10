@@ -13,6 +13,45 @@ import (
 // 已经按这个形状定下来了,agent 那边也是照着它给的。为了内部实现改一次
 // 就动对外接口不值当 —— 何况 iOS 那条还在走命令行,两边得说同一种话。
 
+// engine 用哪套实现跑
+type engine string
+
+const (
+	// engineAuto 没指定:能走内置就走内置,不能就回落命令行
+	engineAuto engine = ""
+	// engineBuiltin 明确要内置实现
+	engineBuiltin engine = "builtin"
+	// engineCLI 明确要 go-forensic 命令行
+	engineCLI engine = "cli"
+)
+
+// engineFlagPrefix 选引擎用的伪 flag。
+//
+// 走 flag 而不是给 RunForensic 加一个参数:入口签名一动,Wails 绑定、
+// MCP 的入参 schema、已经照着它写的 agent 全要跟着改。
+// 它不是 go-forensic 认识的参数,回落到命令行之前必须摘掉
+const engineFlagPrefix = "--engine="
+
+// splitEngine 把 --engine=xxx 从参数里摘出来,返回剩下的参数和选中的引擎。
+// 值不认识就当没写过(回到 auto)—— 比直接报错宽容,行为也还是安全的
+func splitEngine(args []string) ([]string, engine) {
+	eng := engineAuto
+	out := make([]string, 0, len(args))
+	for _, a := range args {
+		if !strings.HasPrefix(a, engineFlagPrefix) {
+			out = append(out, a)
+			continue
+		}
+		switch engine(strings.TrimPrefix(a, engineFlagPrefix)) {
+		case engineBuiltin:
+			eng = engineBuiltin
+		case engineCLI:
+			eng = engineCLI
+		}
+	}
+	return out, eng
+}
+
 // exportOptions 一次导出要的东西
 type exportOptions struct {
 	platform string

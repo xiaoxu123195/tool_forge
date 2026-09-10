@@ -204,9 +204,12 @@ func (s *Service) Check(customPath string) Info {
 
 // Run 启动一个取证任务，返回 jobID；后续通过事件推送输出。
 //
-// 安卓的 export 走原生实现(adb 协议),其余仍然调命令行。
+// 安卓的 export 默认走内置实现(直接说 adb 协议),其余仍然调 go-forensic 命令行。
 // 两条路对外是一样的:同一个 jobID、同一串 forensic:log / forensic:done 事件、
 // 同一个 Cancel —— 界面和 MCP 那头都感觉不到区别。
+//
+// 参数里带 --engine=cli 可以强制走命令行:内置实现在某台设备上不好使时,
+// 还有一条退路,不用换工具。
 func (s *Service) Run(args []string) (string, error) {
 	if s.ctx == nil {
 		return "", errors.New("取证服务还没初始化(缺少上下文)")
@@ -215,14 +218,33 @@ func (s *Service) Run(args []string) (string, error) {
 		return "", errors.New("空参数")
 	}
 
+	args, eng := splitEngine(args)
+	if eng == engineCLI {
+		return s.runCLI(args)
+	}
 	if opt, ok := parseExportArgs(args); nativeSupported(opt, ok) {
 		return s.runNative(opt)
+	}
+	if eng == engineBuiltin {
+		// 明确点了内置却跑不了,就得说清楚。悄悄换成 go-forensic 是在骗人:
+		// 那是另一个程序、另一套行为,用户未必装了,装了也未必想用
+		return "", errors.New("这条命令还没有内置实现(目前只有 Android 的 export),请改用 go-forensic 引擎")
 	}
 	return s.runCLI(args)
 }
 
-// runNative 用原生实现跑,不 fork 任何进程
+// runNative 用内置实现跑安卓导出,不 fork 任何进程
 func (s *Service) runNative(opt exportOptions) (string, error) {
+	return s.runJob(func(ctx context.Context, log func(string, ...any)) error {
+		log("%s", opt.describe())
+		return runAndroidExport(ctx, opt, log)
+	})
+}
+
+// runJob 跑一个内置任务:分配 jobID、接上取消、结束时发 done 事件。
+//
+// fn 里每调一次 log 前端就多一行输出 —— 和从子进程 stdout 捞行是同一套契约
+func (s *Service) runJob(fn func(context.Context, func(string, ...any)) error) (string, error) {
 	jobID := newJobID()
 	runCtx, cancel := context.WithCancel(s.ctx)
 
@@ -241,8 +263,11 @@ func (s *Service) runNative(opt exportOptions) (string, error) {
 	}
 
 	go func() {
-		logf("%s", opt.describe())
-		err := runAndroidExport(runCtx, opt, logf)
+		err := fn(runCtx, logf)
+		// 是不是被取消,必须在自己 cancel 之前问。下面那句 j.cancel() 是用来
+		// 释放 context 的,它同样会把 runCtx.Err() 变成 Canceled ——
+		// 问晚了就每次都答"已取消",跑得再顺利也一样
+		canceled := runCtx.Err() != nil
 
 		s.mu.Lock()
 		j := s.jobs[jobID]
@@ -254,7 +279,7 @@ func (s *Service) runNative(opt exportOptions) (string, error) {
 
 		done := DoneEvent{JobID: jobID}
 		switch {
-		case errors.Is(runCtx.Err(), context.Canceled):
+		case canceled:
 			done.Canceled = true
 			done.ExitCode = -1
 		case err != nil:
@@ -317,6 +342,11 @@ func (s *Service) runCLI(args []string) (string, error) {
 
 	go func() {
 		waitErr := cmd.Wait()
+		// 同上:得在自己 cancel 之前问。这条路上它只在失败时被读到,
+		// 所以症状不是"成功也说取消",而是"每一次失败都说成取消",
+		// 真正的错误被盖掉 —— 更难查
+		canceled := runCtx.Err() != nil
+
 		s.mu.Lock()
 		j := s.jobs[jobID]
 		delete(s.jobs, jobID)
@@ -327,7 +357,7 @@ func (s *Service) runCLI(args []string) (string, error) {
 
 		done := DoneEvent{JobID: jobID}
 		if waitErr != nil {
-			if errors.Is(runCtx.Err(), context.Canceled) {
+			if canceled {
 				done.Canceled = true
 				done.ExitCode = -1
 			} else if exitErr, ok := waitErr.(*exec.ExitError); ok {

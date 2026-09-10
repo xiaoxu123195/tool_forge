@@ -222,3 +222,31 @@ func TestUntarReportsRenames(t *testing.T) {
 		t.Errorf("改名后的文件不在: %v", err)
 	}
 }
+
+// 去重的边界:比的是路径分段而不是字符串前缀。
+// /sdcard/Download 和 /sdcard/Downloads 前缀上是包含关系,位置上却毫无关系 ——
+// 按前缀比会把后一个整个当成前一个的子目录漏掉
+func TestContainedIn(t *testing.T) {
+	list := []string{"/sdcard/Download", "/data/user/0/com.taobao.idlefish"}
+	yes := []string{
+		"/sdcard/Download",
+		"/sdcard/Download/a.txt",
+		"/data/user/0/com.taobao.idlefish/databases",
+	}
+	for _, p := range yes {
+		if _, ok := containedIn(p, list); !ok {
+			t.Errorf("%q 应该算在里面", p)
+		}
+	}
+	no := []string{
+		"/sdcard/Downloads",
+		"/sdcard/Download2/x",
+		"/data/user/0/com.taobao.idlefish2",
+		"/sdcard",
+	}
+	for _, p := range no {
+		if outer, ok := containedIn(p, list); ok {
+			t.Errorf("%q 不该被当成 %q 的子目录", p, outer)
+		}
+	}
+}

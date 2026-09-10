@@ -33,7 +33,7 @@ func NewStreamHandler(svc *Service) *StreamHandler {
 func (h *StreamHandler) Name() string  { return "mobile-forensic" }
 func (h *StreamHandler) Title() string { return "移动取证" }
 func (h *StreamHandler) Description() string {
-	return "调外部 go-forensic CLI 抽取移动 App 数据(Android/iOS);SSE 流式返回日志,关闭连接即取消"
+	return "抽取移动 App 数据(Android/iOS);Android 走内置 adb 实现,iOS 调 go-forensic CLI;SSE 流式返回日志,关闭连接即取消"
 }
 func (h *StreamHandler) Methods() []string { return []string{http.MethodPost} }
 
@@ -116,19 +116,22 @@ func (h *StreamHandler) HandleStream(
 
 // InputSchema 给 MCP 用的入参描述。
 //
-// 这个工具本质是"代跑一条 go-forensic 命令",所以 schema 能给的最有用的东西
-// 不是字段类型,而是几条真实可用的命令样例 —— agent 照着改比凭空拼靠谱得多。
+// 参数是 go-forensic 那套命令行的形状,即使 Android 已经换成内置实现也照旧收 ——
+// 两个平台得说同一种话,而且这个 schema 已经定下来,agent 也是照着它写的。
+// schema 能给的最有用的东西不是字段类型,而是几条真实可用的样例。
 func (h *StreamHandler) InputSchema() map[string]any {
 	return map[string]any{
 		"type":     "object",
 		"required": []string{"args"},
 		"properties": map[string]any{
 			"args": map[string]any{
-				"type":        "array",
-				"items":       map[string]any{"type": "string"},
-				"description": "go-forensic 的完整 CLI 参数,一个参数一个元素(不要把整条命令塞成一个字符串)",
+				"type":  "array",
+				"items": map[string]any{"type": "string"},
+				"description": "完整参数,一个参数一个元素(不要把整条命令塞成一个字符串)。" +
+					"Android 的 export 默认走内置实现;加 --engine=cli 可以强制改调 go-forensic",
 				"examples": []any{
 					[]string{"android", "export", "-k", "wechat", "-o", "/tmp/out"},
+					[]string{"android", "export", "--engine=cli", "-k", "wechat", "-o", "/tmp/out"},
 					[]string{"ios", "export", "-s", "/private/var/mobile/Library/Mail/", "-o", "/tmp/out"},
 				},
 			},
