@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -60,9 +62,9 @@ type androidTransport struct {
 }
 
 func connectAndroid(opt ConnectOptions) (transport, *Session, error) {
-	adb := strings.TrimSpace(opt.AdbPath)
-	if adb == "" {
-		adb = "adb"
+	adb, err := resolveAdb(opt.AdbPath)
+	if err != nil {
+		return nil, nil, err
 	}
 	serial, model, err := pickAndroidDevice(adb, opt.DeviceID)
 	if err != nil {
@@ -78,6 +80,84 @@ func connectAndroid(opt ConnectOptions) (transport, *Session, error) {
 		Rooted:   t.root,
 		Model:    model,
 	}, nil
+}
+
+// bundledAdbPath 应用自己那份 adb 放在哪。
+//
+// 没显式指定路径时优先用它,而不是直接奔 PATH:Windows 上一堆手机助手
+// 会把自带的 adb 塞进系统目录,那些版本往往老到认不出现代设备,
+// 而它们又排在 PATH 前面 —— 用户根本不会想到问题出在这里。
+func bundledAdbPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	p := filepath.Join(home, ".toolforge", "platform-tools", "adb.exe")
+	if runtime.GOOS != "windows" {
+		p = filepath.Join(home, ".toolforge", "platform-tools", "adb")
+	}
+	if st, err := os.Stat(p); err == nil && !st.IsDir() {
+		return p
+	}
+	return ""
+}
+
+// minUsableAdb adb 能认出现代设备的最低版本。
+//
+// 1.0.32 之前的版本没有 RSA 授权握手(那是 Android 4.2.2 引入的),
+// 对着一台现代手机的表现是"设备列表为空",不会有任何报错 ——
+// 这正是最难查的那种失败。
+const minUsableAdbMinor = 32
+
+// resolveAdb 决定用哪个 adb,并在版本明显过老时直接拦下来。
+//
+// 拦下来比让它继续跑好:老版本不会报错,只会给一个空的设备列表,
+// 而空列表看起来就是"线没插好",人会去查线、换口、重启手机 —— 全是白费功夫。
+func resolveAdb(explicit string) (string, error) {
+	adb := strings.TrimSpace(explicit)
+	if adb == "" {
+		if b := bundledAdbPath(); b != "" {
+			adb = b
+		} else {
+			adb = "adb"
+		}
+	}
+	out, _, err := runCmd(context.Background(), 15*time.Second, adb, "version")
+	if err != nil {
+		return "", fmt.Errorf("跑不起来 %s:%w —— 确认 adb 装了、路径对", adb, err)
+	}
+	full, minor := parseAdbVersion(out)
+	if minor > 0 && minor < minUsableAdbMinor {
+		where := adb
+		if resolved, err := exec.LookPath(adb); err == nil {
+			where = resolved
+		}
+		return "", fmt.Errorf(
+			"adb 版本过老(%s,在 %s)—— 这个版本没有 RSA 授权握手,认不出 2013 年以后的设备,"+
+				"表现就是设备列表一直是空的。装一份新的 platform-tools,在「adb 路径」里指过去",
+			full, where)
+	}
+	return adb, nil
+}
+
+// parseAdbVersion 从 "Android Debug Bridge version 1.0.41" 里取出版本。
+// 第二个返回值是次版本号(41 / 26),取不到时为 0
+func parseAdbVersion(out string) (full string, minor int) {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		const marker = "version "
+		i := strings.Index(line, marker)
+		if !strings.Contains(line, "Android Debug Bridge") || i < 0 {
+			continue
+		}
+		full = strings.TrimSpace(line[i+len(marker):])
+		parts := strings.Split(full, ".")
+		if len(parts) >= 3 {
+			minor, _ = strconv.Atoi(parts[2])
+		}
+		return full, minor
+	}
+	return "", 0
 }
 
 // pickAndroidDevice 选一台设备。
@@ -366,18 +446,32 @@ func (t *androidTransport) rootHint() string {
 	return "(当前没有 root,/data 下面读不了)"
 }
 
-// runCmd 跑一个本地进程,带超时
+// runCmd 跑一个本地进程,带超时。
+//
+// WaitDelay 这一行是必须的,不是保险:
+//
+// adb 第一次被调用时会 fork 一个后台 server 守护进程,而那个守护进程
+// 继承了我们这条 stdout 管道的写端。Go 的 Wait 要等 io 拷贝 goroutine 结束,
+// 管道又要等**所有**持有写端的进程退出才关闭 —— 守护进程是常驻的,永远不退。
+// 于是即使 context 到期把 adb 本身杀了,Wait 仍然卡在拷贝上,整个超时形同虚设,
+// 界面上的表现就是"连接中"三个字一直转下去。
+//
+// WaitDelay 让 Wait 在进程结束后最多再等这么久就放弃拷贝、强行返回。
+const cmdWaitDelay = 3 * time.Second
+
 func runCmd(ctx context.Context, timeout time.Duration, name string, args ...string) (string, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = cmdWaitDelay
 	hideWindow(cmd)
 	var out, errBuf strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
 	err := cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
-		return out.String(), errBuf.String(), fmt.Errorf("命令超过 %s 还没结束", timeout)
+		return out.String(), errBuf.String(),
+			fmt.Errorf("命令超过 %s 还没结束(%s)", timeout, name)
 	}
 	return out.String(), errBuf.String(), err
 }
