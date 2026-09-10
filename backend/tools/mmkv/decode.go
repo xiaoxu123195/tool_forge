@@ -47,9 +47,19 @@ const (
 	TypeStringSet = "stringSet"
 )
 
-// describeValue 把一个原始值摊开成"所有可能的读法"
-func describeValue(v []byte) Value {
-	out := Value{Hex: hexPreview(v), Size: len(v)}
+// describeValue 把一个原始值摊开成"所有可能的读法"。
+//
+// hexLimit 是十六进制预览的字节上限,由调用方给 —— agent 和人看同一个值,
+// 能花的预算不一样:MCP 那头多一屏十六进制就是少一屏别的东西,
+// 桌面页那头人是真会盯着这串字节找线索的
+func describeValue(v []byte, hexLimit int) Value {
+	if hexLimit <= 0 {
+		hexLimit = mcpHexLimit
+	}
+	// Decoded 初始化成空切片而不是留 nil:Go 的 nil 切片 json.Marshal 出来是 null,
+	// 而不是 []。有的值一种类型都解不通(比如单个 0xff),那时候 Decoded 就是 nil ——
+	// 前端拿到 null 再 .map 就是整页白屏,MCP 那头也一样要额外判空
+	out := Value{Hex: hexPreview(v, hexLimit), Size: len(v), Decoded: []Decoded{}}
 	add := func(t, d string, ok bool) {
 		if ok {
 			out.Decoded = append(out.Decoded, Decoded{Type: t, Display: d})
@@ -85,7 +95,7 @@ func describeValue(v []byte) Value {
 		f := math.Float64frombits(binary.LittleEndian.Uint64(v))
 		add(TypeFloat64, strconv.FormatFloat(f, 'g', -1, 64), true)
 	}
-	if h, ok := asBytes(v); ok {
+	if h, ok := asBytes(v, hexLimit); ok {
 		add(TypeBytes, h, true)
 	}
 
@@ -162,12 +172,12 @@ func asString(v []byte) (string, bool) {
 }
 
 // asBytes 和字符串同构,只是内容不要求是合法 UTF-8
-func asBytes(v []byte) (string, bool) {
+func asBytes(v []byte, hexLimit int) (string, bool) {
 	n, read, err := readVarintU32(v, 0)
 	if err != nil || read+int(n) > len(v) {
 		return "", false
 	}
-	return hexPreview(v[read : read+int(n)]), true
+	return hexPreview(v[read:read+int(n)], hexLimit), true
 }
 
 func asBool(v []byte) (bool, bool) {
@@ -246,16 +256,21 @@ func asStringSet(v []byte) ([]string, bool) {
 	return out, true
 }
 
-// hexPreviewLimit 单个值最多展示多少字节的十六进制。
-// 一个值可能是几百 KB 的图片,全展开会把 agent 的上下文占满
-const hexPreviewLimit = 512
+// 单个值最多展示多少字节的十六进制。一个值可能是几百 KB 的图片,全展开谁也受不了。
+//
+// 两个数不一样是有意的:mcpHexLimit 花的是 agent 的上下文预算,能省则省;
+// desktopHexLimit 花的是屏幕,而人是真会盯着这串字节找线索的
+const (
+	mcpHexLimit     = 512
+	desktopHexLimit = 1024
+)
 
-func hexPreview(b []byte) string {
-	if len(b) <= hexPreviewLimit {
+func hexPreview(b []byte, limit int) string {
+	if len(b) <= limit {
 		return hex.EncodeToString(b)
 	}
 	var sb strings.Builder
-	sb.WriteString(hex.EncodeToString(b[:hexPreviewLimit]))
-	fmt.Fprintf(&sb, "… (还有 %d 字节)", len(b)-hexPreviewLimit)
+	sb.WriteString(hex.EncodeToString(b[:limit]))
+	fmt.Fprintf(&sb, "… (还有 %d 字节)", len(b)-limit)
 	return sb.String()
 }

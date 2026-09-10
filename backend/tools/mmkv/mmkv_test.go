@@ -2,6 +2,9 @@ package mmkv
 
 import (
 	"encoding/binary"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -139,7 +142,7 @@ func TestParseRejectsTooSmall(t *testing.T) {
 // 值不带类型标记,所以要把所有解得通的读法都列出来
 func TestDescribeValueListsCandidates(t *testing.T) {
 	// 单字节 0x01:既是 bool true,也是 varint 1
-	v := describeValue([]byte{1})
+	v := describeValue([]byte{1}, mcpHexLimit)
 	if !hasType(v.Decoded, TypeBool) || !hasType(v.Decoded, TypeInt32) {
 		t.Errorf("0x01 应该同时列出 bool 和整数: %+v", v.Decoded)
 	}
@@ -148,7 +151,7 @@ func TestDescribeValueListsCandidates(t *testing.T) {
 	}
 
 	// 一段可读文本:整数读法虽然也"通",但不该被选成 best
-	s := describeValue(mmkvString("hello world"))
+	s := describeValue(mmkvString("hello world"), mcpHexLimit)
 	if s.Best != TypeString {
 		t.Errorf("可读文本应该判成 string,得到 %q", s.Best)
 	}
@@ -157,7 +160,7 @@ func TestDescribeValueListsCandidates(t *testing.T) {
 // 空字符串谁都能"解出来",不能因此把随机字节判成 string
 func TestBestIgnoresEmptyString(t *testing.T) {
 	// 0x00 开头 = 长度为 0 的字符串,后面还有字节
-	v := describeValue([]byte{0x00, 0xff, 0xfe})
+	v := describeValue([]byte{0x00, 0xff, 0xfe}, mcpHexLimit)
 	if v.Best == TypeString {
 		t.Errorf("空字符串不该被当成最佳判断: %+v", v)
 	}
@@ -166,7 +169,7 @@ func TestBestIgnoresEmptyString(t *testing.T) {
 func TestStringSet(t *testing.T) {
 	inner := append(mmkvString("a"), mmkvString("bb")...)
 	val := append(appendVarint(nil, uint64(len(inner))), inner...)
-	v := describeValue(val)
+	v := describeValue(val, mcpHexLimit)
 	if v.Best != TypeStringSet {
 		t.Errorf("应该判成 stringSet,得到 %q;候选 %+v", v.Best, v.Decoded)
 	}
@@ -178,8 +181,8 @@ func TestStringSet(t *testing.T) {
 // 超长的值只给前面一段十六进制 —— 一个值可能是几百 KB 的图片,
 // 全展开会把 agent 的上下文占满
 func TestHexPreviewTruncates(t *testing.T) {
-	big := make([]byte, hexPreviewLimit*2)
-	v := describeValue(big)
+	big := make([]byte, mcpHexLimit*2)
+	v := describeValue(big, mcpHexLimit)
 	if !strings.Contains(v.Hex, "还有") {
 		t.Error("超长的值应该截断并说明还剩多少")
 	}
@@ -204,4 +207,58 @@ func displayOf(v Value, t string) string {
 		}
 	}
 	return ""
+}
+
+// 一种类型都解不通的值(比如单个 0xff)也必须给出空的候选清单,不能是 nil。
+// Go 的 nil 切片 json.Marshal 出来是 null,前端拿到 null 再 .map 就是整页白屏 ——
+// 这个项目已经因为同一类问题炸过一次(跨会话搜索的 hits)
+func TestDecodedNeverNil(t *testing.T) {
+	v := describeValue([]byte{0xff}, mcpHexLimit)
+	if v.Decoded == nil {
+		t.Fatal("Decoded 是 nil,会被序列化成 null")
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), `"decoded":null`) {
+		t.Errorf("序列化出了 null: %s", b)
+	}
+}
+
+// 桌面页那条路返回的结构里,切片字段同样不能是 nil
+func TestFileResultSlicesNeverNil(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sample")
+	data := buildMMKV([][2][]byte{
+		kv("a", mmkvString("x")),
+		kv("weird", []byte{0xff}),
+	})
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := ParseFile(path, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Entries == nil {
+		t.Fatal("Entries 是 nil")
+	}
+	for _, e := range res.Entries {
+		if e.Values == nil {
+			t.Fatalf("%s 的 Values 是 nil", e.Key)
+		}
+		for i, v := range e.Values {
+			if v.Decoded == nil {
+				t.Errorf("%s[%d] 的 Decoded 是 nil", e.Key, i)
+			}
+		}
+	}
+	b, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), ":null") {
+		t.Errorf("结果里有 null 数组: %s", b)
+	}
 }

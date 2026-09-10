@@ -1,24 +1,26 @@
-import { useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { AlertCircle, Database, Download, FolderOpen, Lock, Search } from 'lucide-react'
 import { ToolShell } from '@/components/tool/ToolShell'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { downloadText } from '@/lib/download'
-import { useFileDrop } from '@/lib/useFileDrop'
-import { useMmkvStore } from '@/stores/mmkv'
-import { meta } from './meta'
-import { parseMMKV } from './logic/parser'
-import { decryptMMKV } from './logic/decrypt'
+import { useNativeFileDrop } from '@/lib/useNativeFileDrop'
+import { useMmkvStore, type TypesMap } from '@/stores/mmkv'
 import {
-  TYPE_ORDER,
-  decodeAs,
-  type MMKVType,
-} from './logic/decoders'
+  ParseMMKVFile,
+  PickLocalFile,
+  ReadMMKVValueHex,
+} from '../../../wailsjs/go/main/App'
+import type { mmkv } from '../../../wailsjs/go/models'
+import { meta } from './meta'
+import { defaultTypeOf, displayOf, nextTypeOf } from './valueTypes'
 import { ValueCell } from './components/ValueCell'
 import { DetailModal, type DetailContext } from './components/DetailModal'
 import { DecryptPanel } from './components/DecryptPanel'
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024
+// 解析、解密、类型推断全在 Go 里(backend/tools/mmkv)。这个页面以前自带一整套
+// TypeScript 实现,和后端那份是两套代码 —— 同一个文件两边读出不一样的值时
+// 谁也说不清该信哪个。现在页面只负责显示,和 MCP 工具走同一条代码路径。
 
 export default function MmkvTool() {
   const file = useMmkvStore((s) => s.file)
@@ -35,120 +37,81 @@ export default function MmkvTool() {
   const [error, setError] = useState('')
   const [detail, setDetail] = useState<DetailContext | null>(null)
   const [decryptOpen, setDecryptOpen] = useState(false)
-  const [lastLoadedFile, setLastLoadedFile] = useState<File | null>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [busy, setBusy] = useState(false)
 
-  const applyParsed = (
-    name: string,
-    size: number,
-    parse: ReturnType<typeof parseMMKV>,
-    encrypted = false
+  const applyResult = (
+    path: string,
+    result: mmkv.FileResult,
+    crcPath = '',
+    keyHex = ''
   ) => {
-    const initial: Record<string, MMKVType[]> = {}
-    for (const e of parse.entries) {
-      initial[e.key] = e.values.map(() => 'hexstring' as MMKVType)
+    // 每个值的初始类型用后端猜的那个,而不是一律显示原始十六进制 ——
+    // 后端本来就把"最可能是什么"算出来了,让人再一个个点回去没有意义
+    const initial: TypesMap = {}
+    for (const e of result.entries) {
+      initial[e.key] = e.values.map(defaultTypeOf)
     }
-    setFile({ name, size, parse, encrypted })
+    setFile({ path, crcPath, keyHex, result })
     setTypesByKey(initial)
+    setError('')
   }
 
-  const loadFile = async (f: File) => {
-    setError('')
-    setLastLoadedFile(f)
-    if (f.size > MAX_FILE_SIZE) {
-      setError(
-        `文件过大（${(f.size / 1024 / 1024).toFixed(2)} MB），上限 ${MAX_FILE_SIZE / 1024 / 1024} MB`
-      )
-      return
-    }
+  const openPath = async (path: string) => {
+    setBusy(true)
     try {
-      const buf = await f.arrayBuffer()
-      const parse = parseMMKV(new Uint8Array(buf))
-      if (parse.entries.length === 0 && parse.removedCount === 0) {
-        setError(
-          '没有解析出任何 key。文件可能被 AES 加密，请用「加密打开」提供 .crc 和 AES key。'
-        )
-        setFile(null)
-        return
-      }
-      applyParsed(f.name, f.size, parse, false)
+      applyResult(path, await ParseMMKVFile(path, '', ''))
     } catch (e) {
-      setError(
-        (e instanceof Error ? e.message : '解析失败') +
-          '。若为加密 MMKV，请点击「加密打开」。'
-      )
       setFile(null)
+      setError(String(e))
+    } finally {
+      setBusy(false)
     }
   }
 
-  const decryptAndLoad = async (
-    mmkvFile: File,
-    crcFile: File,
-    keyHex: string
-  ) => {
-    if (mmkvFile.size > MAX_FILE_SIZE) {
-      throw new Error(
-        `文件过大（${(mmkvFile.size / 1024 / 1024).toFixed(2)} MB），上限 ${MAX_FILE_SIZE / 1024 / 1024} MB`
-      )
-    }
-    const [mmkvBuf, crcBuf] = await Promise.all([
-      mmkvFile.arrayBuffer(),
-      crcFile.arrayBuffer(),
-    ])
-    const plaintext = decryptMMKV(
-      new Uint8Array(mmkvBuf),
-      new Uint8Array(crcBuf),
-      keyHex
-    )
-    const parse = parseMMKV(plaintext)
-    if (parse.entries.length === 0 && parse.removedCount === 0) {
-      throw new Error('解密后仍然没有解析出任何 key。可能是 AES key 错误')
-    }
-    applyParsed(mmkvFile.name, mmkvFile.size, parse, true)
-    setError('')
+  const decryptAndLoad = async (mmkvPath: string, crcPath: string, keyHex: string) => {
+    const res = await ParseMMKVFile(mmkvPath, crcPath, keyHex)
+    applyResult(mmkvPath, res, crcPath, keyHex)
     setDecryptOpen(false)
-    setLastLoadedFile(mmkvFile)
   }
 
-  const { dragOver, dragHandlers } = useFileDrop({
-    binary: true,
-    onLoad: (r) => {
-      if (r.kind === 'binary') loadFile(r.file)
-    },
-    onError: (msg) => setError(msg),
+  // 原生拖放给的是绝对路径(HTML5 拖放给不了),后端直接读文件,
+  // 50MB 的 MMKV 不用先在 JS 里读一遍再传过桥
+  useNativeFileDrop((paths) => {
+    if (paths.length > 0) openPath(paths[0])
   })
 
+  const pickFile = async () => {
+    const p = await PickLocalFile('选择 MMKV 文件')
+    if (p) openPath(p)
+  }
+
+  const entries = file?.result.entries ?? []
+
   const filteredEntries = useMemo(() => {
-    if (!file) return []
     const q = search.trim().toLowerCase()
-    if (!q) return file.parse.entries
-    return file.parse.entries.filter((e) => e.key.toLowerCase().includes(q))
-  }, [file, search])
+    if (!q) return entries
+    return entries.filter((e) => e.key.toLowerCase().includes(q))
+  }, [entries, search])
 
-  const getType = (key: string, index: number): MMKVType =>
-    typesByKey[key]?.[index] ?? 'hexstring'
+  const getType = (key: string, index: number, value: mmkv.Value): string =>
+    typesByKey[key]?.[index] ?? defaultTypeOf(value)
 
-  const cycleType = (key: string, index: number) => {
-    const cur = getType(key, index)
-    const nextIdx = (TYPE_ORDER.indexOf(cur) + 1) % TYPE_ORDER.length
-    cycleTypeAction(key, index, TYPE_ORDER[nextIdx])
+  const cycleType = (key: string, index: number, value: mmkv.Value) => {
+    cycleTypeAction(key, index, nextTypeOf(value, getType(key, index, value)))
   }
 
   const exportJson = () => {
     if (!file) return
     const out: Record<string, unknown> = {}
-    for (const entry of file.parse.entries) {
+    for (const entry of entries) {
       out[entry.key] = entry.values.map((v, i) => {
-        const t = getType(entry.key, i)
-        const r = decodeAs(v, t)
-        return r.ok
-          ? { type: t, value: serializable(r.raw) }
-          : { type: t, error: r.reason }
+        const t = getType(entry.key, i, v)
+        return { type: t, value: displayOf(v, t) }
       })
     }
     downloadText(
       JSON.stringify(out, null, 2),
-      `${file.name}.json`,
+      `${file.result.name}.json`,
       'application/json;charset=utf-8'
     )
   }
@@ -182,25 +145,10 @@ export default function MmkvTool() {
         setError('')
         setDetail(null)
         setDecryptOpen(false)
-        setLastLoadedFile(null)
       }}
       actions={
         <div className="flex items-center gap-1.5">
-          <input
-            ref={fileInputRef}
-            type="file"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0]
-              if (f) loadFile(f)
-              e.target.value = ''
-            }}
-          />
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => fileInputRef.current?.click()}
-          >
+          <Button variant="outline" size="sm" onClick={pickFile} disabled={busy}>
             <FolderOpen className="h-3.5 w-3.5" />
             打开
           </Button>
@@ -212,12 +160,7 @@ export default function MmkvTool() {
             <Lock className="h-3.5 w-3.5" />
             加密打开
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={exportJson}
-            disabled={!file}
-          >
+          <Button variant="ghost" size="sm" onClick={exportJson} disabled={!file}>
             <Download className="h-3.5 w-3.5" />
             导出 JSON
           </Button>
@@ -225,15 +168,12 @@ export default function MmkvTool() {
       }
     >
       <div
-        {...dragHandlers}
-        className={cn(
-          'relative flex h-full flex-col gap-3 rounded-lg transition',
-          dragOver && 'ring-2 ring-primary ring-offset-2 ring-offset-background'
-        )}
+        style={{ ['--wails-drop-target' as never]: 'drop' }}
+        className="relative flex h-full flex-col gap-3 rounded-lg"
       >
         {decryptOpen && (
           <DecryptPanel
-            initialMmkvFile={lastLoadedFile}
+            initialMmkvPath={file?.path}
             onCancel={() => setDecryptOpen(false)}
             onSubmit={decryptAndLoad}
           />
@@ -243,20 +183,20 @@ export default function MmkvTool() {
           <>
             <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
               <div className="flex items-center gap-3">
-                <span className="font-medium">{file.name}</span>
-                {file.encrypted && (
+                <span className="font-medium">{file.result.name}</span>
+                {file.result.encrypted && (
                   <span className="inline-flex items-center gap-1 rounded-sm bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
                     <Lock className="h-3 w-3" />
                     已解密
                   </span>
                 )}
                 <span className="text-muted-foreground">
-                  共 {file.parse.entries.length} 个 key
-                  {file.parse.removedCount > 0 && (
-                    <> · {file.parse.removedCount} 个删除标记</>
+                  共 {entries.length} 个 key
+                  {file.result.removedCount > 0 && (
+                    <> · {file.result.removedCount} 个删除标记</>
                   )}
                   {' · '}
-                  {(file.size / 1024).toFixed(1)} KB
+                  {(file.result.size / 1024).toFixed(1)} KB
                 </span>
               </div>
               <div className="flex items-center gap-2">
@@ -327,16 +267,26 @@ export default function MmkvTool() {
                             {entry.values.map((v, i) => (
                               <ValueCell
                                 key={i}
-                                bytes={v}
-                                type={getType(entry.key, i)}
-                                onCycle={() => cycleType(entry.key, i)}
+                                value={v}
+                                type={getType(entry.key, i, v)}
+                                onCycle={() => cycleType(entry.key, i, v)}
                                 onExpand={() =>
                                   setDetail({
                                     key: entry.key,
                                     index: i,
                                     total: entry.values.length,
-                                    bytes: v,
-                                    type: getType(entry.key, i),
+                                    value: v,
+                                    type: getType(entry.key, i, v),
+                                    // 表格里的十六进制是截断过的。要完整的就回后端再读一次,
+                                    // 而不是让每一行都背着一份完整字节过桥
+                                    fullHex: () =>
+                                      ReadMMKVValueHex(
+                                        file.path,
+                                        file.crcPath,
+                                        file.keyHex,
+                                        entry.key,
+                                        i
+                                      ),
                                   })
                                 }
                               />
@@ -351,16 +301,7 @@ export default function MmkvTool() {
             </div>
           </>
         ) : (
-          <EmptyState
-            onPick={() => fileInputRef.current?.click()}
-            error={error}
-          />
-        )}
-
-        {dragOver && (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-lg bg-primary/10 text-sm font-medium text-primary">
-            松开以加载文件
-          </div>
+          <EmptyState onPick={pickFile} error={error} />
         )}
       </div>
 
@@ -385,17 +326,22 @@ function EmptyState({ onPick, error }: { onPick: () => void; error: string }) {
           选择文件
         </Button>
         {error && (
-          <div className="mt-2 flex items-center gap-1.5 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs text-destructive">
-            <AlertCircle className="h-3.5 w-3.5" />
-            {error}
+          <div
+            className={cn(
+              'mt-2 flex max-w-md items-start gap-1.5 rounded-md border border-destructive/30',
+              'bg-destructive/10 px-3 py-1.5 text-left text-xs text-destructive'
+            )}
+          >
+            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>{error}</span>
           </div>
         )}
         <div className="mt-4 max-w-md space-y-1 text-left text-[11px] text-muted-foreground">
           <div className="font-medium text-foreground/80">基本使用</div>
           <div>· 支持未加密的 MMKV 文件（拖放 / 点击「打开」）</div>
           <div>· 同一个 key 的历史值会各自一行展示</div>
-          <div>· 点击 value 左侧的类型徽章循环切换解释类型（颜色会变）</div>
-          <div>· 点击 value 文本或右侧 expand 图标弹出详情，可复制任意类型的解码</div>
+          <div>· 每个值默认按最可能的类型显示，点类型徽章可在解得通的类型间循环</div>
+          <div>· 点击右侧 expand 图标弹出详情，会列出这串字节所有说得通的读法</div>
           <div>· 拖动 Key / Values 列之间的分隔线可调整列宽</div>
           <div>· 切换到别的工具再回来，文件不会丢（刷新页面会丢）</div>
 
@@ -413,14 +359,4 @@ function EmptyState({ onPick, error }: { onPick: () => void; error: string }) {
       </div>
     </div>
   )
-}
-
-function serializable(v: unknown): unknown {
-  if (typeof v === 'bigint') return v.toString()
-  if (v instanceof Uint8Array) {
-    let s = ''
-    for (const b of v) s += b.toString(16).padStart(2, '0')
-    return s
-  }
-  return v
 }

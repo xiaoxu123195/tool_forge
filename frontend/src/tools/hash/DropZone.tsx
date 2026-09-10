@@ -1,5 +1,5 @@
 import { Upload } from 'lucide-react'
-import { useNativeFileDrop } from './useFileDrop'
+import { useNativeFileDrop } from '@/lib/useNativeFileDrop'
 import { cn } from '@/lib/utils'
 
 /**

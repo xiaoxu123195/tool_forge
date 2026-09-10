@@ -508,6 +508,50 @@ func (a *App) ExportNetEnvReport(report netenvcheck.Report, format string) (stri
 	return system.SaveBytesToFile(a.ctx, opts, base64.StdEncoding.EncodeToString([]byte(content)))
 }
 
+// ================ MMKV / plist 解析 ================
+//
+// 这两个工具页原来在浏览器里各有一份 TypeScript 解析器,和后端这份是两套实现。
+// 同一个文件两边解出不一样的结果时谁也不知道该信哪个,所以前端改成调这里 ——
+// 现在页面和 MCP 工具走的是同一条代码路径。
+//
+// 传路径而不是传文件内容:几十 MB 的文件转成 base64 再过一遍桥纯属浪费,
+// 而 Go 这头本来就要落到 os.ReadFile。
+
+// PickLocalFile 弹原生文件对话框选一个文件,返回绝对路径。
+// title 决定对话框标题,调用方自己说清楚要选什么
+func (a *App) PickLocalFile(title string) (string, error) {
+	return system.PickFile(a.ctx, system.PickFileOptions{Title: title})
+}
+
+// ParseMMKVFile 解析一个 MMKV 文件。
+// crcPath 与 keyHex 同时给才做解密(IV 存在 .crc 里,缺一个都解不开)
+func (a *App) ParseMMKVFile(path, crcPath, keyHex string) (*mmkv.FileResult, error) {
+	return mmkv.ParseFile(path, crcPath, keyHex)
+}
+
+// ReadMMKVValueHex 取某个值的完整十六进制。
+// 表格里带的那份是截断过的(几千个值各带一份完整十六进制会比文件本身还大),
+// 想看完整字节时再回来读一次
+func (a *App) ReadMMKVValueHex(path, crcPath, keyHex, key string, index int) (string, error) {
+	return mmkv.ValueHex(path, crcPath, keyHex, key, index)
+}
+
+// ParsePlistFile 解析一个 plist 文件,三个视图一次给全
+func (a *App) ParsePlistFile(path string) (*plist.DesktopResult, error) {
+	return plist.ParseFileForDesktop(path)
+}
+
+// ParsePlistText 解析编辑器里的 XML 文本
+func (a *App) ParsePlistText(text string) (*plist.DesktopResult, error) {
+	return plist.ParseForDesktop([]byte(text))
+}
+
+// ParsePlistEncoded 解析粘贴进来的 base64 / hex / SQLite X'..' 字面量。
+// encoding 传空会自动识别
+func (a *App) ParsePlistEncoded(data, encoding string) (*plist.DesktopResult, error) {
+	return plist.ParseEncodedForDesktop(data, encoding)
+}
+
 // ================ Protobuf 编解码 ================
 
 // ProtobufDecodeRaw 无 Schema 递归裸解析(等价并强于 protoc --decode_raw)。

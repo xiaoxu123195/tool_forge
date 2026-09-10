@@ -20,6 +20,8 @@ import { ExportDialog } from '../src/tools/ai-chat/ExportDialog'
 import { TraceDialog } from '../src/tools/ai-chat/TraceDialog'
 import { GlobalSearchDialog } from '../src/tools/ai-chat/GlobalSearchDialog'
 import { DefaultsTab } from '../src/profile/sections/aichat/DefaultsTab'
+import MmkvTool from '../src/tools/mmkv/index'
+import PlistTool from '../src/tools/plist/index'
 import { ConfirmProvider } from '../src/components/ui/confirm'
 import { conversations } from './fixtures.cjs'
 // 直接引桩本体拿事件把手。build.cjs 只把含 "wailsjs" 的路径重定向到这里,
@@ -335,6 +337,107 @@ async function main() {
       }
     })
   }
+
+  // 11) MMKV 工具页。解析搬到 Go 之后这个页面整个重写过一遍,
+  // 而它以前完全没有冒烟覆盖 —— 白屏了也没人知道
+  await mount('MMKV 页', <MmkvTool />, async () => {
+    await mustClick('选择文件')
+    const txt = () => document.body.textContent || ''
+    if (!txt().includes('user_name')) throw new Error('表格没渲染出 key')
+    if (!txt().includes('张三')) throw new Error('值没有按后端猜的类型显示')
+    // 默认按 best 显示,而不是一律甩一串十六进制让人一个个点回去
+    if (txt().includes('06e5bca0e4b889')) throw new Error('默认显示成了原始十六进制,没用 best')
+    if (!txt().includes('2 个历史值')) throw new Error('历史值条数没显示')
+    if (!txt().includes('1 个删除标记')) throw new Error('删除标记数没显示')
+
+    // 点类型徽章循环:只在解得通的类型之间转。
+    // user_name 能读成 hexstring / string / bytes,从 string 点一下应该到 bytes
+    if (txt().includes('(bytes)')) throw new Error('初始就有 bytes,这条断言失去意义')
+    await mustClick('(string)')
+    if (!txt().includes('(bytes)')) {
+      throw new Error('点徽章没有切到下一个解得通的类型')
+    }
+    // 只有一种读法的值,徽章不该能点出别的来
+    if (!txt().includes('(bool)')) throw new Error('单一读法的值没按 best 显示')
+  })
+
+  // 12) MMKV 详情弹窗:后端一次给全所有读法,这里要都列出来
+  await mount('MMKV 值详情', <MmkvTool />, async () => {
+    // store 是模块级的,上一条用例加载的文件还在,空状态的「选择文件」按钮不一定在;
+    // 工具栏的「打开」任何时候都在
+    await mustClick('打开')
+    const expands = Array.from(document.querySelectorAll('button[title="展开查看完整值"]'))
+    if (expands.length === 0) throw new Error('没有展开按钮')
+    await act(async () => {
+      ;(expands[0] as HTMLElement).click()
+    })
+    await act(async () => {
+      await sleep(60)
+    })
+    const txt = document.body.textContent || ''
+    if (!txt.includes('其它可能的读法')) throw new Error('详情里没列出别的读法')
+    if (!txt.includes('原始字节')) throw new Error('详情里没有原始字节')
+  })
+
+  // 12b) 被截断的大值:详情里要能回后端读完整字节。
+  // 表格里那份是截断过的,少了这条路就等于"完整十六进制再也拿不到"
+  await mount('MMKV 完整字节', <MmkvTool />, async () => {
+    await mustClick('打开')
+    const expands = Array.from(
+      document.querySelectorAll('button[title="展开查看完整值"]'),
+    ) as HTMLElement[]
+    // blob 是第 3 个 key(user_name / token 两个值 / blob / enabled),
+    // 按顺序数它的展开按钮排在第 4 个
+    const target = expands[3]
+    if (!target) throw new Error('找不到 blob 那行的展开按钮')
+    await act(async () => {
+      target.click()
+    })
+    await act(async () => {
+      await sleep(60)
+    })
+    if (!(document.body.textContent || '').includes('读取完整 4098 字节')) {
+      throw new Error('截断的值没有给出「读取完整」入口')
+    }
+    await mustClick('读取完整 4098 字节')
+    if (!(document.body.textContent || '').includes('完整字节:ff00ff00deadbeef')) {
+      throw new Error('点了「读取完整」但没显示后端返回的完整字节')
+    }
+  })
+
+  // 13) plist 工具页:状态栏按后端给的 format 显示,
+  // notes 里的提醒(循环引用之类)不能吞掉
+  await mount('plist 页', <PlistTool />, async () => {
+    await mustClick('导入')
+    let txt = document.body.textContent || ''
+    if (!txt.includes('二进制 Plist')) throw new Error('状态栏没显示后端给的格式')
+    if (!txt.includes('NSKeyedArchive')) throw new Error('归档标记没显示')
+    if (!txt.includes('循环引用')) throw new Error('后端的 notes 被吞了')
+
+    await mustClick('解析结果')
+    txt = document.body.textContent || ''
+    if (!txt.includes('第一项')) throw new Error('解析结果视图没渲染后端给的 parsed')
+
+    await mustClick('原始结构')
+    if (!(document.body.textContent || '').includes('$archiver')) {
+      throw new Error('原始结构视图没渲染后端给的 raw')
+    }
+  })
+
+  // 14) plist 编辑器打字:防抖后应该真的调一次后端,而不是前端自己解。
+  // 前端那套 TypeScript 解析器已经删了,这条断言就是"确实删干净了"的证据
+  await mount('plist 编辑器防抖解析', <PlistTool />, async () => {
+    // 不直接对 CodeMirror 打字 —— 它在 jsdom 里不是个普通输入框。
+    // 「示例」按钮走的是同一条路:setXmlText -> 防抖 -> 调后端解析
+    const before = __calls.ParsePlistText || 0
+    await mustClick('示例')
+    await act(async () => {
+      await sleep(400) // 防抖 250ms
+    })
+    if ((__calls.ParsePlistText || 0) <= before) {
+      throw new Error('编辑器打字后没有调后端解析')
+    }
+  })
 
   console.log(failed ? '\n有异常' : '\n全部通过')
   process.exit(failed ? 1 : 0)

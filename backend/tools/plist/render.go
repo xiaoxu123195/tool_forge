@@ -3,6 +3,7 @@ package plist
 import (
 	"encoding/base64"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,14 +39,23 @@ type renderer struct {
 }
 
 func render(v any, opt Options) (any, []string) {
-	r := &renderer{maxArray: opt.MaxArray, maxData: opt.MaxData}
-	if r.maxArray <= 0 {
-		r.maxArray = defaultMaxArray
-	}
-	if r.maxData <= 0 {
-		r.maxData = defaultMaxData
+	r := &renderer{
+		maxArray: limitOr(opt.MaxArray, defaultMaxArray),
+		maxData:  limitOr(opt.MaxData, defaultMaxData),
 	}
 	return r.walk(v, 0), r.notes
+}
+
+// limitOr 解释上限:0 = 用默认值,负数 = 不设限,正数 = 就用它。
+// 桌面页传负数 —— 页面上悄悄截断等于骗人,看不到的那部分和"不存在"长得一模一样
+func limitOr(v, def int) int {
+	switch {
+	case v == 0:
+		return def
+	case v < 0:
+		return math.MaxInt
+	}
+	return v
 }
 
 func (r *renderer) walk(v any, depth int) any {

@@ -1,57 +1,55 @@
 import { ChevronsRight, Copy } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import {
-  TYPE_BG,
-  TYPE_LABELS,
-  decodeAs,
-  type MMKVType,
-} from '../logic/decoders'
+import type { mmkv } from '../../../../wailsjs/go/models'
+import { bgOf, displayOf, labelOf, optionsOf } from '../valueTypes'
 
 interface Props {
-  bytes: Uint8Array
-  type: MMKVType
+  value: mmkv.Value
+  type: string
   onCycle: () => void
   onExpand: () => void
 }
 
-export function ValueCell({ bytes, type, onCycle, onExpand }: Props) {
-  const res = decodeAs(bytes, type)
-  const displayText = res.ok ? res.display : 'N/A'
+export function ValueCell({ value, type, onCycle, onExpand }: Props) {
+  const text = displayOf(value, type)
+  // 只有一种读法时徽章不该看起来能点 —— 点了什么也不会变
+  const cyclable = optionsOf(value).length > 1
+  const title = cyclable ? '点击循环切换类型' : '这个值只有这一种读法'
 
   const copy = async (e: React.MouseEvent) => {
     e.stopPropagation()
-    await navigator.clipboard.writeText(displayText)
+    await navigator.clipboard.writeText(text)
   }
 
   return (
     <div
       className={cn(
         'group flex items-center gap-2 rounded-sm px-3 py-1.5 font-mono text-[12.5px] transition-colors',
-        TYPE_BG[type]
+        bgOf(type)
       )}
     >
       {/* 类型徽章：点击循环切换 */}
       <button
         onClick={(e) => {
           e.stopPropagation()
-          onCycle()
+          if (cyclable) onCycle()
         }}
-        className="shrink-0 text-[11px] text-orange-600 transition-opacity hover:opacity-70 dark:text-orange-400"
-        title="点击循环切换类型"
+        className={cn(
+          'shrink-0 text-[11px] text-orange-600 dark:text-orange-400',
+          cyclable ? 'transition-opacity hover:opacity-70' : 'cursor-default opacity-70'
+        )}
+        title={title}
       >
-        ({TYPE_LABELS[type]})
+        ({labelOf(type)})
       </button>
 
       {/* 值本体：单行截断；点击循环切换类型（展开看完整值请点右侧按钮） */}
       <div
-        onClick={onCycle}
-        className={cn(
-          'min-w-0 flex-1 cursor-pointer truncate',
-          res.ok ? 'text-foreground' : 'italic text-muted-foreground'
-        )}
-        title="点击循环切换类型"
+        onClick={cyclable ? onCycle : undefined}
+        className={cn('min-w-0 flex-1 truncate', cyclable && 'cursor-pointer')}
+        title={title}
       >
-        {displayText}
+        {text}
       </div>
 
       {/* 复制：hover 时浮出 */}

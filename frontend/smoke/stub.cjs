@@ -107,6 +107,17 @@ const special = {
   // ---- 工具 ----
   ListAIChatTools: () => Promise.resolve(fx.chatTools),
 
+  // ---- MMKV / plist(解析在 Go 里,这里给后端返回的形状)----
+  ParseMMKVFile: (_p, crc, key) =>
+    key || crc
+      ? Promise.resolve({ ...fx.mmkvFile, encrypted: true })
+      : Promise.resolve(fx.mmkvFile),
+  ReadMMKVValueHex: () => Promise.resolve('完整字节:ff00ff00deadbeef'),
+  ParsePlistFile: () => Promise.resolve(fx.plistResult),
+  ParsePlistText: () => Promise.resolve({ ...fx.plistResult, format: 'xml', nsKeyed: false }),
+  ParsePlistEncoded: () => Promise.resolve(fx.plistResult),
+  PickLocalFile: () => Promise.resolve('C:/tmp/sample'),
+
   // ---- 运行时事件 ----
   EventsOn: on,
   EventsOnMultiple: (name, cb) => on(name, cb),

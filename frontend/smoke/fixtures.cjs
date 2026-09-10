@@ -328,6 +328,83 @@ function searchResults(q) {
   ]
 }
 
+// ---- MMKV / plist ----
+// 这两个页面的解析全在 Go 里,前端只负责显示。所以样本直接照后端返回的形状写:
+// 一个值能读成哪几种类型是后端算的,页面拿到的是候选清单加一个 best。
+const mmkvFile = {
+  name: 'com.example.prefs',
+  size: 2048,
+  encrypted: false,
+  dbSize: 1024,
+  consumed: 1024,
+  removedCount: 1,
+  entries: [
+    {
+      key: 'user_name',
+      values: [
+        {
+          hex: '06e5bca0e4b889',
+          size: 7,
+          best: 'string',
+          decoded: [
+            { type: 'string', display: '张三' },
+            { type: 'bytes', display: 'e5bca0e4b889' },
+          ],
+        },
+      ],
+    },
+    {
+      // 同一个键写过两次,历史值都还在文件里(新的在前)
+      key: 'token',
+      values: [
+        {
+          hex: '036e6577',
+          size: 4,
+          best: 'string',
+          decoded: [
+            { type: 'string', display: 'new' },
+            { type: 'float32', display: '1.0292e-38' },
+            { type: 'bytes', display: '6e6577' },
+          ],
+        },
+        {
+          hex: '036f6c64',
+          size: 4,
+          best: 'string',
+          decoded: [{ type: 'string', display: 'old' }],
+        },
+      ],
+    },
+    {
+      // 一种类型都解不通的值:decoded 是空数组(不是 null),只能按原始字节看。
+      // hex 被后端截断过,详情里应该给"读取完整"的入口
+      key: 'blob',
+      values: [
+        { hex: 'ff00ff00… (还有 4096 字节)', size: 4098, best: 'bytes', decoded: [] },
+      ],
+    },
+    {
+      // 只有一种读法:徽章不该表现得像能点
+      key: 'enabled',
+      values: [{ hex: '01', size: 1, best: 'bool', decoded: [{ type: 'bool', display: 'true' }] }],
+    },
+  ],
+}
+
+const plistResult = {
+  format: 'binary',
+  nsKeyed: true,
+  xml: [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<plist version="1.0">',
+    '\t<dict/>',
+    '</plist>',
+  ].join('\n'),
+  raw: { $archiver: 'NSKeyedArchiver', $objects: ['$null'] },
+  parsed: { items: ['第一项'] },
+  notes: ['对象 #3 存在循环引用,已在重复处截断'],
+}
+
 module.exports = {
   searchResults,
   providers,
@@ -338,4 +415,6 @@ module.exports = {
   chatTools,
   traces,
   traceDetail,
+  mmkvFile,
+  plistResult,
 }

@@ -90,6 +90,46 @@ func readVarintU64(b []byte, off int) (val uint64, n int, err error) {
 // 整个循环对损坏数据的态度是"读到哪算哪":任何一步解不动就 break,
 // 把已经读出来的返回。取证场景里半个文件也是线索,直接报错等于把线索也丢了。
 func Parse(data []byte) (*ParseResult, error) {
+	return ParseWithHexLimit(data, mcpHexLimit)
+}
+
+// ParseWithHexLimit 同 Parse,但由调用方决定十六进制预览的长度。
+// 桌面页给的比 MCP 大 —— 理由见 decode.go 里那两个常量
+func ParseWithHexLimit(data []byte, hexLimit int) (*ParseResult, error) {
+	scan, err := scanEntries(data)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]Entry, 0, len(scan.order))
+	for _, k := range scan.order {
+		vals := scan.byKey[k]
+		views := make([]Value, 0, len(vals))
+		for _, v := range vals {
+			views = append(views, describeValue(v, hexLimit))
+		}
+		entries = append(entries, Entry{Key: k, Values: views})
+	}
+	return &ParseResult{
+		Entries:      entries,
+		DBSize:       scan.dbSize,
+		Consumed:     scan.consumed,
+		RemovedCount: scan.removed,
+	}, nil
+}
+
+// scan 一次扫描的原始产物:键的出现顺序,以及每个键的历史值(新的在前)。
+//
+// 单独拆出来是因为有两个用法:平时要的是"每个值能读成哪几种类型"的摘要,
+// 但看某一个值的完整字节时,要的是原始 []byte 而不是摘要。
+type scan struct {
+	order    []string
+	byKey    map[string][][]byte
+	dbSize   int
+	consumed int
+	removed  int
+}
+
+func scanEntries(data []byte) (*scan, error) {
 	if len(data) < 4 {
 		return nil, errors.New("文件过小,读不出 MMKV 头部(至少 4 字节)")
 	}
@@ -157,19 +197,5 @@ func Parse(data []byte) (*ParseResult, error) {
 		byKey[key] = append([][]byte{val}, byKey[key]...)
 	}
 
-	entries := make([]Entry, 0, len(order))
-	for _, k := range order {
-		vals := byKey[k]
-		views := make([]Value, 0, len(vals))
-		for _, v := range vals {
-			views = append(views, describeValue(v))
-		}
-		entries = append(entries, Entry{Key: k, Values: views})
-	}
-	return &ParseResult{
-		Entries:      entries,
-		DBSize:       dbSize,
-		Consumed:     pos,
-		RemovedCount: removed,
-	}, nil
+	return &scan{order: order, byKey: byKey, dbSize: dbSize, consumed: pos, removed: removed}, nil
 }

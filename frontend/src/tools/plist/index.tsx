@@ -1,20 +1,22 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertCircle, CheckCircle2, Copy, Upload } from 'lucide-react'
 import { ToolShell } from '@/components/tool/ToolShell'
 import { CodeEditor } from '@/components/tool/CodeEditor'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { useFileDrop } from '@/lib/useFileDrop'
-import { meta } from './meta'
+import { useNativeFileDrop } from '@/lib/useNativeFileDrop'
 import {
-  isNSKeyedArchive,
-  parseAny,
-  parseXmlPlist,
-  toJson,
-  toXmlPlist,
-  unwrapNSKeyedArchive,
-  type PlistValue,
-} from './logic'
+  ParsePlistEncoded,
+  ParsePlistFile,
+  ParsePlistText,
+  PickLocalFile,
+} from '../../../wailsjs/go/main/App'
+import type { plist } from '../../../wailsjs/go/models'
+import { meta } from './meta'
+
+// 解析全部在 Go 里做。这个页面以前在浏览器里自带一整套 bplist/XML/NSKeyedArchive
+// 解析器,和后端那份是两套实现 —— 同一个文件两边解出不一样的结果时谁也说不清
+// 该信哪个。现在页面只负责显示,解析和 MCP 工具走同一条代码路径。
 
 type ViewMode = 'parsed' | 'raw' | 'xml'
 
@@ -38,138 +40,128 @@ const EXAMPLE = `<?xml version="1.0" encoding="UTF-8"?>
 </dict>
 </plist>`
 
-interface ParseState {
-  xmlText: string
-  parsed: PlistValue | null
-  error: string
-  source: 'xml' | 'binary' | 'empty'
-  isArchive: boolean
-  notice: string
-}
-
-const EMPTY: ParseState = {
-  xmlText: '',
-  parsed: null,
-  error: '',
-  source: 'empty',
-  isArchive: false,
-  notice: '',
-}
+/** 编辑器里打字后等多久才发一次解析请求。解析在后端,不该每敲一个键就过一次桥 */
+const PARSE_DEBOUNCE_MS = 250
 
 export default function PlistTool() {
-  const [state, setState] = useState<ParseState>(EMPTY)
-  // 默认进 XML 视图：空状态就是可编辑输入区；加载后也让用户直观看到完整内容
+  // xmlText 是编辑器里的内容,也是唯一的输入面。res 是后端给的三视图结果
+  const [xmlText, setXmlText] = useState('')
+  const [res, setRes] = useState<plist.DesktopResult | null>(null)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
   const [view, setView] = useState<ViewMode>('xml')
   const [importMode, setImportMode] = useState<'base64' | 'hex' | null>(null)
   const [importText, setImportText] = useState('')
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const displayText = useMemo(() => {
-    if (view === 'xml') return state.xmlText
-    if (!state.parsed) return ''
-    const value =
-      view === 'parsed' ? unwrapNSKeyedArchive(state.parsed as PlistValue) : state.parsed
-    try {
-      return toJson(value as PlistValue, 2)
-    } catch (e) {
-      return `/* 序列化失败: ${e instanceof Error ? e.message : String(e)} */`
+  // 编辑器里打的字要重新解析,但从文件/粘贴导入时 xmlText 是后端刚给回来的,
+  // 再解析一次纯属浪费(而且会把 format 从 binary 冲成 xml)
+  const skipNextParse = useRef(false)
+
+  useEffect(() => {
+    if (skipNextParse.current) {
+      skipNextParse.current = false
+      return
     }
-  }, [state, view])
+    if (!xmlText.trim()) {
+      setRes(null)
+      setError('')
+      return
+    }
+    let cancelled = false
+    const t = setTimeout(() => {
+      ParsePlistText(xmlText)
+        .then((r) => {
+          if (cancelled) return
+          setRes(r)
+          setError('')
+        })
+        .catch((e) => {
+          if (cancelled) return
+          setRes(null)
+          setError(String(e))
+        })
+    }, PARSE_DEBOUNCE_MS)
+    return () => {
+      cancelled = true
+      clearTimeout(t)
+    }
+  }, [xmlText])
 
-  const editorLanguage = view === 'xml' ? 'xml' : 'json'
-  const editorReadOnly = view !== 'xml'
-
-  const handleXmlTextChange = (txt: string) => {
-    setState((s) => parseFromXmlText(txt, s.notice))
-  }
-
-  const applyParsed = (
-    parsed: PlistValue,
-    source: 'xml' | 'binary',
-    xmlText: string,
-    notice = ''
-  ) => {
-    setState({
-      xmlText,
-      parsed,
-      error: '',
-      source,
-      isArchive: isNSKeyedArchive(parsed),
-      notice,
-    })
+  /** 从后端结果重置整个页面状态 */
+  const applyResult = (r: plist.DesktopResult) => {
+    skipNextParse.current = true
+    setXmlText(r.xml)
+    setRes(r)
+    setError('')
     setView('xml')
   }
 
-  const handleBytes = (buf: ArrayBuffer | Uint8Array, oversized: boolean) => {
+  const runImport = async (fn: () => Promise<plist.DesktopResult>) => {
+    setBusy(true)
     try {
-      const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf)
-      const { value, source } = parseAny(bytes)
-      const xmlText = source === 'xml' ? new TextDecoder('utf-8').decode(bytes) : toXmlPlist(value)
-      applyParsed(value, source, xmlText, oversized ? '文件较大，高亮与渲染可能变慢' : '')
+      applyResult(await fn())
     } catch (e) {
-      setState({ ...EMPTY, error: e instanceof Error ? e.message : '解析失败' })
+      setRes(null)
+      setError(String(e))
+    } finally {
+      setBusy(false)
     }
   }
 
-  const { dragOver, dragHandlers } = useFileDrop({
-    accept: ['.plist', '.bplist', '.xml', '.txt'],
-    binary: true,
-    onLoad: (r) => {
-      if (r.kind === 'binary') handleBytes(r.buffer, r.oversized)
-    },
-    onError: (msg) => setState({ ...EMPTY, error: msg }),
+  const openPath = (path: string) => runImport(() => ParsePlistFile(path))
+
+  // 原生拖放给的是绝对路径(HTML5 拖放给不了),后端直接读文件,
+  // 几十 MB 的 plist 不用先在 JS 里读一遍再 base64 过桥
+  useNativeFileDrop((paths) => {
+    if (paths.length > 0) openPath(paths[0])
   })
 
-  const importFromEncoded = () => {
-    try {
-      const { value, source } = parseAny(importText)
-      const xmlText = source === 'xml' ? importText : toXmlPlist(value)
-      applyParsed(value, source, xmlText)
-      setImportMode(null)
-      setImportText('')
-    } catch (e) {
-      setState({ ...EMPTY, error: e instanceof Error ? e.message : '解码失败' })
-    }
+  const pickFile = async () => {
+    const p = await PickLocalFile('选择 plist 文件')
+    if (p) openPath(p)
   }
 
-  const hasContent = !!state.parsed || !!state.error || !!state.xmlText
+  const importFromEncoded = () =>
+    runImport(async () => {
+      const r = await ParsePlistEncoded(importText, importMode ?? '')
+      setImportMode(null)
+      setImportText('')
+      return r
+    })
+
+  const displayText = useMemo(() => {
+    if (view === 'xml') return xmlText
+    if (!res) return ''
+    try {
+      return JSON.stringify(view === 'parsed' ? res.parsed : res.raw, null, 2)
+    } catch (e) {
+      return `/* 序列化失败: ${e instanceof Error ? e.message : String(e)} */`
+    }
+  }, [res, view, xmlText])
+
+  const editorReadOnly = view !== 'xml'
+  const hasContent = !!res || !!error || !!xmlText
 
   return (
     <ToolShell
       title={meta.title}
       description={meta.description}
       onClear={() => {
-        setState(EMPTY)
+        skipNextParse.current = true
+        setXmlText('')
+        setRes(null)
+        setError('')
         setImportMode(null)
         setImportText('')
         setView('xml')
       }}
       onLoadExample={() => {
-        setState(parseFromXmlText(EXAMPLE))
+        setXmlText(EXAMPLE)
         setView('xml')
       }}
       actions={
         <div className="flex flex-wrap items-center gap-1.5">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".plist,.bplist,.xml,.txt"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0]
-              if (f) {
-                f.arrayBuffer().then((buf) =>
-                  handleBytes(buf, f.size > 5 * 1024 * 1024)
-                )
-              }
-              e.target.value = ''
-            }}
-          />
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => fileInputRef.current?.click()}
-          >
+          <Button variant="outline" size="sm" onClick={pickFile} disabled={busy}>
             <Upload className="h-3.5 w-3.5" />
             导入
           </Button>
@@ -206,11 +198,8 @@ export default function PlistTool() {
       }
     >
       <div
-        {...dragHandlers}
-        className={cn(
-          'relative flex h-full flex-col gap-3 rounded-lg transition',
-          dragOver && 'ring-2 ring-primary ring-offset-2 ring-offset-background'
-        )}
+        style={{ ['--wails-drop-target' as never]: 'drop' }}
+        className="relative flex h-full flex-col gap-3 rounded-lg"
       >
         {importMode && (
           <div className="space-y-2 rounded-md border border-border bg-card p-3">
@@ -223,7 +212,7 @@ export default function PlistTool() {
               placeholder={
                 importMode === 'base64'
                   ? 'YnBsaXN0MDDUAQIDBAUGBwhXJGFyY2hpdmVy...'
-                  : '62 70 6c 69 73 74 30 30 d4 ...'
+                  : "62 70 6c 69 73 74 30 30 d4 ...  或 SQLite 的 X'62706c...'"
               }
               spellCheck={false}
               rows={3}
@@ -240,7 +229,11 @@ export default function PlistTool() {
               >
                 取消
               </Button>
-              <Button size="sm" onClick={importFromEncoded} disabled={!importText.trim()}>
+              <Button
+                size="sm"
+                onClick={importFromEncoded}
+                disabled={!importText.trim() || busy}
+              >
                 解析
               </Button>
             </div>
@@ -260,66 +253,42 @@ export default function PlistTool() {
             </ViewTab>
           </div>
           <div className="flex min-w-0 shrink-0 items-center gap-3">
-            <StatusBadge state={state} hasContent={hasContent} />
-            {state.notice && !state.error && (
-              <span className="truncate text-amber-600 dark:text-amber-400">
-                {state.notice}
-              </span>
-            )}
+            <StatusBadge res={res} error={error} hasContent={hasContent} />
           </div>
         </div>
 
-        {state.error && (
+        {/* notes 是后端在解析时发现的事:循环引用、越界 UID、反向生成 XML 失败。
+            这些不是错误(结果照样能看),但不说一声的话人会以为数据本来就长这样 */}
+        {res && (res.notes?.length || res.xmlError) && !error && (
+          <div className="space-y-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+            {res.xmlError && <div>{res.xmlError}</div>}
+            {res.notes?.map((n) => (
+              <div key={n}>{n}</div>
+            ))}
+          </div>
+        )}
+
+        {error && (
           <div
             className="whitespace-pre-wrap break-words rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
-            title={state.error}
+            title={error}
           >
-            {state.error}
+            {error}
           </div>
         )}
 
         <CodeEditor
           value={displayText}
-          onChange={editorReadOnly ? undefined : handleXmlTextChange}
+          onChange={editorReadOnly ? undefined : setXmlText}
           readOnly={editorReadOnly}
-          language={editorLanguage}
+          language={view === 'xml' ? 'xml' : 'json'}
           placeholder="粘贴 XML plist，或将 .plist / .bplist 文件拖到此处…"
           className="flex-1 overflow-hidden rounded-lg border border-border"
           minHeight="100%"
         />
-
-        {dragOver && (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-lg bg-primary/10 text-sm font-medium text-primary">
-            松开以导入文件
-          </div>
-        )}
       </div>
     </ToolShell>
   )
-}
-
-function parseFromXmlText(xmlText: string, inheritNotice = ''): ParseState {
-  if (!xmlText.trim()) return EMPTY
-  try {
-    const parsed = parseXmlPlist(xmlText)
-    return {
-      xmlText,
-      parsed,
-      error: '',
-      source: 'xml',
-      isArchive: isNSKeyedArchive(parsed),
-      notice: inheritNotice,
-    }
-  } catch (e) {
-    return {
-      xmlText,
-      parsed: null,
-      error: e instanceof Error ? e.message : '解析失败',
-      source: 'xml',
-      isArchive: false,
-      notice: '',
-    }
-  }
 }
 
 function ViewTab({
@@ -350,17 +319,26 @@ function ViewTab({
   )
 }
 
+const FORMAT_LABELS: Record<string, string> = {
+  binary: '二进制 Plist',
+  xml: 'XML Plist',
+  openstep: 'OpenStep Plist',
+  gnustep: 'GNUStep Plist',
+}
+
 function StatusBadge({
-  state,
+  res,
+  error,
   hasContent,
 }: {
-  state: ParseState
+  res: plist.DesktopResult | null
+  error: string
   hasContent: boolean
 }) {
   if (!hasContent) {
     return <span className="text-muted-foreground">等待输入…</span>
   }
-  if (state.error) {
+  if (error) {
     return (
       <span className="flex items-center gap-1.5 text-destructive">
         <AlertCircle className="h-3.5 w-3.5" />
@@ -368,12 +346,12 @@ function StatusBadge({
       </span>
     )
   }
-  if (state.parsed) {
+  if (res) {
     return (
       <span className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
         <CheckCircle2 className="h-3.5 w-3.5" />
-        {state.source === 'binary' ? '二进制 Plist' : 'XML Plist'}
-        {state.isArchive && ' · NSKeyedArchive'}
+        {FORMAT_LABELS[res.format] ?? res.format}
+        {res.nsKeyed && ' · NSKeyedArchive'}
       </span>
     )
   }
