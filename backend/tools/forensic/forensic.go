@@ -47,10 +47,18 @@ type DoneEvent struct {
 
 // Service 管理取证任务
 type Service struct {
-	ctx     context.Context
-	mu      sync.Mutex
-	jobs    map[string]*job
-	binPath string
+	// ctx 任务的父上下文,只用于取消;应用退出时连带把 go-forensic 进程收掉
+	ctx context.Context
+	// wailsCtx 仅用于给桌面工具页推事件。
+	//
+	// 和 ctx 分开是必须的:wailsruntime.EventsEmit 拿到一个不是 Wails 生命周期
+	// 给的 context 时,不是返回错误,而是直接把整个进程结束掉。
+	// 本地 API / MCP 这类调用方根本不需要事件(它们走 subscribers 那条 channel),
+	// 合在一起的话,一次纯 API 调用就能因为"这个进程没开 GUI"而自杀。
+	wailsCtx context.Context
+	mu       sync.Mutex
+	jobs     map[string]*job
+	binPath  string
 	// subscribers 给 HTTP SSE 等"非 Wails 前端"用的订阅者。
 	// emit 时既调 wailsruntime.EventsEmit(给桌面工具页),也 fan-out 到此处的 channel。
 	subscribers map[string][]chan EventEnvelope
@@ -133,9 +141,25 @@ func (s *Service) closeSubscribers(jobID string) {
 	}
 }
 
-// SetContext 保存 Wails 上下文（用于事件推送与取消）
+// SetContext 保存 Wails 上下文(事件推送 + 任务取消)。
+// 桌面端在 startup 里调;纯 API / 测试场景可以改用 SetRunContext。
 func (s *Service) SetContext(ctx context.Context) {
 	s.ctx = ctx
+	s.wailsCtx = ctx
+}
+
+// SetRunContext 只设任务上下文,不设事件上下文。
+// 给没有 GUI 的场景用:任务照跑、订阅照收,只是不往 Wails 推事件。
+func (s *Service) SetRunContext(ctx context.Context) {
+	s.ctx = ctx
+}
+
+// emitWails 往桌面工具页推一个事件;没有 Wails 上下文时什么都不做
+func (s *Service) emitWails(name string, data any) {
+	if s.wailsCtx == nil {
+		return
+	}
+	wailsruntime.EventsEmit(s.wailsCtx, name, data)
 }
 
 // SetBinaryPath 自定义 go-forensic 路径（空字符串 = 使用 PATH）
@@ -181,7 +205,7 @@ func (s *Service) Check(customPath string) Info {
 // Run 启动一个取证任务，返回 jobID；后续通过事件推送输出
 func (s *Service) Run(args []string) (string, error) {
 	if s.ctx == nil {
-		return "", errors.New("service context not initialized")
+		return "", errors.New("取证服务还没初始化(缺少上下文)")
 	}
 	if len(args) == 0 {
 		return "", errors.New("空参数")
@@ -246,7 +270,7 @@ func (s *Service) Run(args []string) (string, error) {
 		} else {
 			done.ExitCode = 0
 		}
-		wailsruntime.EventsEmit(s.ctx, EventDone, done)
+		s.emitWails(EventDone, done)
 		s.emitToSubscribers(jobID, EventEnvelope{Type: "done", Done: &done})
 		// 关 channel 让 SSE handler 优雅退出
 		s.closeSubscribers(jobID)
@@ -280,7 +304,7 @@ func (s *Service) pumpStream(jobID, stream string, r io.ReadCloser) {
 			Stream: stream,
 			Line:   scanner.Text(),
 		}
-		wailsruntime.EventsEmit(s.ctx, EventLog, line)
+		s.emitWails(EventLog, line)
 		s.emitToSubscribers(jobID, EventEnvelope{Type: "log", Log: &line})
 	}
 }

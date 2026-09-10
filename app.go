@@ -29,9 +29,11 @@ import (
 	"tool_forge/backend/tools/httptest"
 	"tool_forge/backend/tools/llmproxy"
 	"tool_forge/backend/tools/mcp"
+	"tool_forge/backend/tools/mmkv"
 	"tool_forge/backend/tools/netenvcheck"
 	"tool_forge/backend/tools/netscan"
 	"tool_forge/backend/tools/outlookmail"
+	"tool_forge/backend/tools/plist"
 	"tool_forge/backend/tools/protobuf"
 	"tool_forge/backend/tools/providerswitch"
 	"tool_forge/backend/updater"
@@ -96,10 +98,20 @@ func NewApp() *App {
 	aic, _ := aichat.New()
 	apsearch := appsearch.New()
 	fns := forensic.New()
+	fh := filehash.New()
 	// 本地 API server:把指定工具暴露为 HTTP 接口
 	api := apiserver.New()
 	api.Register(appsearch.NewHandler(apsearch))
 	api.Register(forensic.NewStreamHandler(fns))
+	// 这两个是"agent 自己做不了"的:protobuf 裸字节没 schema 读不出结构,
+	// 几百 MB 的文件也读不进上下文。注册了不等于暴露 —— 还要用户在设置里勾选
+	api.Register(protobuf.NewHandler())
+	api.Register(filehash.NewHandler(fh))
+	// MMKV 是腾讯那套私有键值存储,值不带类型标记,agent 光看字节读不出东西
+	api.Register(mmkv.NewHandler())
+	// plist:iOS 上大半配置都是二进制 bplist,cat 出来是乱码;
+	// 套着 NSKeyedArchiver 的还得顺着 UID 把对象表拼回去
+	api.Register(plist.NewHandler())
 	// Outlook 邮箱管理:加密存储 + 定时刷新 worker
 	outlk, _ := outlookmail.New()
 	// LLM 透明代理 + 日志:打开 SQLite 存储,读配置(startup 里按配置决定是否监听)
@@ -117,7 +129,7 @@ func NewApp() *App {
 		aichat:    aic,
 		api:       api,
 		outlook:   outlk,
-		filehash:  filehash.New(),
+		filehash:  fh,
 		llmproxy:  lp,
 		mcp:       mcpSvc,
 	}

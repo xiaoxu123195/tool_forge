@@ -422,3 +422,29 @@ func looksText(b []byte) bool {
 	}
 	return printable*100/len(b) >= 90
 }
+
+// HashFiles 同步算一批文件的哈希,算完一次性返回。
+//
+// 和 StartHashJob 的区别只在"怎么把结果交出去":那个走 Wails 事件、
+// 前端一条条收(几十个文件时能看到进度);这个是给本地 API / MCP 用的,
+// 调用方要的就是一个结果数组,没有进度可推的地方。
+//
+// 复用同一个 hashOne,所以两条路算出来的东西一定一致 ——
+// 各写一份读盘逻辑迟早会在缓冲区大小、算法顺序这种地方分叉。
+func (s *Service) HashFiles(ctx context.Context, paths []string, algos []string) []FileResult {
+	algos = filterAlgos(algos)
+	if len(algos) == 0 {
+		algos = SupportedAlgos // 没指定就全算:一次读盘的成本已经付了
+	}
+	out := make([]FileResult, 0, len(paths))
+	total := len(paths)
+	for i, p := range paths {
+		select {
+		case <-ctx.Done():
+			return out // 调用方断了就把已经算完的交出去,不假装全跑完了
+		default:
+		}
+		out = append(out, s.hashOne(ctx, "", i, total, p, algos))
+	}
+	return out
+}
