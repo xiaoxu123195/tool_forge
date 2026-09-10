@@ -3,6 +3,8 @@ package devicefs
 import (
 	"strings"
 	"testing"
+
+	"tool_forge/backend/tools/filehash"
 )
 
 // 连设备那部分没法在测试里跑(要有一台插着的越狱手机),
@@ -151,5 +153,59 @@ func TestDisconnectUnknownIsQuiet(t *testing.T) {
 	m := NewManager()
 	if err := m.Disconnect("dev-999"); err != nil {
 		t.Errorf("断开一个不存在的会话不该报错: %v", err)
+	}
+}
+
+// HEIC 是 iPhone 照片的默认格式,但 Chromium 内核画不出来 ——
+// 当成图片内嵌进去只会得到一个碎图框,连"为什么看不了"都不说
+func TestRenderableImageExcludesHEIC(t *testing.T) {
+	for _, m := range []string{"image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"} {
+		if !renderableImage(m) {
+			t.Errorf("%s 应该能画", m)
+		}
+	}
+	for _, m := range []string{"image/heic", "image/heif", "image/tiff", "image/x-canon-cr2"} {
+		if renderableImage(m) {
+			t.Errorf("%s 浏览器画不出来,不该当成可预览的图片", m)
+		}
+	}
+}
+
+// 认得出但显示不了的,得说清楚是什么、下一步干什么。
+// 光甩一屏十六进制等于把人晾在那儿
+func TestUnviewableHintTellsNextStep(t *testing.T) {
+	cases := []struct {
+		category string
+		mime     string
+		want     string
+	}{
+		{"图片", "image/heic", "HEIC"},
+		{"视频", "video/mp4", "导出"},
+		{"音频", "audio/mpeg", "导出"},
+		{"PDF", "application/pdf", "导出"},
+		{"压缩包", "application/zip", "导出"},
+	}
+	for _, c := range cases {
+		got := unviewableHint(&filehash.FileInfo{Category: c.category, MimeType: c.mime})
+		if !strings.Contains(got, c.want) {
+			t.Errorf("%s 的提示里应该有 %q,得到: %s", c.category, c.want, got)
+		}
+		if !strings.Contains(got, "导出") {
+			t.Errorf("%s 的提示没告诉人下一步怎么办: %s", c.category, got)
+		}
+	}
+}
+
+func TestKnownButUnviewable(t *testing.T) {
+	for _, c := range []string{"图片", "视频", "音频", "PDF", "压缩包"} {
+		if !knownButUnviewable(c) {
+			t.Errorf("%s 该走单独那一支", c)
+		}
+	}
+	// 文本和二进制有自己的处理,不能被这一支截走
+	for _, c := range []string{"文本", "二进制", "未知", ""} {
+		if knownButUnviewable(c) {
+			t.Errorf("%s 不该走这一支", c)
+		}
 	}
 }

@@ -10,5 +10,7 @@ export const meta: ToolMeta = {
   icon: FolderTree,
   category: 'forensic',
   order: 15,
-  defaultVisible: true,
+  // 默认不在侧边栏露出:这东西要插着线、要设备越狱、还要 SSH 密码,
+  // 对绝大多数人是用不上的。需要的人自己在工具偏好里打开
+  defaultVisible: false,
 }

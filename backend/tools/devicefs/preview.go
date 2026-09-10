@@ -31,7 +31,7 @@ type Preview struct {
 	Name string `json:"name"`
 	// Size 设备上的真实大小
 	Size int64 `json:"size"`
-	// Kind plist | mmkv | sqlite | image | text | binary
+	// Kind plist | mmkv | sqlite | image | text | other | binary
 	Kind string `json:"kind"`
 	// Why 为什么判成这个类型。判错时人得能看出是哪一步错了
 	Why string `json:"why"`
@@ -129,9 +129,21 @@ func (m *Manager) classify(p *Preview, s *Session, remote string, head []byte) {
 		p.Kind, p.Why = "mmkv", "旁边有同名的 .crc 文件,这是 MMKV 的落盘特征"
 		p.parseMMKV()
 
-	case p.Info != nil && p.Info.Category == "图片":
+	case p.Info != nil && renderableImage(p.Info.MimeType):
 		p.Kind, p.Why = "image", "按魔数认出来是"+p.Info.MimeType
 		p.loadImage()
+
+	// 认得出是什么、但这里显示不了的:HEIC、视频、音频、PDF、压缩包。
+	//
+	// 这一支是拿真机数据试出来必须单列的:iPhone 的照片全是 HEIC,
+	// 而 WebView 根本不认这个格式 —— 之前会当成图片内嵌进去,
+	// 结果是一个碎掉的图片框,连"为什么看不了"都不说。
+	// 与其给一屏十六进制,不如直接说清楚它是什么、下一步该怎么办。
+	case p.Info != nil && knownButUnviewable(p.Info.Category):
+		p.Kind = "other"
+		p.Why = "按魔数认出来是" + p.Info.MimeType
+		p.Note = unviewableHint(p.Info)
+		p.Hex = hexHead(p.LocalPath)
 
 	case isMostlyText(head):
 		p.Kind, p.Why = "text", "开头是可读文本"
@@ -210,6 +222,47 @@ func (p *Preview) loadImage() {
 		mime = p.Info.MimeType
 	}
 	p.ImageB64 = "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
+}
+
+// renderableImage WebView 真能画出来的图片格式。
+//
+// 不能拿"是不是图片"当条件:HEIC / HEIF / TIFF 都是正经图片格式,
+// 但 Chromium 内核一个都不认,内嵌进去只会得到一个碎图框。
+// 白名单而不是黑名单 —— 认错方向的代价不一样:漏掉一个格式只是少个预览,
+// 多放进来一个就是一个不说话的碎图。
+func renderableImage(mime string) bool {
+	switch mime {
+	case "image/png", "image/jpeg", "image/gif", "image/webp",
+		"image/bmp", "image/svg+xml", "image/x-icon", "image/avif":
+		return true
+	}
+	return false
+}
+
+// knownButUnviewable 认得出是什么、但这里显示不了的大类
+func knownButUnviewable(category string) bool {
+	switch category {
+	case "图片", "视频", "音频", "PDF", "压缩包":
+		return true
+	}
+	return false
+}
+
+// unviewableHint 说清楚是什么、以及下一步该干什么。
+// 光说"不支持预览"等于把人晾在那儿
+func unviewableHint(info *filehash.FileInfo) string {
+	switch info.Category {
+	case "图片":
+		return info.MimeType + " 这个格式浏览器画不出来(iPhone 的照片基本都是 HEIC)。" +
+			"用「导出」拿到本地再看"
+	case "视频", "音频":
+		return info.Category + "(" + info.MimeType + ")这里放不了,用「导出」拿到本地再看"
+	case "PDF":
+		return "PDF 这里不展开,用「导出」拿到本地再看"
+	case "压缩包":
+		return "压缩包(" + info.MimeType + ")这里不解开,用「导出」拿到本地再看"
+	}
+	return info.MimeType + " 这里显示不了,用「导出」拿到本地再看"
 }
 
 // looksLikeMMKV MMKV 文件没有魔数 —— 开头就是个长度字段,和随便什么二进制没区别。

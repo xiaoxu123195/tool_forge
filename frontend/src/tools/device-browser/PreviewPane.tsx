@@ -198,6 +198,7 @@ const KIND_LABELS: Record<string, string> = {
   sqlite: 'SQLite',
   image: '图片',
   text: '文本',
+  other: '识别到但不能预览',
   binary: '二进制',
 }
 
@@ -207,6 +208,7 @@ const KIND_BG: Record<string, string> = {
   sqlite: 'bg-amber-200/60 dark:bg-amber-900/40',
   image: 'bg-violet-200/60 dark:bg-violet-900/40',
   text: 'bg-slate-200/60 dark:bg-slate-800/60',
+  other: 'bg-rose-200/60 dark:bg-rose-900/40',
   binary: 'bg-muted',
 }
 
