@@ -131,11 +131,9 @@ func TestPreviewLimitsDifferByPlatform(t *testing.T) {
 	}
 }
 
-// adb devices 的输出解析。设备没授权 / 离线时报错必须说清楚该干什么 ——
-// 只回一句"没找到设备"会让人去查线,而实际是手机上有个框没点
-func TestPickAndroidDeviceMessages(t *testing.T) {
-	// 这几条不连真机,只验解析和报错措辞:用一个不存在的 adb 触发失败路径
-	_, _, err := pickAndroidDevice("definitely-not-an-adb-binary", "")
+// adb 可执行文件不存在时报错要点明是 adb 的问题
+func TestResolveAdbMissingBinary(t *testing.T) {
+	_, err := resolveAdb("definitely-not-an-adb-binary")
 	if err == nil {
 		t.Fatal("adb 不存在时该报错")
 	}

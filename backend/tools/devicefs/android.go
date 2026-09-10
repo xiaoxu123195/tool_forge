@@ -1,6 +1,7 @@
 package devicefs
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -14,31 +15,36 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/electricbubble/gadb"
 )
 
 // Android 这条路的形状:
 //
-//	adb shell → su(Magisk)→ 设备自带的 toybox
+//	adb server(:5037)→ adb 协议 → 设备上的 shell → su(Magisk)→ toybox
 //
-// 没有 SFTP 这种结构化通道,所有信息都得从命令输出里解析出来。
-// 三件事是实测定下来的,不是拍脑袋:
+// 走的是 adb 协议本身,不再 fork adb.exe 去跑命令。换掉的不只是"快一点":
 //
-//  1. 命令用 base64 包一层再送。原因是引用层数太多:Go 的 exec 一层、
-//     Windows 命令行一层、adb 把参数拼回字符串一层、设备的 sh 一层、su 再起的 sh 一层。
-//     文件名里有个空格或引号就会在某一层碎掉。base64 之后命令行上只剩
-//     [A-Za-z0-9+/=],没有任何一层能改动它。
+//   - 命令行那三层引用没有了(Go 的 exec、Windows 命令行、adb 把参数拼回字符串),
+//     现在只剩设备上 sh 这一层
+//   - adb 第一次被调用会 fork 一个常驻 server 并继承 stdout 管道,导致 Wait
+//     永远回不来、超时形同虚设 —— 这条路整个不存在了
+//   - 非 root 的读现在是干净的二进制,不用再绕 base64
 //
-//  2. 读文件必须走 base64,不能直接 cat。su 会分配一个 pty,pty 把 LF 换成 CRLF ——
-//     502056 字节的文件直接 cat 出来变成 506112 字节,而且不会报任何错。
-//     这个坑不看字节数根本发现不了。
+// 唯一还需要 adb 可执行文件的地方是"server 没起来时把它拉起来" ——
+// adb 协议本身没有"启动服务端"这回事,只能由 adb.exe 自己 fork。
 //
-//  3. 整文件导出改走"设备内先复制到 /sdcard,再 adb pull"。base64 通道约 1.4 MB/s,
-//     而 adb 自己的同步协议是 26 MB/s。代价是会往设备里写一个临时文件,
-//     所以只在明确要导出时才这么干;浏览和预览一个字节都不往设备写。
+// 有两件事换了传输方式也躲不掉,因为根源在设备上:
+//
+//  1. su 会分配一个 pty,pty 把 LF 换成 CRLF。502056 字节的文件经 su 读出来
+//     变成 506112 字节,而且不报任何错。所以走 root 的读仍然要过 base64。
+//  2. adb 的 sync 协议(Pull / List)以 shell 用户身份跑,进不去 /data。
+//     List 在那儿返回的是"零条且无错误",比报错更坑 —— 会被显示成"空目录"。
+//     所以列目录统一走 shell + stat,不用 sync 那条。
 
 const (
 	// androidPreviewLimit 预览最多拉多少字节。
-	// 比 iOS 小一个数量级,因为这边预览走的是 base64 文本通道(约 1.4 MB/s),
+	// 比 iOS 小一个数量级,因为走 root 时这边是 base64 文本通道(约 1.4 MB/s),
 	// 给 8MB 的话点一下要等六秒
 	androidPreviewLimit = 2 << 20
 	// androidCmdTimeout 普通命令(列目录、stat)的上限
@@ -54,7 +60,7 @@ const (
 )
 
 type androidTransport struct {
-	adb    string
+	dev    gadb.Device
 	serial string
 	// root su 能不能用。用不了的话只看得到 /sdcard,
 	// 而有价值的数据全在 /data/data 下面
@@ -62,24 +68,73 @@ type androidTransport struct {
 }
 
 func connectAndroid(opt ConnectOptions) (transport, *Session, error) {
-	adb, err := resolveAdb(opt.AdbPath)
+	client, err := dialAdb(opt.AdbPath)
 	if err != nil {
 		return nil, nil, err
 	}
-	serial, model, err := pickAndroidDevice(adb, opt.DeviceID)
+	dev, model, err := pickAndroidDevice(client, opt.DeviceID)
 	if err != nil {
 		return nil, nil, err
 	}
-	t := &androidTransport{adb: adb, serial: serial}
+	t := &androidTransport{dev: dev, serial: dev.Serial()}
 	t.root = t.probeRoot()
 
 	return t, &Session{
 		Platform: "android",
-		DeviceID: serial,
-		Addr:     serial,
+		DeviceID: t.serial,
+		Addr:     t.serial,
 		Rooted:   t.root,
 		Model:    model,
 	}, nil
+}
+
+// minUsableAdb adb 能认出现代设备的最低末位版本号。
+//
+// 40 之前的版本没有 RSA 授权握手(那是 Android 4.2.2 引入的),对着一台现代手机
+// 的表现是"设备列表为空",不会有任何报错 —— 这正是最难查的那种失败。
+// Windows 上一堆手机助手会把老 adb 塞进系统目录并抢占 5037,撞上的概率不低。
+const minUsableAdb = 40
+
+// dialAdb 连上 adb 服务端;没起来就先把它拉起来。
+//
+// adb 协议里没有"启动服务端"这回事,只能靠 adb 可执行文件自己 fork 一个。
+// 这是整条路上唯一还需要外部可执行文件的地方,而且只在服务端没跑时用一次。
+func dialAdb(adbPath string) (gadb.Client, error) {
+	client, err := gadb.NewClient()
+	if err == nil {
+		if v, verr := client.ServerVersion(); verr == nil && v > 0 && v < minUsableAdb {
+			return gadb.Client{}, fmt.Errorf(
+				"正在跑的 adb 服务端版本过老(协议版本 %d)—— 它没有 RSA 授权握手,"+
+					"认不出 2013 年以后的设备,表现就是设备列表一直是空的。"+
+					"多半是别的软件把老版本的 adb 抢先起在了 5037 端口上;"+
+					"用新版 platform-tools 执行一次 adb kill-server 再重试", v)
+		}
+		return client, nil
+	}
+
+	// 服务端没跑,拉起来再连一次
+	if serr := startAdbServer(adbPath); serr != nil {
+		return gadb.Client{}, serr
+	}
+	client, err = gadb.NewClient()
+	if err != nil {
+		return gadb.Client{}, fmt.Errorf("adb 服务端起来了但连不上: %w", err)
+	}
+	return client, nil
+}
+
+func startAdbServer(adbPath string) error {
+	adb, err := resolveAdb(adbPath)
+	if err != nil {
+		return err
+	}
+	if _, stderr, err := runCmd(context.Background(), 30*time.Second, adb, "start-server"); err != nil {
+		if s := strings.TrimSpace(stderr); s != "" {
+			return fmt.Errorf("启动 adb 服务端失败:%s", s)
+		}
+		return fmt.Errorf("启动 adb 服务端失败: %w", err)
+	}
+	return nil
 }
 
 // bundledAdbPath 应用自己那份 adb 放在哪。
@@ -92,27 +147,18 @@ func bundledAdbPath() string {
 	if err != nil {
 		return ""
 	}
-	p := filepath.Join(home, ".toolforge", "platform-tools", "adb.exe")
-	if runtime.GOOS != "windows" {
-		p = filepath.Join(home, ".toolforge", "platform-tools", "adb")
+	name := "adb"
+	if runtime.GOOS == "windows" {
+		name = "adb.exe"
 	}
+	p := filepath.Join(home, ".toolforge", "platform-tools", name)
 	if st, err := os.Stat(p); err == nil && !st.IsDir() {
 		return p
 	}
 	return ""
 }
 
-// minUsableAdb adb 能认出现代设备的最低版本。
-//
-// 1.0.32 之前的版本没有 RSA 授权握手(那是 Android 4.2.2 引入的),
-// 对着一台现代手机的表现是"设备列表为空",不会有任何报错 ——
-// 这正是最难查的那种失败。
-const minUsableAdbMinor = 32
-
-// resolveAdb 决定用哪个 adb,并在版本明显过老时直接拦下来。
-//
-// 拦下来比让它继续跑好:老版本不会报错,只会给一个空的设备列表,
-// 而空列表看起来就是"线没插好",人会去查线、换口、重启手机 —— 全是白费功夫。
+// resolveAdb 决定用哪个 adb 可执行文件,并在版本明显过老时直接拦下来
 func resolveAdb(explicit string) (string, error) {
 	adb := strings.TrimSpace(explicit)
 	if adb == "" {
@@ -127,7 +173,7 @@ func resolveAdb(explicit string) (string, error) {
 		return "", fmt.Errorf("跑不起来 %s:%w —— 确认 adb 装了、路径对", adb, err)
 	}
 	full, minor := parseAdbVersion(out)
-	if minor > 0 && minor < minUsableAdbMinor {
+	if minor > 0 && minor < minUsableAdb {
 		where := adb
 		if resolved, err := exec.LookPath(adb); err == nil {
 			where = resolved
@@ -141,7 +187,7 @@ func resolveAdb(explicit string) (string, error) {
 }
 
 // parseAdbVersion 从 "Android Debug Bridge version 1.0.41" 里取出版本。
-// 第二个返回值是次版本号(41 / 26),取不到时为 0
+// 第二个返回值是末位版本号(41 / 26),取不到时为 0
 func parseAdbVersion(out string) (full string, minor int) {
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
@@ -162,56 +208,46 @@ func parseAdbVersion(out string) (full string, minor int) {
 
 // pickAndroidDevice 选一台设备。
 //
-// 状态必须是 device:unauthorized 说明手机上那个"允许 USB 调试"的框还没点,
+// 状态必须是 online:unauthorized 说明手机上那个"允许 USB 调试"的框还没点,
 // offline 说明连接是坏的 —— 这两种都得说清楚,不然人只会看到一句"没找到设备"
-func pickAndroidDevice(adb, want string) (serial, model string, err error) {
-	out, _, err := runCmd(context.Background(), 20*time.Second, adb, "devices", "-l")
+func pickAndroidDevice(client gadb.Client, want string) (gadb.Device, string, error) {
+	devices, err := client.DeviceList()
 	if err != nil {
-		return "", "", fmt.Errorf("跑不起来 %s:%w —— 确认 adb 装了、路径对", adb, err)
-	}
-	type dev struct{ serial, state, model string }
-	var devices []dev
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
-		if line == "" || strings.HasPrefix(line, "List of devices") || strings.HasPrefix(line, "*") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		d := dev{serial: fields[0], state: fields[1]}
-		for _, f := range fields[2:] {
-			if strings.HasPrefix(f, "model:") {
-				d.model = strings.TrimPrefix(f, "model:")
-			}
-		}
-		devices = append(devices, d)
+		return gadb.Device{}, "", fmt.Errorf("取设备列表失败: %w", err)
 	}
 	if len(devices) == 0 {
-		return "", "", errors.New("adb 没看到任何设备 —— 确认线插好、手机上开了 USB 调试;" +
-			"如果别的工具占着 adb 服务端口,它的版本过老也会导致设备认不出来")
+		return gadb.Device{}, "", errors.New("adb 没看到任何设备 —— 确认线插好、" +
+			"手机上开了 USB 调试并允许了这台电脑")
 	}
 	for _, d := range devices {
-		if want != "" && d.serial != want {
+		if want != "" && d.Serial() != want {
 			continue
 		}
-		switch d.state {
-		case "device":
-			return d.serial, d.model, nil
-		case "unauthorized":
-			return "", "", fmt.Errorf("设备 %s 还没授权 —— 手机屏幕上会弹「允许 USB 调试」,点一下允许", d.serial)
+		state, err := d.State()
+		if err != nil {
+			return gadb.Device{}, "", fmt.Errorf("读设备 %s 的状态失败: %w", d.Serial(), err)
+		}
+		switch state {
+		case gadb.StateOnline:
+			model, _ := d.Model()
+			return d, model, nil
+		case gadb.StateUnknown:
+			// adb 报的原始状态里 unauthorized 也落在这里 —— 这是最常见的一种,
+			// 而它的解法就在手机屏幕上,必须说出来
+			return gadb.Device{}, "", fmt.Errorf(
+				"设备 %s 的状态不是"+"「已连接」,最常见的原因是还没授权 —— "+
+					"手机屏幕上会弹「允许 USB 调试」,点一下允许", d.Serial())
 		default:
-			return "", "", fmt.Errorf("设备 %s 当前状态是 %s,连不上", d.serial, d.state)
+			return gadb.Device{}, "", fmt.Errorf("设备 %s 当前状态是 %s,连不上", d.Serial(), state)
 		}
 	}
-	return "", "", fmt.Errorf("没找到序列号为 %s 的设备", want)
+	return gadb.Device{}, "", fmt.Errorf("没找到序列号为 %s 的设备", want)
 }
 
 // probeRoot 试一下 su 能不能用
 func (t *androidTransport) probeRoot() bool {
-	out, _, err := t.shell(context.Background(), 15*time.Second, "id", true)
-	return err == nil && strings.Contains(out, "uid=0")
+	out, err := t.raw("id", true, androidCmdTimeout)
+	return err == nil && strings.Contains(string(out), "uid=0")
 }
 
 func (t *androidTransport) startPath() string {
@@ -225,38 +261,49 @@ func (t *androidTransport) startPath() string {
 
 func (t *androidTransport) previewLimit() int64 { return androidPreviewLimit }
 
-// close Android 这边没有需要收的长驻进程 —— adb 服务是系统级的,
-// 不该由我们关掉(别的工具可能也在用)
+// close adb 服务端是系统级的,别的工具可能也在用,不该由我们关掉
 func (t *androidTransport) close() error { return nil }
 
-// shell 在设备上跑一段脚本。
+// raw 在设备上跑一段脚本,拿原始字节。
 //
-// script 会被 base64 包起来再送,理由见文件头。root 为真时用 su 跑。
-func (t *androidTransport) shell(ctx context.Context, timeout time.Duration, script string, asRoot bool) (string, string, error) {
-	payload := base64.StdEncoding.EncodeToString([]byte(script))
-	// 命令替换让解出来的整段脚本成为 su 的**一个**参数,不会被再切一次;
-	// 用管道喂给 su 的写法在部分设备上会把脚本原样回显出来
-	var wrapped string
+// asRoot 时用 base64 把脚本包起来交给 su。包这一层不是为了躲命令行引用
+// (走 adb 协议之后只剩设备 sh 一层),而是因为 su -c 自己还要再起一个 sh:
+// 命令替换让解出来的整段成为 su 的一个参数,不会被二次切分。
+func (t *androidTransport) raw(script string, asRoot bool, timeout time.Duration) ([]byte, error) {
+	cmd := script
 	if asRoot {
-		wrapped = fmt.Sprintf(`su -c "$(echo %s | base64 -d)"`, payload)
-	} else {
-		wrapped = fmt.Sprintf(`echo %s | base64 -d | sh`, payload)
+		payload := base64.StdEncoding.EncodeToString([]byte(script))
+		cmd = fmt.Sprintf(`su -c "$(echo %s | base64 -d)"`, payload)
 	}
-	return runCmd(ctx, timeout, t.adb, "-s", t.serial, "exec-out", wrapped)
+
+	type result struct {
+		out []byte
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		out, err := t.dev.RunShellCommandWithBytes(cmd)
+		ch <- result{out, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.out, r.err
+	case <-time.After(timeout):
+		// adb 协议这条路没有"杀掉远端命令"的手段,只能不再等它;
+		// 那个 goroutine 会随着连接自己结束
+		return nil, fmt.Errorf("设备上的命令超过 %s 还没结束", timeout)
+	}
 }
 
 // text 跑一段脚本并拿到文本输出。
-// 设备那头的 pty 会把 LF 变成 CRLF,统一去掉 \r
+// 走 su 时设备那头的 pty 会把 LF 变成 CRLF,统一去掉 \r
 func (t *androidTransport) text(script string, timeout time.Duration) (string, error) {
-	out, stderr, err := t.shell(context.Background(), timeout, script, t.root)
-	out = strings.ReplaceAll(out, "\r\n", "\n")
-	if err != nil && strings.TrimSpace(out) == "" {
-		if s := strings.TrimSpace(stderr); s != "" {
-			return "", fmt.Errorf("%s", s)
-		}
+	out, err := t.raw(script, t.root, timeout)
+	s := strings.ReplaceAll(string(out), "\r\n", "\n")
+	if err != nil && strings.TrimSpace(s) == "" {
 		return "", err
 	}
-	return out, nil
+	return s, nil
 }
 
 func (t *androidTransport) list(dir string) (*Listing, error) {
@@ -268,7 +315,7 @@ func (t *androidTransport) list(dir string) (*Listing, error) {
 		return nil, fmt.Errorf("列不了 %s:%w", dir, err)
 	}
 	if strings.TrimSpace(out) == "" {
-		// find 什么都没回:目录不存在,或者没权限进去。
+		// 什么都没回:目录不存在,或者没权限进去。
 		// 后者在没 root 的机器上是常态,得说清楚而不是显示成"空目录"
 		if !t.exists(dir) {
 			return nil, fmt.Errorf("%s 不存在或读不了%s", dir, t.rootHint())
@@ -374,22 +421,42 @@ func (t *androidTransport) search(root, pattern string, limit int) (*SearchResul
 
 // pull 把设备上的文件拉到本地。
 //
-// 两条路,按 limit 分:
-//   - limit > 0(预览):走 base64 文本通道。慢,但一个字节都不往设备里写 ——
+// 三条路,按"要不要 root"和"要多少"分:
+//   - 不用 root:直接读 shell 通道。走 adb 协议之后这条是干净的二进制,
+//     不用绕 base64,也不往设备里写东西
+//   - 要 root 且只取开头(预览):base64 文本通道。慢,但同样一个字节都不往设备写 ——
 //     翻看不该改动被取证的设备
-//   - limit <= 0(导出):设备内先复制到 /sdcard 再 adb pull。快二十倍,
-//     代价是会在设备上留一个临时文件,拉完就删
+//   - 要 root 且要整个(导出):设备内先复制到 /sdcard 再走 sync 协议拉。
+//     快二十倍,代价是会在设备上留一个临时文件,拉完就删
 func (t *androidTransport) pull(remote, local string, limit int64) (int64, bool, error) {
+	if !t.root {
+		return t.pullPlain(remote, local, limit)
+	}
 	if limit > 0 {
 		return t.pullInline(remote, local, limit)
 	}
 	return t.pullStaged(remote, local)
 }
 
+// pullPlain 非 root:shell 通道本身就是干净的二进制
+func (t *androidTransport) pullPlain(remote, local string, limit int64) (int64, bool, error) {
+	script := "cat " + shellQuote(remote)
+	if limit > 0 {
+		script = fmt.Sprintf("head -c %d %s", limit, shellQuote(remote))
+	}
+	data, err := t.raw(script, false, androidPullTimeout)
+	if err != nil {
+		return 0, false, fmt.Errorf("读不了 %s%s: %w", remote, t.rootHint(), err)
+	}
+	return writeLocal(local, data, limit)
+}
+
+// pullInline root + 只取开头:base64 中转。
+// su 的 pty 会把 LF 换成 CRLF,直接读二进制一定是坏的
 func (t *androidTransport) pullInline(remote, local string, limit int64) (int64, bool, error) {
 	script := fmt.Sprintf("head -c %d %s 2>/dev/null | toybox base64", limit, shellQuote(remote))
-	out, _, err := t.shell(context.Background(), androidPullTimeout, script, t.root)
-	if err != nil && strings.TrimSpace(out) == "" {
+	out, err := t.raw(script, true, androidPullTimeout)
+	if err != nil && len(bytes.TrimSpace(out)) == 0 {
 		return 0, false, fmt.Errorf("读不了 %s%s", remote, t.rootHint())
 	}
 	// base64 的输出被 pty 插了 CRLF,而且 toybox 会按行折行,全去掉再解
@@ -398,11 +465,43 @@ func (t *androidTransport) pullInline(remote, local string, limit int64) (int64,
 			return -1
 		}
 		return r
-	}, out)
+	}, string(out))
 	data, err := base64.StdEncoding.DecodeString(cleaned)
 	if err != nil {
 		return 0, false, fmt.Errorf("设备返回的内容解不开(可能这个文件读不了): %w", err)
 	}
+	return writeLocal(local, data, limit)
+}
+
+// pullStaged root + 要整个:设备内复制到 /sdcard,再走 sync 协议拉
+func (t *androidTransport) pullStaged(remote, local string) (int64, bool, error) {
+	stage := fmt.Sprintf("%s/.toolforge-pull-%d", androidStageDir, time.Now().UnixNano())
+	script := fmt.Sprintf("cp %s %s && chmod 666 %s",
+		shellQuote(remote), shellQuote(stage), shellQuote(stage))
+	if _, err := t.text(script, androidPullTimeout); err != nil {
+		return 0, false, fmt.Errorf("在设备上复制 %s 失败%s: %w", remote, t.rootHint(), err)
+	}
+	// 无论后面成不成,设备上那份临时文件都得删掉
+	defer func() {
+		_, _ = t.text("rm -f "+shellQuote(stage), androidCmdTimeout)
+	}()
+
+	dst, err := createLocal(local)
+	if err != nil {
+		return 0, false, err
+	}
+	defer dst.Close()
+	if err := t.dev.Pull(stage, dst); err != nil {
+		return 0, false, fmt.Errorf("从设备拉取失败: %w", err)
+	}
+	st, err := os.Stat(local)
+	if err != nil {
+		return 0, false, err
+	}
+	return st.Size(), false, nil
+}
+
+func writeLocal(local string, data []byte, limit int64) (int64, bool, error) {
 	dst, err := createLocal(local)
 	if err != nil {
 		return 0, false, err
@@ -412,29 +511,7 @@ func (t *androidTransport) pullInline(remote, local string, limit int64) (int64,
 	if err != nil {
 		return int64(n), false, err
 	}
-	return int64(n), int64(n) == limit, nil
-}
-
-func (t *androidTransport) pullStaged(remote, local string) (int64, bool, error) {
-	stage := fmt.Sprintf("%s/.toolforge-pull-%d", androidStageDir, time.Now().UnixNano())
-	script := fmt.Sprintf("cp %s %s && chmod 666 %s", shellQuote(remote), shellQuote(stage), shellQuote(stage))
-	if _, err := t.text(script, androidPullTimeout); err != nil {
-		return 0, false, fmt.Errorf("在设备上复制 %s 失败%s: %w", remote, t.rootHint(), err)
-	}
-	// 无论后面成不成,设备上那份临时文件都得删掉
-	defer func() {
-		_, _ = t.text("rm -f "+shellQuote(stage), androidCmdTimeout)
-	}()
-
-	if _, _, err := runCmd(context.Background(), androidPullTimeout,
-		t.adb, "-s", t.serial, "pull", stage, local); err != nil {
-		return 0, false, fmt.Errorf("adb pull 失败: %w", err)
-	}
-	st, err := os.Stat(local)
-	if err != nil {
-		return 0, false, err
-	}
-	return st.Size(), false, nil
+	return int64(n), limit > 0 && int64(n) == limit, nil
 }
 
 // rootHint 没 root 时补一句为什么。
@@ -448,15 +525,11 @@ func (t *androidTransport) rootHint() string {
 
 // runCmd 跑一个本地进程,带超时。
 //
-// WaitDelay 这一行是必须的,不是保险:
-//
-// adb 第一次被调用时会 fork 一个后台 server 守护进程,而那个守护进程
-// 继承了我们这条 stdout 管道的写端。Go 的 Wait 要等 io 拷贝 goroutine 结束,
-// 管道又要等**所有**持有写端的进程退出才关闭 —— 守护进程是常驻的,永远不退。
-// 于是即使 context 到期把 adb 本身杀了,Wait 仍然卡在拷贝上,整个超时形同虚设,
+// 现在只剩"启动 adb 服务端"一处在用它,但 WaitDelay 这一行仍然是必须的:
+// adb 拉起来的那个服务端是常驻进程,而且继承了我们这条 stdout 管道的写端。
+// Go 的 Wait 要等 io 拷贝 goroutine 结束,管道又要等所有持有写端的进程退出 ——
+// 服务端永远不退,于是 context 到期把 adb 杀了也没用,Wait 照样卡死。
 // 界面上的表现就是"连接中"三个字一直转下去。
-//
-// WaitDelay 让 Wait 在进程结束后最多再等这么久就放弃拷贝、强行返回。
 const cmdWaitDelay = 3 * time.Second
 
 func runCmd(ctx context.Context, timeout time.Duration, name string, args ...string) (string, string, error) {
