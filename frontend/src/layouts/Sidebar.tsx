@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, NavLink } from 'react-router-dom'
-import { ChevronLeft, Home as HomeIcon, Pin, Search, User } from 'lucide-react'
+import { ChevronLeft, Home as HomeIcon, Pin, Search, Settings } from 'lucide-react'
 import { GetAppInfo } from '../../wailsjs/go/main/App'
 import type { main } from '../../wailsjs/go/models'
 import { ToolContextMenu } from '@/components/ToolContextMenu'
@@ -261,9 +261,13 @@ export function Sidebar({ onOpenCommandPalette }: SidebarProps = {}) {
       </nav>
 
       <div className="border-t border-border p-2">
+        {/* 这一栏进的是设置页(外部工具 / 快捷键 / AI 配置 / MCP / 本地 API / 数据)。
+            以前显示的是用户昵称,默认「开发者」,配个头像图标 ——
+            第一次打开的人根本不会想到设置藏在一个看着像账号的入口后面。
+            昵称留在设置里的「基础信息」,导航栏只说它通向哪儿 */}
         <NavLink
           to="/profile"
-          title={collapsed ? nickname : undefined}
+          title={collapsed ? '设置' : nickname}
           className={({ isActive }) =>
             cn(
               'flex h-10 items-center gap-2 rounded-md px-2 text-sm text-foreground/80 transition-colors hover:bg-accent hover:text-foreground',
@@ -273,9 +277,9 @@ export function Sidebar({ onOpenCommandPalette }: SidebarProps = {}) {
           }
         >
           <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-background text-muted-foreground">
-            <User className="h-4 w-4" />
+            <Settings className="h-4 w-4" />
           </div>
-          {!collapsed && <span className="truncate">{nickname}</span>}
+          {!collapsed && <span className="truncate">设置</span>}
         </NavLink>
       </div>
 

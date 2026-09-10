@@ -20,6 +20,15 @@ global.IS_REACT_ACT_ENVIRONMENT = true
 // CodeMirror(plist / JSON 编辑器)在挂载时就要这几样。jsdom 有 MutationObserver,
 // 只是挂在 window 上没进全局;ResizeObserver 它干脆没有。
 // 这些都是 jsdom 的缺口,补上才能让带编辑器的页面进冒烟测试
+// jsdom 不做布局,Range 上量尺寸的方法一个都没实现。CodeMirror 每次量光标位置
+// 都会踩到,刷一屏 "getClientRects is not a function" —— 不是错误,但会把真的失败淹掉
+if (!dom.window.Range.prototype.getClientRects) {
+  dom.window.Range.prototype.getClientRects = () => ({ length: 0, item: () => null })
+  dom.window.Range.prototype.getBoundingClientRect = () => ({
+    x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0,
+  })
+}
+
 global.Window = dom.window.Window
 global.MutationObserver = dom.window.MutationObserver
 global.DOMRect = dom.window.DOMRect

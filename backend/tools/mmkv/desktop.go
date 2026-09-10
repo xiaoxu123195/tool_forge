@@ -67,15 +67,23 @@ func ParseFile(path, crcPath, keyHex string) (*FileResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 一个键都没解出来时明说下一步该干什么。
-	// 加密的 MMKV 解析起来不会报错,只是什么都读不到 —— 光说"解析成功、0 个键"
-	// 的话,人会以为是文件空的
+	// 一个键都没解出来时,得说清楚是哪种"没有" —— 这两种情况的下一步完全不同。
+	//
+	// 拿真机上的 MMKV 试过一轮才发现:读不出键最常见的原因根本不是加密,
+	// 而是文件整个是 0。MMKV 建存储时就把 mmap 的页预分配好了,
+	// 应用没往里写过东西的话文件就是一整片零 —— 这种情况让人去找 AES key
+	// 是把人往沟里带。
 	if len(res.Entries) == 0 && res.RemovedCount == 0 {
-		if encrypted {
+		switch {
+		case encrypted:
 			return nil, errors.New("解密后仍然一个键都没读到,多半是 AES key 不对")
+		case isBlank(data):
+			return nil, errors.New("这个 MMKV 是空的 —— 文件整个是 0," +
+				"说明应用建了这个存储但一次都没写过。不是加密,也不是解析失败")
+		default:
+			return nil, errors.New("没有解析出任何 key,但文件里是有内容的。" +
+				"多半是 AES 加密的,用「加密打开」提供 .crc 和 AES key 再试")
 		}
-		return nil, errors.New("没有解析出任何 key。文件可能是 AES 加密的," +
-			"用「加密打开」提供 .crc 和 AES key 再试")
 	}
 
 	return &FileResult{
@@ -87,6 +95,24 @@ func ParseFile(path, crcPath, keyHex string) (*FileResult, error) {
 		RemovedCount: res.RemovedCount,
 		Entries:      res.Entries,
 	}, nil
+}
+
+// isBlank 文件开头是不是一整片 0。
+//
+// 只看开头 64 字节:MMKV 的头(4 字节 dbSize + 一个 varint)在最前面,
+// 它俩都是 0 就说明这个存储从来没被写过。整个文件扫一遍没必要 ——
+// 预分配的页可能有几十 KB
+func isBlank(data []byte) bool {
+	n := min(len(data), 64)
+	if n == 0 {
+		return true
+	}
+	for _, b := range data[:n] {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // readMMKV 读文件、按需解密,得到可以交给 scanEntries 的明文

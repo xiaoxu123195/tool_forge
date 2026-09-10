@@ -22,6 +22,7 @@ import { GlobalSearchDialog } from '../src/tools/ai-chat/GlobalSearchDialog'
 import { DefaultsTab } from '../src/profile/sections/aichat/DefaultsTab'
 import MmkvTool from '../src/tools/mmkv/index'
 import PlistTool from '../src/tools/plist/index'
+import DeviceBrowser from '../src/tools/device-browser/index'
 import { ConfirmProvider } from '../src/components/ui/confirm'
 import { conversations } from './fixtures.cjs'
 // 直接引桩本体拿事件把手。build.cjs 只把含 "wailsjs" 的路径重定向到这里,
@@ -436,6 +437,61 @@ async function main() {
     })
     if ((__calls.ParsePlistText || 0) <= before) {
       throw new Error('编辑器打字后没有调后端解析')
+    }
+  })
+
+  // 15) 真机数据浏览器。连接那一层没法在 jsdom 里跑(要一台插着的越狱手机),
+  // 但界面这一层能:连上之后列目录、点开文件按类型预览、搜索。
+  // 真机端到端是另外验的(直连设备跑过 List/Preview/Search)
+  await mount('真机浏览 · 连接与列目录', <DeviceBrowser />, async () => {
+    // 没连接时应该是连接面板,而不是一个空的浏览器
+    if (!(document.body.textContent || '').includes('连接一台设备')) {
+      throw new Error('未连接时没有显示连接面板')
+    }
+    await type('越狱设备默认', '123456')
+    await mustClick('连接')
+    const txt = document.body.textContent || ''
+    if (!txt.includes('com.apple.springboard.plist')) throw new Error('没有列出目录内容')
+    if (!txt.includes('Accounts')) throw new Error('目录条目没画出来')
+    // 软链必须标出来:iOS 上到处是软链,不标的话人会以为看到了两份数据
+    if (!txt.includes('/private/var/mobile/LegacyData')) {
+      throw new Error('软链的指向没有显示')
+    }
+  })
+
+  // 16) 点开一个 plist:预览面板要按后端给的 kind 画,并说清楚凭什么这么判
+  await mount('真机浏览 · 预览 plist', <DeviceBrowser />, async () => {
+    await mustClick('com.apple.springboard.plist')
+    const txt = document.body.textContent || ''
+    if (!txt.includes('SBHomeScreenPageCount')) throw new Error('没有渲染后端解出来的 plist')
+    if (!txt.includes('文件头是 bplist')) throw new Error('没有说明凭什么判成 plist')
+    // 导出走的是原生目录选择 + 后端整文件拉取,成功后给行内提示而不是弹窗
+    await mustClick('导出')
+    if (!(document.body.textContent || '').includes('已导出到')) {
+      throw new Error('导出成功后没有给出落地路径')
+    }
+  })
+
+  // 17) 搜索:结果列表要能出来,并且能切回目录
+  await mount('真机浏览 · 搜索', <DeviceBrowser />, async () => {
+    await type('在当前目录下按名字找', 'plist')
+    const input = document.querySelector(
+      'input[placeholder*="在当前目录下按名字找"]',
+    ) as HTMLInputElement
+    await act(async () => {
+      input.dispatchEvent(
+        new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+      )
+    })
+    await act(async () => {
+      await sleep(80)
+    })
+    const txt = document.body.textContent || ''
+    if (!txt.includes('com.apple.mobilesafari.plist')) throw new Error('搜索结果没出来')
+    if (!txt.includes('找到 2 条')) throw new Error('没有显示命中条数')
+    await mustClick('返回目录')
+    if (!(document.body.textContent || '').includes('Accounts')) {
+      throw new Error('返回目录后没有回到列表')
     }
   })
 

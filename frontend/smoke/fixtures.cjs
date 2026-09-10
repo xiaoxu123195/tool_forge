@@ -405,6 +405,112 @@ const plistResult = {
   notes: ['对象 #3 存在循环引用,已在重复处截断'],
 }
 
+// ---- 真机浏览 ----
+// 形状照后端 devicefs 的返回来写。这几条覆盖的都是真机上实际遇到的情况:
+// 目录、普通文件、软链(iOS 上 /var 就是 /private/var 的软链)、读不了的条目
+const deviceSession = {
+  id: 'dev-1',
+  platform: 'ios',
+  deviceId: '',
+  addr: '127.0.0.1:26395',
+  startPath: '/private/var/mobile/Library',
+}
+
+const deviceListing = {
+  path: '/private/var/mobile/Library',
+  parent: '/private/var/mobile',
+  truncated: false,
+  total: 4,
+  entries: [
+    {
+      name: 'Accounts',
+      path: '/private/var/mobile/Library/Accounts',
+      isDir: true,
+      size: 224,
+      modTime: 1789006395,
+      mode: 'drwx------',
+    },
+    {
+      name: 'Preferences',
+      path: '/private/var/mobile/Library/Preferences',
+      isDir: true,
+      size: 5056,
+      modTime: 1788861762,
+      mode: 'drwxr-xr-x',
+    },
+    {
+      name: 'com.apple.springboard.plist',
+      path: '/private/var/mobile/Library/com.apple.springboard.plist',
+      isDir: false,
+      size: 4441,
+      modTime: 1787917095,
+      mode: '-rw-r--r--',
+    },
+    {
+      // 软链要标出来,不然人会以为在两个地方看到了同一份数据
+      name: 'Legacy',
+      path: '/private/var/mobile/Library/Legacy',
+      isDir: true,
+      size: 0,
+      modTime: 1780000000,
+      mode: 'Lrwxrwxrwx',
+      symlink: '/private/var/mobile/LegacyData',
+    },
+  ],
+}
+
+const devicePreviewPlist = {
+  path: '/private/var/mobile/Library/com.apple.springboard.plist',
+  name: 'com.apple.springboard.plist',
+  size: 4441,
+  kind: 'plist',
+  why: '文件头是 bplist',
+  localPath: 'C:/tmp/cache/springboard.plist',
+  truncated: false,
+  notes: [],
+  plist: {
+    format: 'binary',
+    nsKeyed: false,
+    xml: '<plist/>',
+    raw: { SBIconLock: false },
+    parsed: { SBIconLock: false, SBHomeScreenPageCount: 3 },
+    notes: [],
+  },
+}
+
+// 真机上试出来的:读不出 key 最常见的原因不是加密,是文件整个是 0
+const devicePreviewEmptyMmkv = {
+  path: '/private/var/mobile/Containers/Data/Application/X/Documents/MMappedKV/blank',
+  name: 'blank',
+  size: 16384,
+  kind: 'mmkv',
+  why: '旁边有同名的 .crc 文件,这是 MMKV 的落盘特征',
+  localPath: 'C:/tmp/cache/blank',
+  truncated: false,
+  note: '这个 MMKV 是空的 —— 文件整个是 0,说明应用建了这个存储但一次都没写过。不是加密,也不是解析失败',
+  hex: '000000000000000000000000',
+}
+
+const deviceSearch = {
+  root: '/private/var/mobile/Library',
+  pattern: '*plist*',
+  truncated: false,
+  hits: [
+    {
+      path: '/private/var/mobile/Library/com.apple.springboard.plist',
+      isDir: false,
+      size: 4441,
+      modTime: 1787917095,
+    },
+    {
+      path: '/private/var/mobile/Library/Preferences/com.apple.mobilesafari.plist',
+      isDir: false,
+      size: 812,
+      modTime: 1788000000,
+    },
+  ],
+}
+
 module.exports = {
   searchResults,
   providers,
@@ -417,4 +523,9 @@ module.exports = {
   traceDetail,
   mmkvFile,
   plistResult,
+  deviceSession,
+  deviceListing,
+  devicePreviewPlist,
+  devicePreviewEmptyMmkv,
+  deviceSearch,
 }

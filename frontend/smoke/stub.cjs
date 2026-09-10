@@ -118,6 +118,18 @@ const special = {
   ParsePlistEncoded: () => Promise.resolve(fx.plistResult),
   PickLocalFile: () => Promise.resolve('C:/tmp/sample'),
 
+  // ---- 真机浏览 ----
+  ConnectDevice: () => Promise.resolve(fx.deviceSession),
+  DisconnectDevice: () => Promise.resolve(),
+  ListDeviceDir: () => Promise.resolve(fx.deviceListing),
+  SearchDeviceFiles: () => Promise.resolve(fx.deviceSearch),
+  PreviewDeviceFile: (_id, p) =>
+    Promise.resolve(
+      String(p).endsWith('.plist') ? fx.devicePreviewPlist : fx.devicePreviewEmptyMmkv,
+    ),
+  ExportDeviceFile: () => Promise.resolve('D:/导出/com.apple.springboard.plist'),
+  PickDirectory: () => Promise.resolve('D:/导出'),
+
   // ---- 运行时事件 ----
   EventsOn: on,
   EventsOnMultiple: (name, cb) => on(name, cb),

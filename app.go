@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -23,6 +24,7 @@ import (
 	"tool_forge/backend/tools/claudeinsight"
 	"tool_forge/backend/tools/clipboard"
 	"tool_forge/backend/tools/codexinsight"
+	"tool_forge/backend/tools/devicefs"
 	"tool_forge/backend/tools/envscan"
 	"tool_forge/backend/tools/filehash"
 	"tool_forge/backend/tools/forensic"
@@ -64,6 +66,7 @@ type App struct {
 	api       *apiserver.Server
 	outlook   *outlookmail.Service
 	filehash  *filehash.Service
+	devicefs  *devicefs.Manager
 	llmproxy  *llmproxy.Server
 	mcp       *mcp.Service
 
@@ -99,6 +102,8 @@ func NewApp() *App {
 	apsearch := appsearch.New()
 	fns := forensic.New()
 	fh := filehash.New()
+	// 真机浏览:会话是有状态的(一个 USB 转发进程 + 一条 SSH),由 Manager 统一管
+	dfs := devicefs.NewManager()
 	// 本地 API server:把指定工具暴露为 HTTP 接口
 	api := apiserver.New()
 	api.Register(appsearch.NewHandler(apsearch))
@@ -130,6 +135,7 @@ func NewApp() *App {
 		api:       api,
 		outlook:   outlk,
 		filehash:  fh,
+		devicefs:  dfs,
 		llmproxy:  lp,
 		mcp:       mcpSvc,
 	}
@@ -225,6 +231,11 @@ func (a *App) shutdown(ctx context.Context) {
 	// 把起的 MCP 服务器进程一并收掉,否则退出后它们会留在进程表里
 	if a.mcp != nil {
 		a.mcp.Shutdown()
+	}
+	// 真机会话下面挂着 go-forensic 的 USB 转发进程。不收的话它会活过 app,
+	// 一直占着设备的通道,下次连接直接失败
+	if a.devicefs != nil {
+		a.devicefs.CloseAll()
 	}
 }
 
@@ -506,6 +517,63 @@ func (a *App) ExportNetEnvReport(report netenvcheck.Report, format string) (stri
 		DisplayName:     strings.ToUpper(ext) + " 文件",
 	}
 	return system.SaveBytesToFile(a.ctx, opts, base64.StdEncoding.EncodeToString([]byte(content)))
+}
+
+// ================ 真机数据浏览 ================
+//
+// 直接翻连着的手机,而不是"先导出再看"。取证现场是先翻、翻到有价值的再取,
+// 反过来意味着你得先猜对要导哪个目录。
+//
+// 会话是有状态的(一个 USB 转发进程 + 一条 SSH + SFTP),所以前端拿到的是
+// session id,后面每次调用都带着它回来。
+
+// ConnectDevice 连上一台设备,返回会话信息
+func (a *App) ConnectDevice(opt devicefs.ConnectOptions) (*devicefs.Session, error) {
+	return a.devicefs.Connect(opt)
+}
+
+// DisconnectDevice 断开一个会话并回收转发进程
+func (a *App) DisconnectDevice(sessionID string) error {
+	return a.devicefs.Disconnect(sessionID)
+}
+
+// ListDeviceDir 列设备上的一个目录;path 为空时落在建议的起始目录
+func (a *App) ListDeviceDir(sessionID, path string) (*devicefs.Listing, error) {
+	return a.devicefs.List(sessionID, path)
+}
+
+// SearchDeviceFiles 在设备上按文件名查找(不分大小写,支持 * 通配)
+func (a *App) SearchDeviceFiles(sessionID, root, pattern string, limit int) (*devicefs.SearchResult, error) {
+	return a.devicefs.Search(sessionID, root, pattern, limit)
+}
+
+// PreviewDeviceFile 拉一份到本地缓存,认出类型并直接解开
+func (a *App) PreviewDeviceFile(sessionID, path string) (*devicefs.Preview, error) {
+	return a.devicefs.Preview(sessionID, path, deviceCacheDir())
+}
+
+// ExportDeviceFile 把设备上的文件完整拉到用户选定的目录,返回落地路径
+func (a *App) ExportDeviceFile(sessionID, remote, localDir string) (string, error) {
+	if strings.TrimSpace(localDir) == "" {
+		return "", errors.New("没有选择保存目录")
+	}
+	target := filepath.Join(localDir, filepath.Base(strings.ReplaceAll(remote, "/", string(filepath.Separator))))
+	if _, _, err := a.devicefs.Pull(sessionID, remote, target, 0); err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
+// deviceCacheDir 预览时拉下来的副本放哪。
+//
+// 放在 ~/.toolforge 下面而不是系统临时目录:这些是从别人设备上取下来的数据,
+// 用户得能找得到、也能一次性清掉 —— 设置里的"数据"页统计的就是这个目录
+func deviceCacheDir() string {
+	base := system.ToolforgeDir()
+	if base == "" {
+		return os.TempDir()
+	}
+	return filepath.Join(base, "device-cache")
 }
 
 // ================ MMKV / plist 解析 ================
