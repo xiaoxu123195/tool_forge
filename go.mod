@@ -14,8 +14,8 @@ require (
 	github.com/zalando/go-keyring v0.2.8
 	golang.design/x/clipboard v0.7.1
 	golang.design/x/hotkey v0.4.1
-	golang.org/x/crypto v0.54.0
-	golang.org/x/image v0.28.0
+	golang.org/x/crypto v0.55.0
+	golang.org/x/image v0.45.0
 	golang.org/x/net v0.56.0
 	golang.org/x/sys v0.47.0
 	google.golang.org/protobuf v1.36.11
@@ -33,7 +33,7 @@ require (
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/jchv/go-winloader v0.0.0-20210711035445-715c2860da7e // indirect
 	github.com/kr/fs v0.1.0 // indirect
-	github.com/labstack/echo/v4 v4.13.3 // indirect
+	github.com/labstack/echo/v4 v4.15.3 // indirect
 	github.com/labstack/gommon v0.4.2 // indirect
 	github.com/leaanthony/go-ansi-parser v1.6.1 // indirect
 	github.com/leaanthony/gosod v1.0.4 // indirect
