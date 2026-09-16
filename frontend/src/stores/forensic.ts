@@ -35,6 +35,13 @@ interface ForensicState {
   } | null
   /** 最近使用的命令（最多 10 条） */
   history: HistoryItem[]
+  /**
+   * 用户自己存的常用路径,按平台分开记。
+   *
+   * 内置的那几组是 iOS 系统数据的固定路径;办案的人各有各的常用位置
+   * (某个 App 的数据库目录之类),路径又长又容易少打一层,存个标签比每次翻记录省事
+   */
+  customPresets: Record<PresetPlatform, CustomPreset[]>
   setBinaryPath: (p: string) => void
   setCliEnabled: (on: boolean) => void
   setDefaultSshAddr: (a: string) => void
@@ -43,7 +50,19 @@ interface ForensicState {
   invalidateCheck: () => void
   pushHistory: (item: HistoryItem) => void
   clearHistory: () => void
+  /** 存几条常用路径;同一条路径再存就是改标签,不会存成两条 */
+  saveCustomPresets: (platform: PresetPlatform, items: CustomPreset[]) => void
+  removeCustomPreset: (platform: PresetPlatform, path: string) => void
 }
+
+export type PresetPlatform = 'android' | 'ios'
+
+export interface CustomPreset {
+  label: string
+  path: string
+}
+
+const EMPTY_PRESETS: Record<PresetPlatform, CustomPreset[]> = { android: [], ios: [] }
 
 export interface HistoryItem {
   at: number
@@ -62,6 +81,7 @@ export const useForensicStore = create<ForensicState>()(
       defaultOutputBase: '',
       checkCache: null,
       history: [],
+      customPresets: EMPTY_PRESETS,
       setBinaryPath: (p) =>
         set((s) => ({
           binaryPath: p,
@@ -77,19 +97,43 @@ export const useForensicStore = create<ForensicState>()(
       pushHistory: (item) =>
         set((s) => ({ history: [item, ...s.history].slice(0, 10) })),
       clearHistory: () => set({ history: [] }),
+      saveCustomPresets: (platform, items) =>
+        set((s) => {
+          const cur = [...(s.customPresets[platform] ?? [])]
+          for (const it of items) {
+            const label = it.label.trim()
+            const path = it.path.trim()
+            if (!label || !path) continue
+            const i = cur.findIndex((c) => c.path === path)
+            if (i >= 0) cur[i] = { label, path }
+            else cur.push({ label, path })
+          }
+          return { customPresets: { ...s.customPresets, [platform]: cur } }
+        }),
+      removeCustomPreset: (platform, path) =>
+        set((s) => ({
+          customPresets: {
+            ...s.customPresets,
+            [platform]: (s.customPresets[platform] ?? []).filter((c) => c.path !== path),
+          },
+        })),
     }),
     {
       name: 'tool-forge:forensic',
-      version: 1,
-      // 老用户迁移:cliEnabled 这个字段是后加的,老配置里没有,反序列化出来是 false。
-      // 但配过路径的人显然一直在用 go-forensic —— 不迁的话他们升级后会发现
-      // 引擎选择器凭空消失了,而"去哪儿把它找回来"完全没有线索
+      version: 2,
       migrate: (state, from) => {
-        const s = state as Partial<ForensicState> | undefined
-        if (from < 1 && s && typeof s.binaryPath === 'string' && s.binaryPath.trim() !== '') {
-          return { ...s, cliEnabled: true } as ForensicState
+        const s = { ...((state ?? {}) as Partial<ForensicState>) }
+        // v1:cliEnabled 是后加的,老配置里没有,反序列化出来是 false。
+        // 但配过路径的人显然一直在用 go-forensic —— 不迁的话他们升级后会发现
+        // 引擎选择器凭空消失了,而"去哪儿把它找回来"完全没有线索
+        if (from < 1 && typeof s.binaryPath === 'string' && s.binaryPath.trim() !== '') {
+          s.cliEnabled = true
         }
-        return state as ForensicState
+        // v2:自定义常用路径。两个平台各一份,缺哪个补哪个
+        if (from < 2 || !s.customPresets) {
+          s.customPresets = { ...EMPTY_PRESETS, ...(s.customPresets ?? {}) }
+        }
+        return s as ForensicState
       },
     }
   )

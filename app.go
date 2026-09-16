@@ -35,6 +35,7 @@ import (
 	"tool_forge/backend/tools/mmkv"
 	"tool_forge/backend/tools/netenvcheck"
 	"tool_forge/backend/tools/netscan"
+	"tool_forge/backend/tools/ocr"
 	"tool_forge/backend/tools/outlookmail"
 	"tool_forge/backend/tools/plist"
 	"tool_forge/backend/tools/protobuf"
@@ -577,6 +578,15 @@ func (a *App) ListDeviceDir(sessionID, path string) (*devicefs.Listing, error) {
 // SearchDeviceFiles 在设备上按文件名查找(不分大小写,支持 * 通配)
 func (a *App) SearchDeviceFiles(sessionID, root, pattern string, limit int) (*devicefs.SearchResult, error) {
 	return a.devicefs.Search(sessionID, root, pattern, limit)
+}
+
+// DiffDeviceDir 拍一张目录子树的快照和上一张比,给界面上的监视模式用。
+// reset 为真先丢掉基线 —— 开始监视的第一下就是它
+func (a *App) DiffDeviceDir(sessionID, dir string, reset bool) (*devicefs.DiffResult, error) {
+	if reset {
+		a.devicefs.ResetSnapshot(sessionID, dir)
+	}
+	return a.devicefs.DiffTree(sessionID, dir)
 }
 
 // PreviewDeviceFile 拉一份到本地缓存,认出类型并直接解开
@@ -1264,6 +1274,19 @@ func (a *App) GetClipboardImage(id string) (string, error) {
 	return a.clipboard.GetImage(id)
 }
 
+// RecognizeClipboardImage 认出剪贴板里一张图上的文字。
+// 走系统自带的 OCR,不带模型;别的平台会直接说不支持
+func (a *App) RecognizeClipboardImage(id string) (*ocr.Result, error) {
+	if a.clipboard == nil {
+		return nil, fmt.Errorf("剪贴板服务没有启动")
+	}
+	p, err := a.clipboard.ImagePath(id)
+	if err != nil {
+		return nil, err
+	}
+	return ocr.Recognize(a.ctx, p)
+}
+
 // ================ Updater ================
 
 // CheckUpdate 对比 Hub manifest 与本地版本
@@ -1584,6 +1607,22 @@ func (a *App) ReadAIConfigFile(path string) (*aiconfig.FileContent, error) {
 // SaveAIConfigFile 原样写回,写前留一份带时间戳的备份
 func (a *App) SaveAIConfigFile(path, content string) error {
 	return aiconfig.WriteFile(aiconfig.Home{}, path, content)
+}
+
+// InstallLocalAPIMCP 把本地 API 的 MCP 端点写进 Claude Code(~/.claude.json)
+// 或 Codex(~/.codex/config.toml)。apply 为假只试算不落盘,把将写入的那段拿回来
+// 给确认框看。地址和 token 从服务端自己的配置取,不信前端传来的 ——
+// 写进别家配置的必须是真在监听的那个
+func (a *App) InstallLocalAPIMCP(target string, apply bool) (*aiconfig.MCPInstallResult, error) {
+	cfg := a.GetAPIServerConfig()
+	srv := aiconfig.HTTPMCPServer{
+		Name: "tool-forge",
+		URL:  fmt.Sprintf("http://127.0.0.1:%d/mcp", cfg.Port),
+	}
+	if cfg.AuthEnabled && cfg.Token != "" {
+		srv.Token = cfg.Token
+	}
+	return aiconfig.InstallMCP(aiconfig.Home{}, target, srv, apply)
 }
 
 // ListMCPServers 所有已配置的 MCP 服务器

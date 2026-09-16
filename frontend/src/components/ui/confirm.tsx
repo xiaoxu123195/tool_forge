@@ -110,9 +110,11 @@ function ConfirmDialog({
             <h3 className="text-sm font-semibold text-foreground">
               {opts.title ?? '确认操作'}
             </h3>
-            <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+            {/* message 是 ReactNode,调用方常给一段带 <p>/<pre> 的内容;
+                外层不能是 <p>——块级元素套进 <p> 是无效嵌套,浏览器会把它拆开 */}
+            <div className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
               {opts.message}
-            </p>
+            </div>
           </div>
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-border bg-secondary/30 px-4 py-3">

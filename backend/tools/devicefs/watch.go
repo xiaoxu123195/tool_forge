@@ -2,6 +2,7 @@ package devicefs
 
 import (
 	"fmt"
+	"path"
 	"sort"
 	"sync"
 	"time"
@@ -73,7 +74,7 @@ func newSnapshots() *snapshots {
 
 func (s *snapshots) key(sessionID, dir string) string { return sessionID + "\x00" + dir }
 
-// Diff 拍一张新快照,和上一张比。
+// Diff 拍一张新快照,和上一张比。只看这一层。
 //
 // 每次调用都会把基线换成这一张 —— 所以连着调两次拿到的是"这两次之间"的变化,
 // 而不是"从第一次到现在"。想要后者就别中间多调
@@ -82,51 +83,91 @@ func (m *Manager) Diff(sessionID, dir string) (*DiffResult, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	now := map[string]stamp{}
 	for _, e := range lst.Entries {
-		now[e.Name] = stamp{size: e.Size, modTime: e.ModTime, isDir: e.IsDir}
+		now[joinRemote(lst.Path, e.Name)] = stamp{size: e.Size, modTime: e.ModTime, isDir: e.IsDir}
 	}
+	return m.snaps.compare(m.snaps.key(sessionID, lst.Path), lst.Path, now, lst.Total, lst.Truncated), nil
+}
 
+// treeLimit 递归快照最多记多少条。一个 App 的数据目录几千个文件是常态,
+// 缓存目录上万也不稀奇;超过就截断并标出来 —— 截断之后的对比是不完整的,必须让人知道
+const treeLimit = 20000
+
+// DiffTree 和 Diff 一样拍快照比差异,但看的是整棵子树。
+//
+// 只看一层的话,深处文件的改动看不见:目录的修改时间只在直接子项增删时变,
+// databases/msg.db 被写了一笔,上层目录纹丝不动。想知道"这个动作落到了哪些文件上",
+// 非递归不可。递归交给设备上的 find —— 和 search 走的是同一条路,模式给 * 就是全部。
+// 基线和 Diff 的分开记,两种看法互不干扰
+func (m *Manager) DiffTree(sessionID, dir string) (*DiffResult, error) {
+	s, err := m.get(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	dir = cleanRemote(dir)
+	if dir == "" {
+		dir = s.t.startPath()
+	}
+	res, err := s.t.search(dir, "*", treeLimit)
+	if err != nil {
+		return nil, err
+	}
+	now := map[string]stamp{}
+	for _, h := range res.Hits {
+		// find 会把起点自己也列出来;它的修改时间跟着直接子项变,不算一处变化
+		if h.Path == dir {
+			continue
+		}
+		now[h.Path] = stamp{size: h.Size, modTime: h.ModTime, isDir: h.IsDir}
+	}
+	return m.snaps.compare(m.snaps.treeKey(sessionID, dir), dir, now, len(now), res.Truncated), nil
+}
+
+func (s *snapshots) treeKey(sessionID, dir string) string {
+	return sessionID + "\x00tree\x00" + dir
+}
+
+// compare 用这张快照换掉基线,算出和基线的差异。now 的键是完整路径
+func (s *snapshots) compare(key, dir string, now map[string]stamp, total int, truncated bool) *DiffResult {
 	res := &DiffResult{
-		Dir:       lst.Path,
+		Dir:       dir,
 		Changes:   []Change{},
-		Total:     lst.Total,
-		Truncated: lst.Truncated,
+		Total:     total,
+		Truncated: truncated,
 	}
 
-	k := m.snaps.key(sessionID, lst.Path)
-	m.snaps.mu.Lock()
-	prev, had := m.snaps.m[k]
-	m.snaps.m[k] = snapEntry{at: time.Now().Unix(), files: now}
-	m.snaps.mu.Unlock()
+	s.mu.Lock()
+	prev, had := s.m[key]
+	s.m[key] = snapEntry{at: time.Now().Unix(), files: now}
+	s.mu.Unlock()
 
 	if !had {
 		res.Baseline = true
-		return res, nil
+		return res
 	}
 	res.Since = prev.at
 
-	for name, cur := range now {
-		old, existed := prev.files[name]
+	for p, cur := range now {
+		old, existed := prev.files[p]
 		switch {
 		case !existed:
 			res.Changes = append(res.Changes, Change{
-				Name: name, Path: joinRemote(lst.Path, name), Kind: "added",
+				Name: path.Base(p), Path: p, Kind: "added",
 				IsDir: cur.isDir, Size: cur.size, ModTime: cur.modTime,
 			})
 		case old.size != cur.size || old.modTime != cur.modTime:
 			res.Changes = append(res.Changes, Change{
-				Name: name, Path: joinRemote(lst.Path, name), Kind: "modified",
+				Name: path.Base(p), Path: p, Kind: "modified",
 				IsDir: cur.isDir, Size: cur.size, ModTime: cur.modTime,
 				SizeDelta: cur.size - old.size,
 			})
 		}
 	}
-	for name, old := range prev.files {
-		if _, still := now[name]; !still {
+	for p, old := range prev.files {
+		if _, still := now[p]; !still {
 			res.Changes = append(res.Changes, Change{
-				Name: name, Path: joinRemote(lst.Path, name), Kind: "removed",
+				Name: path.Base(p), Path: p, Kind: "removed",
 				IsDir: old.isDir, Size: old.size, ModTime: old.modTime,
 			})
 		}
@@ -138,16 +179,18 @@ func (m *Manager) Diff(sessionID, dir string) (*DiffResult, error) {
 		if res.Changes[i].Kind != res.Changes[j].Kind {
 			return res.Changes[i].Kind < res.Changes[j].Kind
 		}
-		return res.Changes[i].Name < res.Changes[j].Name
+		return res.Changes[i].Path < res.Changes[j].Path
 	})
-	return res, nil
+	return res
 }
 
 // ResetSnapshot 丢掉某个目录的基线,下次 Diff 重新开始
 func (m *Manager) ResetSnapshot(sessionID, dir string) {
+	dir = cleanRemote(dir)
 	m.snaps.mu.Lock()
 	defer m.snaps.mu.Unlock()
-	delete(m.snaps.m, m.snaps.key(sessionID, cleanRemote(dir)))
+	delete(m.snaps.m, m.snaps.key(sessionID, dir))
+	delete(m.snaps.m, m.snaps.treeKey(sessionID, dir))
 }
 
 // EnsureSession 找一个现成的会话用;没有就连一个。

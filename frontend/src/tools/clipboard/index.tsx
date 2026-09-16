@@ -10,6 +10,7 @@ import {
   PinOff,
   Power,
   RefreshCw,
+  ScanText,
   Search,
   Trash2,
   Type,
@@ -20,12 +21,14 @@ import { ScrollToTopButton } from '@/components/tool/ScrollToTopButton'
 import { Button } from '@/components/ui/button'
 import { useConfirm } from '@/components/ui/confirm'
 import { cn } from '@/lib/utils'
+import { OcrDialog, type OcrState } from './OcrDialog'
 import {
   ClearClipboardHistory,
   CopyClipboardItem,
   DeleteClipboardItem,
   GetClipboardImage,
   ListClipboard,
+  RecognizeClipboardImage,
   SetClipboardEnabled,
   ToggleClipboardPin,
 } from '../../../wailsjs/go/main/App'
@@ -194,6 +197,18 @@ export default function ClipboardTool() {
     setLightbox({ id, src })
   }, [])
 
+  // 认图里的字:走系统自带的 OCR。结果放弹窗里让人改一改再复制,识别不会全对
+  const [ocrState, setOcrState] = useState<OcrState | null>(null)
+  const handleRecognize = useCallback(async (id: string) => {
+    setOcrState({ id, busy: true, result: null, error: '' })
+    try {
+      const r = await RecognizeClipboardImage(id)
+      setOcrState({ id, busy: false, result: r, error: '' })
+    } catch (e) {
+      setOcrState({ id, busy: false, result: null, error: e instanceof Error ? e.message : String(e) })
+    }
+  }, [])
+
   const totalCount = items.length
 
   return (
@@ -259,6 +274,7 @@ export default function ClipboardTool() {
                   onDelete={handleDelete}
                   onTogglePin={handleTogglePin}
                   onOpenImage={handleOpenImage}
+                  onRecognize={handleRecognize}
                 />
               )}
               {groups.today.length > 0 && (
@@ -271,6 +287,7 @@ export default function ClipboardTool() {
                   onDelete={handleDelete}
                   onTogglePin={handleTogglePin}
                   onOpenImage={handleOpenImage}
+                  onRecognize={handleRecognize}
                 />
               )}
               {groups.yesterday.length > 0 && (
@@ -283,6 +300,7 @@ export default function ClipboardTool() {
                   onDelete={handleDelete}
                   onTogglePin={handleTogglePin}
                   onOpenImage={handleOpenImage}
+                  onRecognize={handleRecognize}
                 />
               )}
               {groups.earlier.length > 0 && (
@@ -295,6 +313,7 @@ export default function ClipboardTool() {
                   onDelete={handleDelete}
                   onTogglePin={handleTogglePin}
                   onOpenImage={handleOpenImage}
+                  onRecognize={handleRecognize}
                 />
               )}
               <ScrollToTopButton threshold={120} />
@@ -302,6 +321,8 @@ export default function ClipboardTool() {
           )}
         </div>
       </div>
+
+      {ocrState && <OcrDialog state={ocrState} onClose={() => setOcrState(null)} />}
 
       {lightbox && (
         <Lightbox
@@ -355,6 +376,7 @@ function Section({
   onDelete,
   onTogglePin,
   onOpenImage,
+  onRecognize,
 }: {
   label: string
   count: number
@@ -365,6 +387,7 @@ function Section({
   onDelete: (id: string) => void
   onTogglePin: (id: string) => void
   onOpenImage: (id: string) => void
+  onRecognize: (id: string) => void
 }) {
   return (
     <section>
@@ -390,6 +413,7 @@ function Section({
             onDelete={onDelete}
             onTogglePin={onTogglePin}
             onOpenImage={onOpenImage}
+            onRecognize={onRecognize}
           />
         ))}
       </ul>
@@ -404,6 +428,7 @@ function ItemCard({
   onDelete,
   onTogglePin,
   onOpenImage,
+  onRecognize,
 }: {
   item: cb.Item
   copied: boolean
@@ -411,6 +436,7 @@ function ItemCard({
   onDelete: (id: string) => void
   onTogglePin: (id: string) => void
   onOpenImage: (id: string) => void
+  onRecognize: (id: string) => void
 }) {
   const isImage = item.kind === 'image'
   const link = !isImage && isLink(item.text) ? safeHost(item.text ?? '') : ''
@@ -517,6 +543,11 @@ function ItemCard({
         </div>
 
         <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/card:opacity-100">
+          {isImage && (
+            <IconBtn label="识别文字" onClick={() => onRecognize(item.id)}>
+              <ScanText className="h-3.5 w-3.5" />
+            </IconBtn>
+          )}
           <IconBtn
             label={copied ? '已复制' : '复制'}
             onClick={() => onCopy(item.id)}

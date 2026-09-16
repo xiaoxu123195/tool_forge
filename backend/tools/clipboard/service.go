@@ -144,6 +144,18 @@ func (s *Service) GetImage(id string) (string, error) {
 	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
+// ImagePath 图片项的原图在磁盘上的位置(给 OCR 用)
+func (s *Service) ImagePath(id string) (string, error) {
+	it, ok := s.store.Get(id)
+	if !ok {
+		return "", fmt.Errorf("item not found: %s", id)
+	}
+	if it.Kind != KindImage {
+		return "", fmt.Errorf("not an image: %s", id)
+	}
+	return it.ImagePath, nil
+}
+
 // LogStartup 日志辅助（不暴露给前端）
 func (s *Service) LogStartup() {
 	cfg := s.store.Config()

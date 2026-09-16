@@ -8,6 +8,7 @@ import {
 import { EventsOn, EventsOff } from '../../../wailsjs/runtime/runtime'
 import { Settings } from 'lucide-react'
 import { useForensicStore } from '@/stores/forensic'
+import { useJump } from '@/lib/jump'
 import { Button } from '@/components/ui/button'
 import { ConfigDialog } from './ConfigDialog'
 import { SetupGuide } from './SetupGuide'
@@ -17,6 +18,7 @@ import {
   buildArgs,
   defaultFormState,
   needsCLI,
+  splitList,
   type FormState,
   type LogEntry,
   type RunStatus,
@@ -54,6 +56,16 @@ export default function MobileForensic() {
   useEffect(() => {
     SetForensicBinaryPath(binaryPath).catch(() => {})
   }, [binaryPath])
+
+  // 从真机浏览跳过来:平台跟着那边的会话,路径追加进「指定路径」,已经填过的不重复
+  useJump('mobile-forensic', (j) => {
+    setForm((f) => {
+      const have = new Set(splitList(f.specifyPaths))
+      const add = j.paths.filter((p) => !have.has(p))
+      const merged = [f.specifyPaths.trim(), ...add].filter(Boolean).join('\n')
+      return { ...f, platform: j.platform, specifyPaths: merged }
+    })
+  })
 
   // 订阅事件
   useEffect(() => {

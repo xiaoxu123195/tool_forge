@@ -8,6 +8,7 @@ import { HitList } from './HitList'
 import { TableViewer } from './TableViewer'
 import { splitKeywords } from './types'
 import { meta } from './meta'
+import { useJump } from '@/lib/jump'
 
 export default function SQLiteSearch() {
   const [root, setRoot] = useState('')
@@ -20,6 +21,14 @@ export default function SQLiteSearch() {
 
   const list = splitKeywords(keywords)
   const canRun = !running && root.trim().length > 0 && list.length > 0
+
+  // 从移动取证跳过来:输出目录直接填进「搜哪儿」,关键词等人来敲
+  useJump('sqlite-search', (j) => {
+    setRoot(j.root)
+    setRes(null)
+    setErr('')
+    setViewing(null)
+  })
 
   const pickDir = async () => {
     const p = await PickDirectory('选择取证导出目录', root).catch(() => '')
@@ -129,7 +138,7 @@ export default function SQLiteSearch() {
         {res && <Summary res={res} />}
 
         {res && res.hits.length > 0 && !viewing && (
-          <HitList hits={res.hits} onOpenTable={openTable} />
+          <HitList hits={res.hits} base={res.base || root} onOpenTable={openTable} />
         )}
 
         {viewing && (

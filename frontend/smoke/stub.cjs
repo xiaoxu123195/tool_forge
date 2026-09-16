@@ -85,7 +85,56 @@ const special = {
   GetForensicConfig: () => Promise.resolve({ binPath: '', enabled: false, defaultSshAddr: '' }),
   SaveForensicConfig: () => Promise.resolve(),
   HasQimaiCredential: () => Promise.resolve(false),
+  // 剪贴板:一条文字、一条图片;图片那条才有「识别文字」
+  ListClipboard: () =>
+    Promise.resolve({
+      items: [
+        {
+          id: 'cb-text',
+          kind: 'text',
+          text: '第一条文字',
+          preview: '第一条文字',
+          sizeBytes: 15,
+          pinned: false,
+          createdAt: Date.now(),
+        },
+        {
+          id: 'cb-img',
+          kind: 'image',
+          imagePath: 'C:/tmp/cb-img.png',
+          thumbnail: 'data:image/png;base64,iVBORw0KGgo=',
+          imageWidth: 120,
+          imageHeight: 60,
+          sizeBytes: 1234,
+          pinned: false,
+          createdAt: Date.now(),
+        },
+      ],
+      enabled: true,
+      limit: 100,
+      maxTextBytes: 1048576,
+      maxImageBytes: 10485760,
+    }),
+  RecognizeClipboardImage: () =>
+    Promise.resolve({ text: '转账 500 元\n收款方 张三', lines: ['转账 500 元', '收款方 张三'], lang: 'zh-Hans-CN' }),
   SaveQimaiCredential: () => Promise.resolve(),
+  // 一键写 MCP 配置:试算和真写走同一个绑定,靠 apply 区分。记下最后一次调用,
+  // probe 据此断言"确认之前没落盘、确认之后才落盘"
+  InstallLocalAPIMCP: (target, apply) => {
+    last.mcpInstall = { target, apply }
+    const file = target === 'codex' ? '~/.codex/config.toml' : '~/.claude.json'
+    return Promise.resolve({
+      target,
+      file,
+      action: 'add',
+      block:
+        target === 'codex'
+          ? '[mcp_servers.tool-forge]\nurl = "http://127.0.0.1:11435/mcp"'
+          : '"tool-forge": {\n  "type": "http",\n  "url": "http://127.0.0.1:11435/mcp"\n}',
+      backup: apply ? file + '.20260101-000000.bak' : '',
+      applied: apply,
+    })
+  },
 
   // ---- AI 配置 ----
   ListAIProviders: () => Promise.resolve(fx.providers),
@@ -180,6 +229,30 @@ const special = {
   ListDeviceDir: (id) =>
     Promise.resolve(id === 'dev-2' ? fx.deviceListingAndroid : fx.deviceListing),
   SearchDeviceFiles: () => Promise.resolve(fx.deviceSearch),
+  // 监视模式:reset 那次是基线,之后每次都回一处深层的改动
+  DiffDeviceDir: (_id, dir, reset) =>
+    Promise.resolve(
+      reset
+        ? { dir, baseline: true, changes: [], total: 2, truncated: false }
+        : {
+            dir,
+            baseline: false,
+            since: 1782812272,
+            changes: [
+              {
+                name: 'msg.db',
+                path: dir + '/com.tencent.mm/MicroMsg/msg.db',
+                kind: 'modified',
+                isDir: false,
+                size: 8192,
+                modTime: 1782812300,
+                sizeDelta: 512,
+              },
+            ],
+            total: 3,
+            truncated: false,
+          },
+    ),
   PreviewDeviceFile: (_id, p) =>
     Promise.resolve(
       String(p).endsWith('.plist') ? fx.devicePreviewPlist : fx.devicePreviewEmptyMmkv,

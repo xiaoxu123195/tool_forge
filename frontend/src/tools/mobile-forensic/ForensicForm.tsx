@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Check, ChevronDown, FolderOpen, ListPlus, Play, Plus, X } from 'lucide-react'
+import { BookmarkPlus, Check, ChevronDown, FolderOpen, ListPlus, Play, Plus, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { ModeToggle } from '@/components/tool/ModeToggle'
@@ -13,6 +13,7 @@ import {
 import {
   useForensicStore,
   sshPasswordKey,
+  type CustomPreset,
 } from '@/stores/forensic'
 import {
   buildArgs,
@@ -25,6 +26,7 @@ import {
   type Platform,
 } from './types'
 import { IOS_PATH_PRESETS } from './ios-presets'
+import { PresetEditorDialog, type PresetRow } from './PresetEditorDialog'
 
 /** 示例路径按平台给 —— Android 页原来显示的是 iOS 的路径,照着填一条都取不到 */
 const PATH_PLACEHOLDER: Record<Platform, string> = {
@@ -36,7 +38,8 @@ interface Props {
   form: FormState
   /** go-forensic 启用了才给引擎选择;没启用就一直走内置 */
   cliEnabled: boolean
-  onChange: (next: FormState) => void
+  /** 接受函数式更新:几处 effect 可能同一帧里都在改 form,整个对象覆盖会把别人的改动吃掉 */
+  onChange: (next: FormState | ((prev: FormState) => FormState)) => void
   onRun: () => void
   disabled: boolean
   /** 非空表示现在跑不了,内容就是原因;为空表示没拦 */
@@ -47,13 +50,19 @@ export function ForensicForm({ form, cliEnabled, onChange, onRun, disabled, bloc
   const confirm = useConfirm()
   const defaultSshAddr = useForensicStore((s) => s.defaultSshAddr)
   const defaultOutputBase = useForensicStore((s) => s.defaultOutputBase)
+  const customPresets = useForensicStore((s) => s.customPresets)
+  const saveCustomPresets = useForensicStore((s) => s.saveCustomPresets)
+  const removeCustomPreset = useForensicStore((s) => s.removeCustomPreset)
   const [passwordLoaded, setPasswordLoaded] = useState(false)
+  const [presetEditor, setPresetEditor] = useState<{ rows: PresetRow[]; manual: boolean } | null>(
+    null,
+  )
 
-  // 进入时把 store 的默认值灌进来
+  // 进入时把 store 的默认值灌进来。用函数式更新而不是拿闭包里的 form 整个覆盖:
+  // 从真机浏览跳过来时,父组件在同一帧里往 form 里填路径,拿旧 form 覆盖会把路径吃掉
   useEffect(() => {
-    if (form.sshAddr === 'root@127.0.0.1:22' && defaultSshAddr) {
-      onChange({ ...form, sshAddr: defaultSshAddr })
-    }
+    if (!defaultSshAddr) return
+    onChange((f) => (f.sshAddr === 'root@127.0.0.1:22' ? { ...f, sshAddr: defaultSshAddr } : f))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [defaultSshAddr])
 
@@ -63,7 +72,7 @@ export function ForensicForm({ form, cliEnabled, onChange, onRun, disabled, bloc
     GetPassword(sshPasswordKey(form.sshAddr)).then((pwd) => {
       setPasswordLoaded(true)
       if (pwd) {
-        onChange({ ...form, sshPassword: pwd, rememberPassword: true })
+        onChange((f) => ({ ...f, sshPassword: pwd, rememberPassword: true }))
       }
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -144,6 +153,44 @@ export function ForensicForm({ form, cliEnabled, onChange, onRun, disabled, bloc
     }
     const cur = form.specifyPaths.trim()
     setField('specifyPaths', cur ? cur + '\n' + path : path)
+  }
+
+  // 「我的常用」的几个动作。存的时候路径先过一遍 normalizePath,和 pathList 用同一把尺子,
+  // 不然文本框里多敲的 "//" 会让"已加过"的判断失灵
+  const customList = customPresets[form.platform] ?? []
+  const openSaveCurrent = () =>
+    setPresetEditor({
+      rows: pathList.map((p) => ({
+        // 已经存过的沿用原标签,别把人家起好的名字换成猜的
+        label: customList.find((c) => c.path === p)?.label ?? guessLabel(p),
+        path: p,
+      })),
+      manual: false,
+    })
+  const openAddManual = () => setPresetEditor({ rows: [{ label: '', path: '' }], manual: true })
+  const savePresets = (rows: PresetRow[]) => {
+    saveCustomPresets(
+      form.platform,
+      rows.map((r) => ({ label: r.label, path: normalizePath(r.path.trim()) })),
+    )
+    setPresetEditor(null)
+  }
+  const removeCustom = async (it: CustomPreset) => {
+    const ok = await confirm({
+      title: '删掉这条常用路径？',
+      message: (
+        <div className="space-y-1">
+          <p>「{it.label}」</p>
+          <p className="break-all font-mono text-xs">{it.path}</p>
+          <p className="text-muted-foreground">
+            只是从「我的常用」里去掉，上面已经填进去的路径不受影响。
+          </p>
+        </div>
+      ),
+      confirmLabel: '删掉',
+      danger: true,
+    })
+    if (ok) removeCustomPreset(form.platform, it.path)
   }
 
   const args = buildArgs(form)
@@ -252,11 +299,18 @@ export function ForensicForm({ form, cliEnabled, onChange, onRun, disabled, bloc
           )}
         </Field>
 
-        {form.platform === 'ios' && (
-          <div className="md:col-span-2">
-            <PathPresets selected={pathList} onToggle={togglePreset} />
-          </div>
-        )}
+        <div className="md:col-span-2">
+          <PathPresets
+            platform={form.platform}
+            selected={pathList}
+            custom={customList}
+            canSaveCurrent={pathList.length > 0}
+            onToggle={togglePreset}
+            onSaveCurrent={openSaveCurrent}
+            onAddManual={openAddManual}
+            onRemoveCustom={removeCustom}
+          />
+        </div>
 
         {form.platform === 'ios' && (
           <>
@@ -353,9 +407,21 @@ export function ForensicForm({ form, cliEnabled, onChange, onRun, disabled, bloc
 
       {/* args preview hidden helper for debugging; keep var used */}
       <span className="hidden">{args.length}</span>
+
+      <PresetEditorDialog
+        open={presetEditor !== null}
+        platform={form.platform}
+        rows={presetEditor?.rows ?? EMPTY_ROWS}
+        manual={presetEditor?.manual ?? false}
+        onClose={() => setPresetEditor(null)}
+        onSave={savePresets}
+      />
     </div>
   )
 }
+
+// 关着的时候给弹窗一个固定的空数组,免得每次渲染都是新引用、它的 effect 白跑
+const EMPTY_ROWS: PresetRow[] = []
 
 /**
  * 常用路径速选。
@@ -363,70 +429,169 @@ export function ForensicForm({ form, cliEnabled, onChange, onRun, disabled, bloc
  * iOS 系统自带应用(邮件、通讯录、通话记录…)的数据不属于任何 App,没有包名可搜,
  * 只能按绝对路径取;而路径又长又容易少打一层。这一排按钮就是为了让人不必记住它们 ——
  * "指定路径"这个功能之前没人会用,缺的就是这个。
+ *
+ * 「我的常用」是用户自己存的,两个平台各一份,排在内置那几组前面;
+ * Android 没有内置组,面板里就只有这一组。
  */
 function PathPresets({
+  platform,
   selected,
+  custom,
+  canSaveCurrent,
   onToggle,
+  onSaveCurrent,
+  onAddManual,
+  onRemoveCustom,
 }: {
+  platform: Platform
   selected: string[]
+  custom: CustomPreset[]
+  canSaveCurrent: boolean
   onToggle: (path: string) => void
+  onSaveCurrent: () => void
+  onAddManual: () => void
+  onRemoveCustom: (it: CustomPreset) => void
 }) {
   const [open, setOpen] = useState(false)
   return (
     <div className="rounded-md border border-border bg-secondary/20">
       <button
         type="button"
+        title="展开常用路径"
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-secondary/40"
       >
         <ListPlus className="h-3.5 w-3.5" />
-        <span className="font-medium">常用路径（iOS 系统数据）</span>
-        <span className="text-[10px] opacity-60">点一下加到上面,再点一下取消</span>
+        <span className="font-medium">常用路径</span>
+        <span className="text-[10px] opacity-60">
+          {platform === 'ios' ? '我的常用 + iOS 系统数据' : '我的常用'} · 点一下加到上面，再点一下取消
+        </span>
         <ChevronDown
           className={cn('ml-auto h-3.5 w-3.5 transition-transform', open && 'rotate-180')}
         />
       </button>
       {open && (
         <div className="space-y-2.5 border-t border-border/60 px-3 py-2.5">
-          {IOS_PATH_PRESETS.map((g) => (
-            <div key={g.title} className="space-y-1.5">
-              <div className="text-[11px] text-muted-foreground">{g.title}</div>
-              <div className="flex flex-wrap gap-1.5">
-                {g.items.map((it) => {
-                  const added = selected.includes(it.path)
-                  return (
-                    <button
-                      key={it.path}
-                      type="button"
-                      onClick={() => onToggle(it.path)}
-                      title={`${added ? '点击移除 · ' : ''}${it.path}${it.note ? '\n' + it.note : ''}`}
-                      className={cn(
-                        'group/preset flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors',
-                        added
-                          ? 'border-success/40 bg-success/10 text-success hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive'
-                          : 'border-border bg-card hover:bg-secondary',
-                      )}
-                    >
-                      {added ? (
-                        <>
-                          {/* 悬停换成叉号,让人知道这一下是"移除"而不是"再加一次" */}
-                          <Check className="h-3 w-3 group-hover/preset:hidden" />
-                          <X className="hidden h-3 w-3 group-hover/preset:block" />
-                        </>
-                      ) : (
-                        <Plus className="h-3 w-3" />
-                      )}
-                      {it.label}
-                    </button>
-                  )
-                })}
-              </div>
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+              <span>我的常用</span>
+              <span className="ml-auto flex items-center gap-1">
+                <button
+                  type="button"
+                  title="把上面填的路径存为常用"
+                  disabled={!canSaveCurrent}
+                  onClick={onSaveCurrent}
+                  className="flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <BookmarkPlus className="h-3 w-3" />
+                  存为常用
+                </button>
+                <button
+                  type="button"
+                  title="手动添加一条常用路径"
+                  onClick={onAddManual}
+                  className="flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-secondary hover:text-foreground"
+                >
+                  <Plus className="h-3 w-3" />
+                  添加
+                </button>
+              </span>
             </div>
-          ))}
+            {custom.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground/80">
+                还没有。把上面填好的路径「存为常用」，或者点「添加」手动录一条。
+                {platform === 'ios' ? 'iOS' : 'Android'} 的常用单独一份，切换平台不会混在一起。
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {custom.map((it) => (
+                  <span key={it.path} className="group/custom inline-flex items-center gap-0.5">
+                    <PresetChip
+                      label={it.label}
+                      path={it.path}
+                      added={selected.includes(it.path)}
+                      onToggle={onToggle}
+                    />
+                    <button
+                      type="button"
+                      title={`从我的常用里删掉「${it.label}」`}
+                      onClick={() => onRemoveCustom(it)}
+                      className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 group-hover/custom:opacity-100"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+          {platform === 'ios' &&
+            IOS_PATH_PRESETS.map((g) => (
+              <div key={g.title} className="space-y-1.5">
+                <div className="text-[11px] text-muted-foreground">{g.title}</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {g.items.map((it) => (
+                    <PresetChip
+                      key={it.path}
+                      label={it.label}
+                      path={it.path}
+                      note={it.note}
+                      added={selected.includes(it.path)}
+                      onToggle={onToggle}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
         </div>
       )}
     </div>
   )
+}
+
+/** 一枚路径按钮:没加过就追加,已加过就摘掉;悬停换成叉号,让人知道这一下是"移除"而不是"再加一次" */
+function PresetChip({
+  label,
+  path,
+  note,
+  added,
+  onToggle,
+}: {
+  label: string
+  path: string
+  note?: string
+  added: boolean
+  onToggle: (path: string) => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onToggle(path)}
+      title={`${added ? '点击移除 · ' : ''}${path}${note ? '\n' + note : ''}`}
+      className={cn(
+        'group/preset flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors',
+        added
+          ? 'border-success/40 bg-success/10 text-success hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive'
+          : 'border-border bg-card hover:bg-secondary',
+      )}
+    >
+      {added ? (
+        <>
+          <Check className="h-3 w-3 group-hover/preset:hidden" />
+          <X className="hidden h-3 w-3 group-hover/preset:block" />
+        </>
+      ) : (
+        <Plus className="h-3 w-3" />
+      )}
+      {label}
+    </button>
+  )
+}
+
+/** 从路径猜个标签:取最后一段。/private/var/mobile/Library/Mail/ → Mail */
+function guessLabel(p: string): string {
+  const segs = p.split('/').filter(Boolean)
+  return segs[segs.length - 1] ?? p
 }
 
 function Field({

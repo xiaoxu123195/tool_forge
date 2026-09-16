@@ -148,14 +148,24 @@ func WriteFile(h Home, path, content string) error {
 		return fmt.Errorf("这是一个目录")
 	}
 
-	// 备份:改的是别家程序的配置,改坏了对方可能起不来。
-	// 带时间戳,不覆盖上一次的备份 —— 连续改错两次时,单一 .bak 里存的
-	// 已经是第一次改错的结果,恢复了等于没恢复
-	if old, err := os.ReadFile(abs); err == nil {
-		bak := fmt.Sprintf("%s.%s.bak", abs, time.Now().Format("20060102-150405"))
-		if err := os.WriteFile(bak, old, 0o644); err != nil {
-			return fmt.Errorf("备份失败,没有动原文件: %w", err)
-		}
+	if _, err := backupFile(abs); err != nil {
+		return err
 	}
 	return os.WriteFile(abs, []byte(content), info.Mode().Perm())
+}
+
+// backupFile 在旁边留一份副本,返回副本路径。
+//
+// 改的是别家程序的配置,改坏了对方可能起不来。带时间戳,不覆盖上一次的备份 ——
+// 连续改错两次时,单一 .bak 里存的已经是第一次改错的结果,恢复了等于没恢复
+func backupFile(abs string) (string, error) {
+	old, err := os.ReadFile(abs)
+	if err != nil {
+		return "", fmt.Errorf("读不到原文件,没有动它: %w", err)
+	}
+	bak := fmt.Sprintf("%s.%s.bak", abs, time.Now().Format("20060102-150405"))
+	if err := os.WriteFile(bak, old, 0o644); err != nil {
+		return "", fmt.Errorf("备份失败,没有动原文件: %w", err)
+	}
+	return bak, nil
 }

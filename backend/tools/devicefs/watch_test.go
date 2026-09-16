@@ -9,6 +9,9 @@ type fakeTransport struct {
 	entries []Entry
 	total   int
 	trunc   bool
+	// tree 递归查找(search)回什么;DiffTree 走的是这条
+	tree      []SearchHit
+	treeTrunc bool
 }
 
 func (f *fakeTransport) list(dir string) (*Listing, error) {
@@ -25,7 +28,10 @@ func (f *fakeTransport) pull(remote, local string, limit int64) (int64, bool, er
 	return 0, false, nil
 }
 func (f *fakeTransport) search(root, pattern string, limit int) (*SearchResult, error) {
-	return &SearchResult{}, nil
+	return &SearchResult{
+		Root: root, Pattern: pattern,
+		Hits: append([]SearchHit{}, f.tree...), Truncated: f.treeTrunc,
+	}, nil
 }
 func (f *fakeTransport) exists(p string) bool { return false }
 func (f *fakeTransport) startPath() string    { return "/" }
@@ -212,5 +218,88 @@ func TestEnsureSessionReusesLiveOne(t *testing.T) {
 	}
 	if n := len(m.Sessions()); n != 1 {
 		t.Errorf("不该多出会话,现在有 %d 条", n)
+	}
+}
+
+func hit(p string, size, mod int64) SearchHit { return SearchHit{Path: p, Size: size, ModTime: mod} }
+
+// 递归对比要看到深处的改动 —— 只看一层时 databases/msg.db 被写了一笔,上层目录纹丝不动
+func TestDiffTreeSeesDeepChanges(t *testing.T) {
+	ft := &fakeTransport{tree: []SearchHit{
+		{Path: "/d", IsDir: true, ModTime: 100},
+		{Path: "/d/databases", IsDir: true, ModTime: 100},
+		hit("/d/databases/msg.db", 4096, 100),
+		hit("/d/files/a.txt", 10, 100),
+	}}
+	m, id := withFake(t, ft)
+	res, err := m.DiffTree(id, "/d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Baseline {
+		t.Fatal("第一次该是基线")
+	}
+	if res.Total != 3 {
+		t.Errorf("起点自己不算条目,该是 3,得到 %d", res.Total)
+	}
+
+	ft.tree = []SearchHit{
+		{Path: "/d", IsDir: true, ModTime: 200}, // 起点的时间跟着直接子项变,不算变化
+		{Path: "/d/databases", IsDir: true, ModTime: 100},
+		hit("/d/databases/msg.db", 8192, 200),
+		hit("/d/databases/msg.db-wal", 512, 200),
+	}
+	res, err = m.DiffTree(id, "/d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]Change{}
+	for _, c := range res.Changes {
+		got[c.Path] = c
+	}
+	if len(got) != 3 {
+		t.Fatalf("该有 3 处变化,得到 %+v", res.Changes)
+	}
+	if c := got["/d/databases/msg.db"]; c.Kind != "modified" || c.SizeDelta != 4096 || c.Name != "msg.db" {
+		t.Errorf("msg.db: %+v", c)
+	}
+	if got["/d/databases/msg.db-wal"].Kind != "added" {
+		t.Errorf("wal: %+v", got["/d/databases/msg.db-wal"])
+	}
+	if got["/d/files/a.txt"].Kind != "removed" {
+		t.Errorf("a.txt: %+v", got["/d/files/a.txt"])
+	}
+	if _, bad := got["/d"]; bad {
+		t.Error("起点自己不该算一处变化")
+	}
+}
+
+// 一层的基线和整棵树的基线分开记;reset 两个一起丢
+func TestDiffTreeKeepsSeparateBaselineAndReset(t *testing.T) {
+	ft := &fakeTransport{
+		entries: []Entry{file("a", 1, 100)},
+		tree:    []SearchHit{hit("/d/a", 1, 100)},
+	}
+	m, id := withFake(t, ft)
+	if res, _ := m.Diff(id, "/d"); !res.Baseline {
+		t.Fatal("Diff 第一次该是基线")
+	}
+	if res, _ := m.DiffTree(id, "/d"); !res.Baseline {
+		t.Error("DiffTree 有自己的基线,不该拿 Diff 的来比")
+	}
+	if res, _ := m.DiffTree(id, "/d"); res.Baseline {
+		t.Error("第二次不该还是基线")
+	}
+	m.ResetSnapshot(id, "/d")
+	if res, _ := m.DiffTree(id, "/d"); !res.Baseline {
+		t.Error("reset 之后整棵树也该重新记基线")
+	}
+}
+
+func TestDiffTreeReportsTruncation(t *testing.T) {
+	ft := &fakeTransport{tree: []SearchHit{hit("/d/a", 1, 100)}, treeTrunc: true}
+	m, id := withFake(t, ft)
+	if res, _ := m.DiffTree(id, "/d"); !res.Truncated {
+		t.Error("子树被截断了却没说")
 	}
 }

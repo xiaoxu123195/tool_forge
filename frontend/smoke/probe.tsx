@@ -28,11 +28,15 @@ import DeviceBrowser from '../src/tools/device-browser/index'
 import MobileForensic from '../src/tools/mobile-forensic/index'
 import AppSearch from '../src/tools/app-search/index'
 import SQLiteSearch from '../src/tools/sqlite-search/index'
+import ClipboardTool from '../src/tools/clipboard/index'
 import { ConfirmProvider } from '../src/components/ui/confirm'
+import { LocalAPISection } from '../src/profile/sections/LocalAPI'
+import { useForensicStore } from '../src/stores/forensic'
 import { conversations } from './fixtures.cjs'
 // 直接引桩本体拿事件把手。build.cjs 只把含 "wailsjs" 的路径重定向到这里,
 // 相对路径原样解析 —— CJS 缓存保证跟组件用的是同一个模块实例
 import { __emit, __calls, __last } from './stub.cjs'
+import * as wailsStub from './stub.cjs'
 import { modelGroup } from '../src/profile/sections/aichat/modelGroup'
 import { sm2GenerateKeyPair, sm2Encrypt, sm2Decrypt, sm2Sign, sm2Verify } from '../src/tools/crypto-lab/lib/sm'
 
@@ -537,7 +541,7 @@ async function main() {
   // 15) 真机数据浏览器。连接那一层没法在 jsdom 里跑(要一台插着的越狱手机),
   // 但界面这一层能:连上之后列目录、点开文件按类型预览、搜索。
   // 真机端到端是另外验的(直连设备跑过 List/Preview/Search)
-  await mount('真机浏览 · 连接与列目录', <DeviceBrowser />, async () => {
+  await mount('真机浏览 · 连接与列目录', <MemoryRouter><DeviceBrowser /></MemoryRouter>, async () => {
     // 没连接时应该是连接面板,而不是一个空的浏览器
     if (!(document.body.textContent || '').includes('连接一台设备')) {
       throw new Error('未连接时没有显示连接面板')
@@ -554,7 +558,7 @@ async function main() {
   })
 
   // 16) 点开一个 plist:预览面板要按后端给的 kind 画,并说清楚凭什么这么判
-  await mount('真机浏览 · 预览 plist', <DeviceBrowser />, async () => {
+  await mount('真机浏览 · 预览 plist', <MemoryRouter><DeviceBrowser /></MemoryRouter>, async () => {
     await mustClick('com.apple.springboard.plist')
     const txt = document.body.textContent || ''
     if (!txt.includes('SBHomeScreenPageCount')) throw new Error('没有渲染后端解出来的 plist')
@@ -567,7 +571,7 @@ async function main() {
   })
 
   // 17) 搜索:结果列表要能出来,并且能切回目录
-  await mount('真机浏览 · 搜索', <DeviceBrowser />, async () => {
+  await mount('真机浏览 · 搜索', <MemoryRouter><DeviceBrowser /></MemoryRouter>, async () => {
     await mustType('从这里往下找', 'plist')
     const input = document.querySelector(
       'input[placeholder*="从这里往下找"]',
@@ -594,7 +598,7 @@ async function main() {
 
   // 18) Android:换平台后连接面板要变(不要 SSH 密码、要 adb 路径),
   // 连上之后 root 状态必须一眼看得到 —— 没 root 就看不到 /data,这是最关键的状态
-  await mount('真机浏览 · Android', <DeviceBrowser />, async () => {
+  await mount('真机浏览 · Android', <MemoryRouter><DeviceBrowser /></MemoryRouter>, async () => {
     await mustClick('断开') // 上一条用例留着 iOS 会话,先断掉回到连接面板
     await mustClick('Android')
     const panel = document.body.textContent || ''
@@ -612,7 +616,62 @@ async function main() {
     // 文件夹整个导出:以前只有选中单个文件才导得了
     if (!txt.includes('导出此目录')) throw new Error('没有导出当前目录的入口')
     if (txt.includes('通讯录捐赠')) throw new Error('Android 下还在显示 iOS 的常用位置')
+
+    // 工具间跳转:翻到的目录直接送去移动取证
+    if (!btn('用移动取证导出')) throw new Error('没有跳去移动取证的入口')
+
+    // 监视模式:拍基线 → 去手机上操作 → 列出变化。点「立即检查」不用等定时
+    await mustClick('监视此目录')
+    const t2 = () => document.body.textContent || ''
+    if (!t2().includes('监视中')) throw new Error('开始监视后没有面板')
+    await mustClick('立即检查')
+    if (!t2().includes('msg.db')) throw new Error('检查后没列出变化的文件')
+    if (!t2().includes('修改')) throw new Error('变化类型没标出来')
+    // 变化在 com.tencent.mm 底下两层,列表里那个目录要标出"底下有变化" ——
+    // 目录自己的修改时间不会变,不标的话人看不出该往哪儿点
+    if (!t2().includes('内有变化')) throw new Error('列表行没标出底下有变化')
+    await mustClick('停止监视')
+    if (t2().includes('监视中')) throw new Error('停止后面板还在')
   })
+
+  // 工具间跳转:真机浏览翻到的目径直接填进移动取证;取证的输出目录直接填进 SQLite 搜索。
+  // 路由是 keep-alive 的,参数走 location.state,目标工具在 key 变化时接
+  await mount(
+    '跳转 · 真机浏览 → 移动取证',
+    <MemoryRouter
+      initialEntries={[
+        {
+          pathname: '/tools/mobile-forensic',
+          state: { jump: { to: 'mobile-forensic', platform: 'ios', paths: ['/private/var/mobile/Library/SMS/'] } },
+        },
+      ]}
+    >
+      <MobileForensic />
+    </MemoryRouter>,
+    async () => {
+      const area = document.querySelector('textarea') as HTMLTextAreaElement | null
+      if (!area?.value.includes('/private/var/mobile/Library/SMS/')) {
+        throw new Error('跳过来的路径没填进指定路径')
+      }
+      if (!(document.body.textContent || '').includes('SSH 地址')) {
+        throw new Error('平台没跟着跳转切到 iOS')
+      }
+    },
+  )
+  await mount(
+    '跳转 · 移动取证 → SQLite 搜索',
+    <MemoryRouter
+      initialEntries={[
+        { pathname: '/tools/sqlite-search', state: { jump: { to: 'sqlite-search', root: 'D:/导出/设备' } } },
+      ]}
+    >
+      <SQLiteSearch />
+    </MemoryRouter>,
+    async () => {
+      const input = document.querySelector('input[placeholder*="案件编号"]') as HTMLInputElement | null
+      if (input?.value !== 'D:/导出/设备') throw new Error('跳过来的目录没填进「搜哪儿」')
+    },
+  )
 
   // 19) 移动取证:Android 默认走内置引擎,没装 go-forensic 也照样能用。
   //
@@ -647,6 +706,88 @@ async function main() {
     if (!box) throw new Error('检测没过,启用开关却是可点的')
     await mustClick('关闭（Esc）')
   })
+
+  // 20) 移动取证:自定义常用路径。
+  //
+  // 内置那几组是 iOS 系统数据的固定路径;办案的人各有各的常用位置,存个标签比每次翻记录省事。
+  // Android 原来根本没有这个面板,现在两个平台都有「我的常用」,各存各的
+  await mount('移动取证 · 自定义常用路径', <MemoryRouter><MobileForensic /></MemoryRouter>, async () => {
+    const txt = () => document.body.textContent || ''
+    await mustClick('展开常用路径')
+    if (!txt().includes('我的常用')) throw new Error('Android 下没有「我的常用」')
+    if (txt().includes('邮件与账号')) throw new Error('Android 下不该出现 iOS 的系统路径组')
+
+    // 手动添加一条
+    await mustClick('手动添加一条常用路径')
+    await mustType('标签', '聊天数据')
+    await mustType('/data/data/', '/data/data/com.example.chat/databases/')
+    await mustClick('保存')
+    if (!btn('聊天数据')) throw new Error('存完没出现在「我的常用」里')
+    const stored = useForensicStore.getState().customPresets.android
+    if (stored.length !== 1 || stored[0].path !== '/data/data/com.example.chat/databases/') {
+      throw new Error('没存进 store: ' + JSON.stringify(stored))
+    }
+
+    // 点一下加到指定路径
+    await mustClick('聊天数据')
+    const area = document.querySelector('textarea') as HTMLTextAreaElement | null
+    if (!area?.value.includes('/data/data/com.example.chat/databases/')) {
+      throw new Error('点了没加到指定路径里')
+    }
+
+    // 「存为常用」:把当前填的按行列出来;存过的沿用原标签,没存过的按最后一段猜;
+    // 同路径覆盖,不同路径新增
+    await typeArea(
+      '/data/data/',
+      '/sdcard/Android/data/com.example.chat/\n/data/data/com.example.chat/databases/',
+    )
+    await mustClick('把上面填的路径存为常用')
+    if (!txt().includes('2 条会被保存')) throw new Error('存为常用没把两条都列出来')
+    await mustClick('保存')
+    const after = useForensicStore.getState().customPresets.android
+    if (after.length !== 2) throw new Error('存为常用没存对(同路径应覆盖,不同路径应新增)')
+    if (!after.some((c) => c.label === '聊天数据')) throw new Error('已存过的那条标签被猜的名字覆盖了')
+    if (!btn('com.example.chat')) throw new Error('没存过的那条没按最后一段起名')
+
+    // 删掉一条要先确认
+    await mustClick('从我的常用里删掉「聊天数据」')
+    if (!txt().includes('删掉这条常用路径')) throw new Error('删除没有确认')
+    await mustClick('删掉')
+    if (btn('聊天数据')) throw new Error('确认删掉后还在')
+
+    // iOS 那边是另一份,而且内置组还在
+    await mustClick('iOS')
+    if (!txt().includes('邮件与账号')) throw new Error('iOS 的内置路径组不见了')
+    if (btn('com.example.chat')) throw new Error('Android 的常用跑到 iOS 这边来了')
+  })
+
+  // 本地 API · MCP 端点:两家的配置都给,并且能一键写进去。
+  //
+  // 写别家的配置文件是敏感动作:先试算、把将写入的那段和目标文件摆出来让人确认,
+  // 确认之前不能落盘;确认之后要说清写到了哪、备份在哪。
+  // 这一页的 RPC 走 window.go 而不是 wailsjs 导入,得把桩挂上去
+  ;(window as any).go = { main: { App: wailsStub } }
+  await mount('本地 API · MCP 端点一键写入', <LocalAPISection />, async () => {
+    const txt = () => document.body.textContent || ''
+    if (!txt().includes('[mcp_servers.tool-forge]')) throw new Error('没有给 Codex 的 TOML 配置')
+    if (!txt().includes('"mcpServers"')) throw new Error('没有给 Claude Code 的 JSON 配置')
+
+    delete __last.mcpInstall
+    await mustClick('写入 Codex')
+    const planned = __last.mcpInstall as { target: string; apply: boolean } | undefined
+    if (!planned || planned.apply !== false) throw new Error('确认之前就落盘了: ' + JSON.stringify(planned))
+    if (!txt().includes('~/.codex/config.toml')) throw new Error('确认框没说写到哪个文件')
+    if (!txt().includes('其它内容一个字节不动')) throw new Error('确认框没说清只动这一段')
+
+    await mustClick('写入')
+    const done = __last.mcpInstall as { target: string; apply: boolean } | undefined
+    if (!done || done.apply !== true || done.target !== 'codex') {
+      throw new Error('确认后没有真的写入: ' + JSON.stringify(done))
+    }
+    if (!txt().includes('已写入')) throw new Error('写完没有告诉用户结果')
+    if (!txt().includes('.bak')) throw new Error('没有告诉用户备份在哪')
+  })
+  delete (window as any).go
 
   // 设置页本身:每一栏都要真的挂得上去。
   //
@@ -698,6 +839,12 @@ async function main() {
     if (!txt().includes('chrome-mcp-stdio')) throw new Error('没有列出 Gemini 的 MCP')
     if (!txt().includes('config.toml')) throw new Error('没有显示出处文件')
     if (!txt().includes('多处重复')) throw new Error('同名配在多处没有被标出来')
+    // 重复项要能并排比:标签只说了"有好几份",接着要问的是它们一样吗
+    await mustClick('多处重复 · 对比')
+    if (!txt().includes('处的配置')) throw new Error('点了「对比」没有弹出并排比较')
+    if (!txt().includes('出处')) throw new Error('比较表没有列出处')
+    await mustClick('关闭（Esc）')
+    if (txt().includes('处的配置')) throw new Error('比较弹窗关不掉')
     if (!txt().includes('没读成')) throw new Error('解析失败的文件没有报出来')
     if (!txt().includes('插件 codex@openai-codex')) throw new Error('插件自带的 skill 没有标明出自哪个插件')
     if (!txt().includes('缺 SKILL.md')) throw new Error('没有 SKILL.md 的 skill 没被点出来')
@@ -815,6 +962,22 @@ async function main() {
     if (!txt().includes('BLOB') && !txt().includes('0x0001')) {
       throw new Error('BLOB 没画出来')
     }
+  })
+
+  // 剪贴板:图片条目能认字。截图里的账号、电话以前只能手打一遍;
+  // 认出来的放在能改的框里,不直接塞回剪贴板 —— 识别不会全对
+  await mount('剪贴板 · 图片识别文字', <MemoryRouter><ClipboardTool /></MemoryRouter>, async () => {
+    const txt = () => document.body.textContent || ''
+    if (!txt().includes('第一条文字')) throw new Error('剪贴板列表没出来')
+    const ocrBtns = Array.from(document.querySelectorAll('button')).filter(
+      (b) => (b.getAttribute('title') || b.textContent || '').trim() === '识别文字',
+    )
+    if (ocrBtns.length !== 1) throw new Error(`只有图片条目该有「识别文字」,现在有 ${ocrBtns.length} 个`)
+    await mustClick('识别文字')
+    if (!txt().includes('zh-Hans-CN')) throw new Error('没显示用的语言包')
+    const area = document.querySelector('textarea') as HTMLTextAreaElement | null
+    if (!area?.value.includes('收款方 张三')) throw new Error('认出来的文字没放进可改的框里')
+    await mustClick('关闭')
   })
 
   // SM2 加解密与签名验签往返。

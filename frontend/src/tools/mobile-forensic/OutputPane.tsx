@@ -1,8 +1,10 @@
 import { useEffect, useRef } from 'react'
-import { AlertTriangle, CheckCircle2, FolderOpen, XCircle } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { AlertTriangle, CheckCircle2, Database, FolderOpen, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { OpenInExplorer } from '../../../wailsjs/go/main/App'
 import { cn } from '@/lib/utils'
+import { jumpTo } from '@/lib/jump'
 import type { LogEntry, RunStatus } from './types'
 
 interface Props {
@@ -62,6 +64,7 @@ function StatusBar({
   onCancel: () => void
   onClear: () => void
 }) {
+  const navigate = useNavigate()
   if (status === 'idle') {
     return (
       <div className="flex h-9 items-center justify-between border-b border-border bg-muted/30 px-3 text-xs text-muted-foreground">
@@ -99,6 +102,18 @@ function StatusBar({
             >
               <FolderOpen className="h-3.5 w-3.5" />
               打开输出目录
+            </Button>
+          )}
+          {/* 取下来之后下一步多半是翻里面的库:把输出目录直接带过去,不用再抄一遍路径 */}
+          {outputDir && (
+            <Button
+              variant="outline"
+              size="sm"
+              title="把输出目录填进 SQLite 搜索，直接搜里面的数据库"
+              onClick={() => jumpTo(navigate, { to: 'sqlite-search', root: outputDir })}
+            >
+              <Database className="h-3.5 w-3.5" />
+              用 SQLite 搜索
             </Button>
           )}
           <Button variant="ghost" size="sm" onClick={onClear}>

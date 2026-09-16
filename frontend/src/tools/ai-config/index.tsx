@@ -10,6 +10,7 @@ import { meta } from './meta'
 import { ORIGINS, originMeta } from './origins'
 import { OriginBadge, SourceLine } from './Source'
 import { SourceViewer } from './SourceViewer'
+import { DuplicateDialog } from './DuplicateDialog'
 
 type Kind = 'all' | 'mcp' | 'skills' | 'plugins'
 
@@ -35,6 +36,8 @@ export default function AIConfigTool() {
   const [origin, setOrigin] = useState('')
   const [kind, setKind] = useState<Kind>('all')
   const [viewing, setViewing] = useState('')
+  // 正在并排比较的那个名字;空 = 没开
+  const [comparing, setComparing] = useState('')
   // 正在启停的那条(工具箱自己的 MCP 的 id)
   const [busy, setBusy] = useState('')
   const dialog = useConfirm()
@@ -85,11 +88,12 @@ export default function AIConfigTool() {
     [snap, origin],
   )
 
-  // 同名跨来源出现 = 在好几家各配了一份。按名字统计,不看来源
-  const mcpDupes = useMemo(() => {
-    const n = new Map<string, number>()
-    for (const m of snap?.mcp ?? []) n.set(m.name, (n.get(m.name) ?? 0) + 1)
-    return new Set([...n.entries()].filter(([, c]) => c > 1).map(([k]) => k))
+  // 同名跨来源出现 = 在好几家各配了一份。按名字归组,不看来源;归到一起才能并排比
+  const dupeGroups = useMemo(() => {
+    const g = new Map<string, aiconfig.MCPEntry[]>()
+    for (const m of snap?.mcp ?? []) g.set(m.name, [...(g.get(m.name) ?? []), m])
+    for (const [k, v] of g) if (v.length < 2) g.delete(k)
+    return g
   }, [snap])
 
   const originInfo = useMemo(() => {
@@ -246,7 +250,14 @@ export default function AIConfigTool() {
                 {kind === 'all' && (
                   <SectionTitle title="MCP 服务器" count={mcp.length} icon={<Plug className="h-4 w-4" />} />
                 )}
-                <MCPList items={mcp} dupes={mcpDupes} onOpen={setViewing} onToggle={toggle} busy={busy} />
+                <MCPList
+                  items={mcp}
+                  dupes={dupeGroups}
+                  onOpen={setViewing}
+                  onCompare={setComparing}
+                  onToggle={toggle}
+                  busy={busy}
+                />
               </section>
             )}
             {(kind === 'all' || kind === 'skills') && (
@@ -270,6 +281,17 @@ export default function AIConfigTool() {
       </div>
 
       <SourceViewer path={viewing} onClose={() => setViewing('')} onSaved={() => void load()} />
+      {comparing && dupeGroups.has(comparing) && (
+        <DuplicateDialog
+          name={comparing}
+          entries={dupeGroups.get(comparing) ?? []}
+          onClose={() => setComparing('')}
+          onOpen={(f) => {
+            setComparing('')
+            setViewing(f)
+          }}
+        />
+      )}
     </ToolShell>
   )
 }
@@ -280,12 +302,14 @@ function MCPList({
   items,
   dupes,
   onOpen,
+  onCompare,
   onToggle,
   busy,
 }: {
   items: aiconfig.MCPEntry[]
-  dupes: Set<string>
+  dupes: Map<string, aiconfig.MCPEntry[]>
   onOpen: (p: string) => void
+  onCompare: (name: string) => void
   onToggle: (m: aiconfig.MCPEntry) => void
   busy: string
 }) {
@@ -299,9 +323,14 @@ function MCPList({
             <span className="truncate font-medium">{m.name}</span>
             <Tag>{m.kind}</Tag>
             {dupes.has(m.name) && (
-              <Tag tone="warn" title="这个名字在多处各配了一份 —— 分开看的时候发现不了">
-                多处重复
-              </Tag>
+              <button
+                type="button"
+                onClick={() => onCompare(m.name)}
+                title="这个名字在多处各配了一份 —— 点开并排比较"
+                className="shrink-0"
+              >
+                <Tag tone="warn">多处重复 · 对比</Tag>
+              </button>
             )}
             {m.toggleable ? (
               <button

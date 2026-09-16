@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   CornerLeftUp,
   Download,
+  Eye,
   Folder,
   FileText,
   FolderDown,
+  HardDriveDownload,
   Link2,
   RefreshCw,
   Search,
@@ -17,6 +20,7 @@ import { cn } from '@/lib/utils'
 import { useDeviceBrowserStore } from '@/stores/device-browser'
 import {
   ConnectDevice,
+  DiffDeviceDir,
   DisconnectDevice,
   ExportDeviceDir,
   ExportDeviceFile,
@@ -31,6 +35,17 @@ import { ConnectPanel } from './ConnectPanel'
 import { Breadcrumbs } from './Breadcrumbs'
 import { PreviewPane, fmtSize } from './PreviewPane'
 import { presetsFor } from './presets'
+import { jumpTo } from '@/lib/jump'
+import {
+  ChangeMark,
+  WATCH_MAX_EVENTS,
+  WatchPanel,
+  changeMarks,
+  newWatch,
+  type WatchEvent,
+  type WatchKind,
+  type WatchState,
+} from './WatchPanel'
 
 // 直接翻连着的手机,而不是"先导出再看"。
 // 现场是先翻、翻到有价值的再取 —— 反过来意味着你得先猜对要导哪个目录。
@@ -80,6 +95,15 @@ export default function DeviceBrowser() {
   const [dirResult, setDirResult] = useState<devicefs.ExportDirResult | null>(null)
   const [dirError, setDirError] = useState('')
 
+  // 监视模式:定时给一棵目录树拍快照比差异。看的是 watch.dir,不跟着 cwd 走 ——
+  // 拍着基线去别处翻一翻很正常,监视的对象不能因此变了
+  const [watch, setWatch] = useState<WatchState | null>(null)
+  const watchRef = useRef(watch)
+  watchRef.current = watch
+  const cwdRef = useRef(cwd)
+  cwdRef.current = cwd
+  const navigate = useNavigate()
+
   const load = useCallback(
     async (dir: string) => {
       if (!sessionId) return
@@ -103,6 +127,74 @@ export default function DeviceBrowser() {
   useEffect(() => {
     if (sessionId && !listing) void load(cwd)
   }, [sessionId, listing, cwd, load])
+
+  const pollWatch = useCallback(
+    async (reset = false) => {
+      const w = watchRef.current
+      if (!w || !sessionId) return
+      setWatch((s) => s && { ...s, busy: true })
+      try {
+        const r = await DiffDeviceDir(sessionId, w.dir, reset)
+        const now = Date.now()
+        const fresh: WatchEvent[] = (r.changes ?? []).map((c) => ({
+          at: now,
+          kind: c.kind as WatchKind,
+          path: c.path,
+          name: c.name,
+          isDir: c.isDir,
+          size: c.size,
+          sizeDelta: c.sizeDelta ?? 0,
+        }))
+        setWatch(
+          (s) =>
+            s && {
+              ...s,
+              busy: false,
+              error: '',
+              ticks: s.ticks + 1,
+              lastAt: now,
+              total: r.total,
+              truncated: r.truncated,
+              events: fresh.length
+                ? [...fresh, ...s.events].slice(0, WATCH_MAX_EVENTS)
+                : s.events,
+            },
+        )
+        // 当前正看着的目录就在被监视的树里:刷新列表,新文件才会出现在眼前
+        if (fresh.length > 0 && isWithin(cwdRef.current, w.dir)) void load(cwdRef.current)
+      } catch (e) {
+        setWatch((s) => s && { ...s, busy: false, error: String(e) })
+      }
+    },
+    [sessionId, load],
+  )
+
+  // 轮询:上一次查完再排下一次。setTimeout 串起来而不是 setInterval ——
+  // 设备慢的时候一次 find 可能超过间隔,不能让请求叠起来
+  useEffect(() => {
+    if (!watch || watch.paused || !sessionId) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const tick = async () => {
+      if (cancelled) return
+      await pollWatch(false)
+      if (!cancelled) timer = setTimeout(tick, watch.interval * 1000)
+    }
+    if (watch.ticks === 0) {
+      // 刚开始:先拍基线,再排定时
+      void pollWatch(true).then(() => {
+        if (!cancelled) timer = setTimeout(tick, watch.interval * 1000)
+      })
+    } else {
+      timer = setTimeout(tick, watch.interval * 1000)
+    }
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+    // ticks 故意不在依赖里:每次检查都会变,放进去就成了查完立刻再查
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watch?.dir, watch?.interval, watch?.paused, sessionId, pollWatch])
 
   const connect = async (password: string) => {
     setConnecting(true)
@@ -133,6 +225,7 @@ export default function DeviceBrowser() {
     setPreview(null)
     setSelected('')
     setHits(null)
+    setWatch(null)
   }
 
   const open = async (e: devicefs.Entry) => {
@@ -198,6 +291,24 @@ export default function DeviceBrowser() {
       setDirExporting('')
     }
   }
+
+  const startWatch = (dir: string) => setWatch(newWatch(dir, watch?.interval ?? 5))
+  const stopWatch = () => setWatch(null)
+  // 点一处变化:跳到它所在的目录并选中它;目录本身变了就进去看
+  const goToChange = (ev: WatchEvent) => {
+    const parent = ev.path.slice(0, ev.path.lastIndexOf('/')) || '/'
+    void load(ev.isDir && ev.kind !== 'removed' ? ev.path : parent)
+    if (!ev.isDir) setSelected(ev.path)
+  }
+  const marks = useMemo(() => changeMarks(watch?.events ?? []), [watch?.events])
+  // 带着路径跳去移动取证:平台跟着这条会话走,路径填进那边的「指定路径」。
+  // 现场的顺序就是先翻到、再整个取下来;以前这一步要手抄路径
+  const forensicExport = (path: string) =>
+    jumpTo(navigate, {
+      to: 'mobile-forensic',
+      platform: platform === 'android' ? 'android' : 'ios',
+      paths: [path],
+    })
 
   if (!sessionId) {
     return (
@@ -282,6 +393,31 @@ export default function DeviceBrowser() {
             <FolderDown className={cn('h-3.5 w-3.5', dirExporting === cwd && 'animate-pulse')} />
             <span className="text-[11px]">导出此目录</span>
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 shrink-0 px-2"
+            onClick={() => forensicExport(cwd)}
+            disabled={cwd === '/'}
+            title={`把 ${cwd} 填进移动取证的「指定路径」，走取证流程整个取下来`}
+          >
+            <HardDriveDownload className="h-3.5 w-3.5" />
+            <span className="text-[11px]">用移动取证导出</span>
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className={cn('h-7 shrink-0 px-2', watch?.dir === cwd && 'text-info')}
+            onClick={() => (watch?.dir === cwd ? stopWatch() : startWatch(cwd))}
+            title={
+              watch?.dir === cwd
+                ? '停止监视这个目录'
+                : `监视 ${cwd}：每隔几秒对比一次整棵子树，列出新增、修改、删除的文件`
+            }
+          >
+            <Eye className={cn('h-3.5 w-3.5', watch?.dir === cwd && !watch.paused && 'animate-pulse')} />
+            <span className="text-[11px]">{watch?.dir === cwd ? '监视中' : '监视此目录'}</span>
+          </Button>
           <div className="relative shrink-0">
             <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <input
@@ -328,6 +464,18 @@ export default function DeviceBrowser() {
             </button>
           ))}
         </div>
+
+        {watch && (
+          <WatchPanel
+            watch={watch}
+            onPause={() => setWatch((s) => s && { ...s, paused: !s.paused })}
+            onCheckNow={() => void pollWatch(false)}
+            onClear={() => setWatch((s) => s && { ...s, events: [] })}
+            onStop={stopWatch}
+            onInterval={(sec) => setWatch((s) => s && { ...s, interval: sec })}
+            onGo={goToChange}
+          />
+        )}
 
         {dirError && (
           <div className="whitespace-pre-wrap break-words rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -380,7 +528,9 @@ export default function DeviceBrowser() {
                 selected={selected}
                 onOpen={open}
                 onExportDir={exportDir}
+                onForensic={forensicExport}
                 exportingDir={dirExporting}
+                marks={marks}
               />
             )}
           </div>
@@ -406,14 +556,18 @@ function EntryList({
   selected,
   onOpen,
   onExportDir,
+  onForensic,
   exportingDir,
+  marks,
 }: {
   listing: devicefs.Listing | null
   loading: boolean
   selected: string
   onOpen: (e: devicefs.Entry) => void
   onExportDir: (path: string) => void
+  onForensic: (path: string) => void
   exportingDir: string
+  marks: ReturnType<typeof changeMarks>
 }) {
   if (!listing) {
     return <Hint>{loading ? '读取中…' : '还没有内容'}</Hint>
@@ -443,7 +597,9 @@ function EntryList({
             active={e.path === selected}
             onClick={() => onOpen(e)}
             onExportDir={onExportDir}
+            onForensic={onForensic}
             exporting={exportingDir === e.path}
+            mark={marks.exact.get(e.path) ?? (marks.inside.has(e.path) ? 'inside' : undefined)}
           />
         ))}
       </ul>
@@ -526,7 +682,9 @@ function Row({
   relativeTo,
   onClick,
   onExportDir,
+  onForensic,
   exporting,
+  mark,
 }: {
   e: devicefs.Entry
   active: boolean
@@ -534,7 +692,10 @@ function Row({
   relativeTo?: string
   onClick: () => void
   onExportDir?: (path: string) => void
+  onForensic?: (path: string) => void
   exporting?: boolean
+  /** 监视模式打的标:这一行自己变了,或者它底下有变化 */
+  mark?: WatchKind | 'inside'
 }) {
   const sub = relativeTo ? relPath(e.path, relativeTo) : ''
   return (
@@ -552,8 +713,11 @@ function Row({
             <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           )}
           <span className="min-w-0 flex-1">
-            <span className="block truncate font-mono" title={e.path}>
-              {e.name}
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate font-mono" title={e.path}>
+                {e.name}
+              </span>
+              {mark && <ChangeMark mark={mark} />}
             </span>
             {sub && (
               <span className="block truncate font-mono text-[10px] text-muted-foreground" title={e.path}>
@@ -590,6 +754,18 @@ function Row({
             <Download className={cn('h-3.5 w-3.5', exporting && 'animate-pulse')} />
           </button>
         )}
+        {e.isDir && onForensic && (
+          <button
+            onClick={(ev) => {
+              ev.stopPropagation()
+              onForensic(e.path)
+            }}
+            title={`把 ${e.name} 填进移动取证的「指定路径」`}
+            className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-colors hover:bg-secondary hover:text-foreground group-hover/row:opacity-100"
+          >
+            <HardDriveDownload className="h-3.5 w-3.5" />
+          </button>
+        )}
 
         <span className="w-14 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground">
           {e.isDir ? '' : fmtSize(e.size)}
@@ -609,6 +785,13 @@ function relPath(p: string, root: string): string {
   const rest = p.slice(base.length)
   const cut = rest.lastIndexOf('/')
   return cut > 0 ? rest.slice(0, cut) : ''
+}
+
+/** p 是不是 dir 自己或它底下的路径 */
+function isWithin(p: string, dir: string): boolean {
+  if (p === dir) return true
+  const base = dir.endsWith('/') ? dir : dir + '/'
+  return p.startsWith(base)
 }
 
 function Hint({ children }: { children: React.ReactNode }) {
