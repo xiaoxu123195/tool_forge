@@ -41,7 +41,7 @@ tool_forge/
 ├── wails.json                     # Wails 配置（版本号写在这里）
 ├── go.mod / go.sum
 ├── README.md                      # 面向用户
-├── LICENSE                        # MIT
+├── LICENSE                        # GPL-3.0
 ├── docs/
 │   ├── DEVELOPMENT.md             # 本文
 │   └── images/                    # README 用图与截图

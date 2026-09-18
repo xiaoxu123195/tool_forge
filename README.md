@@ -7,7 +7,7 @@
 
   <p>
     <a href="https://github.com/xiaoxu123195/tool_forge/releases"><img alt="Release" src="https://img.shields.io/github/v/release/xiaoxu123195/tool_forge?style=flat-square&color=informational" /></a>
-    <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green?style=flat-square" /></a>
+    <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-green?style=flat-square" /></a>
     <a href="https://github.com/xiaoxu123195/tool_forge/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/xiaoxu123195/tool_forge?style=flat-square&color=yellow" /></a>
     <img alt="Wails" src="https://img.shields.io/badge/Wails-v2-DF0067?style=flat-square" />
     <img alt="Go" src="https://img.shields.io/badge/Go-1.24-00ADD8?style=flat-square&logo=go&logoColor=white" />
@@ -186,7 +186,12 @@ wails build -platform darwin/universal
 
 ## 📄 License
 
-[MIT](LICENSE) © 2026 xiaoxu123195
+[GPL-3.0-or-later](LICENSE) © 2026 xiaoxu123195
+
+自由使用、修改、分发；**基于本项目改出来的东西再分发时，也要以 GPL-3.0 开源**。
+公司内部自己用、不对外分发的，不受此限。
+
+> v0.2.8 及更早的版本按当时的 MIT 协议发布，不受影响；GPL-3.0 从 v0.3.0 起生效。
 
 ---
 

@@ -147,8 +147,21 @@ export function AboutSection() {
       {/* 更新检查 */}
       <UpdateCard currentVersion={info?.version ?? null} />
 
+      {/* GPL 要求交互式程序里看得到协议和免责声明,所以这里不只是写个协议名,
+          还给一条能点开全文的链接 */}
       <p className="text-center text-xs text-muted-foreground">
-        © {new Date().getFullYear()} Tool Forge · MIT · Made with ♥
+        © {new Date().getFullYear()} Tool Forge · Made with ♥
+      </p>
+      <p className="text-center text-[11px] text-muted-foreground">
+        本程序是自由软件，依据{' '}
+        <button
+          type="button"
+          onClick={() => BrowserOpenURL('https://www.gnu.org/licenses/gpl-3.0.html')}
+          className="underline underline-offset-2 hover:text-foreground"
+        >
+          GNU GPL v3
+        </button>{' '}
+        或（可选）任何更新的版本发布。本程序不提供任何担保。
       </p>
     </div>
   )
