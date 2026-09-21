@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"tool_forge/backend/tools/aichat"
 	"tool_forge/backend/tools/aiconfig"
 	"tool_forge/backend/tools/aistupid"
+	"tool_forge/backend/tools/apitool"
 	"tool_forge/backend/tools/appsearch"
 	"tool_forge/backend/tools/charles"
 	"tool_forge/backend/tools/claudeinsight"
@@ -72,6 +74,7 @@ type App struct {
 	devicefs  *devicefs.Manager
 	llmproxy  *llmproxy.Server
 	mcp       *mcp.Service
+	apiTools  *apitool.Service
 	// mcpWB 工作台自己的一套连接,和上面那批给 AI 用的常驻连接分开:
 	// 工作台上试一个服务器不该影响正在对话的那条
 	mcpWB *mcp.Workbench
@@ -135,6 +138,15 @@ func NewApp() *App {
 	outlk, _ := outlookmail.New()
 	// LLM 透明代理 + 日志:打开 SQLite 存储,读配置(startup 里按配置决定是否监听)
 	lp, _ := llmproxy.New()
+	// OpenAPI 导入的接口:生成的工具挂在同一个 api server 上,
+	// 所以它们和内置工具一样,既是 HTTP 接口也出现在 /mcp 的工具列表里。
+	// 密钥不进配置文件,发请求那一刻才从系统凭据库取
+	apiTools := apitool.New(apiRegistrar{api},
+		system.GetPassword, system.SavePassword, system.DeletePassword)
+	if err := apiTools.RegisterAll(); err != nil {
+		log.Printf("[apitool] 加载接口包失败: %v", err)
+	}
+
 	// MCP 客户端:只读配置,连接是懒建的(第一次要用工具时才连)
 	mcpSvc := mcp.New()
 	aichat.SetMCPService(mcpSvc)
@@ -172,6 +184,7 @@ func NewApp() *App {
 		llmproxy:  lp,
 		mcp:       mcpSvc,
 		mcpWB:     mcp.NewWorkbench(),
+		apiTools:  apiTools,
 	}
 }
 
@@ -1657,6 +1670,59 @@ func (a *App) SaveMCPServer(s mcp.Server) (mcp.Server, error) {
 	return saved, nil
 }
 
+// ================ OpenAPI 接口包 ================
+//
+// 把一份 OpenAPI 文档里选中的接口包装成工具。生成的工具挂在本地 API server 上,
+// 和内置工具走同一套开关 —— 导入不等于对外暴露,还要在「本地 API」页里勾选
+
+// ParseOpenAPISpec 解析一份文档(本地路径或 http 地址),列出里面的接口
+func (a *App) ParseOpenAPISpec(source string) (*apitool.ParseResult, error) {
+	return apitool.ParseSpec(source)
+}
+
+// ParseOpenAPIText 解析粘贴进来的文档内容
+func (a *App) ParseOpenAPIText(text string) (*apitool.ParseResult, error) {
+	return apitool.ParseSpecText(text)
+}
+
+// ListAPIPacks 列出已导入的接口包
+func (a *App) ListAPIPacks() []apitool.Pack {
+	if a.apiTools == nil {
+		return []apitool.Pack{}
+	}
+	list, err := a.apiTools.ListPacks()
+	if err != nil || list == nil {
+		return []apitool.Pack{}
+	}
+	return list
+}
+
+// SaveAPIPack 保存一个接口包并注册它的工具。
+// secret 非空时写进系统凭据库;为空表示不动已存的那个
+func (a *App) SaveAPIPack(pack apitool.Pack, secret string) (*apitool.Pack, error) {
+	if a.apiTools == nil {
+		return nil, fmt.Errorf("接口包服务未初始化")
+	}
+	saved, err := a.apiTools.SavePack(pack, secret)
+	if err != nil {
+		return nil, err
+	}
+	return &saved, nil
+}
+
+// DeleteAPIPack 删掉一个接口包(撤销它的工具、清掉凭据)
+func (a *App) DeleteAPIPack(id string) error {
+	if a.apiTools == nil {
+		return nil
+	}
+	return a.apiTools.DeletePack(id)
+}
+
+// APIPackToolNames 一个接口包会生成哪些工具名
+func (a *App) APIPackToolNames(pack apitool.Pack) []string {
+	return apitool.ToolNamesOf(pack)
+}
+
 // ================ MCP 工作台 ================
 //
 // 和上面那组 MCP 绑定的区别:那组管的是"给 AI 问答用的常驻连接",
@@ -2402,3 +2468,17 @@ func (a *App) ReadSQLiteRows(path, table string, offset, limit int) (*sqlitex.Pa
 func (a *App) IsSQLiteFile(path string) bool {
 	return sqlitex.IsSQLite(path)
 }
+
+// apiRegistrar 把 apitool 的注册需求接到 apiserver 上。
+//
+// 中间隔一层是为了不让 apitool 依赖 apiserver:apiserver 已经依赖了一堆工具包,
+// 反过来再依赖回去就成了循环导入
+type apiRegistrar struct{ srv *apiserver.Server }
+
+func (r apiRegistrar) Register(_ string, h any) {
+	if th, ok := h.(apiserver.ToolHandler); ok {
+		r.srv.Register(th)
+	}
+}
+
+func (r apiRegistrar) Unregister(name string) { r.srv.Unregister(name) }

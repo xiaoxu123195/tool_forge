@@ -155,6 +155,49 @@ const special = {
   ReadMCPResource: () =>
     Promise.resolve({ method: 'resources/read', request: '{}', response: '{}', text: '', isError: false, error: '', rpcCode: 0, durationMs: 3, at: Date.now() }),
   DisconnectMCPWorkbench: () => Promise.resolve(),
+  // OpenAPI 接口包
+  ListAPIPacks: () => Promise.resolve(last.apiPacks || []),
+  ParseOpenAPIText: () =>
+    Promise.resolve({
+      title: '订单服务',
+      version: '1.2',
+      baseUrl: 'https://api.example.com/v1',
+      specVersion: 'openapi-3',
+      ops: [
+        {
+          id: 'getOrder',
+          method: 'GET',
+          path: '/orders/{orderId}',
+          summary: '查询订单',
+          description: '',
+          tags: ['order'],
+          params: [{ name: 'orderId', argName: 'orderId', in: 'path', required: true, schema: { type: 'string' } }],
+        },
+        {
+          id: 'deleteOrder',
+          method: 'DELETE',
+          path: '/orders/{orderId}',
+          summary: '取消订单',
+          description: '',
+          tags: ['order'],
+          deprecated: true,
+          params: [{ name: 'orderId', argName: 'orderId', in: 'path', required: true, schema: { type: 'string' } }],
+        },
+      ],
+      warnings: ['/upload 的请求体是 multipart/form-data,只支持 JSON,请求体被忽略'],
+    }),
+  ParseOpenAPISpec: () => Promise.reject(new Error('测试里不走网络')),
+  SaveAPIPack: (pack) => {
+    const saved = { ...pack, id: pack.id || 'pack-1', auth: { ...pack.auth, hasSecret: !!pack.auth.kind } }
+    last.apiPacks = [saved]
+    last.savedPack = saved
+    return Promise.resolve(saved)
+  },
+  DeleteAPIPack: () => {
+    last.apiPacks = []
+    return Promise.resolve()
+  },
+  APIPackToolNames: (pack) => Promise.resolve((pack.ops || []).map((o) => 'api-x-' + o.id)),
   ListMCPServers: () =>
     Promise.resolve([
       {

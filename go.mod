@@ -20,6 +20,7 @@ require (
 	golang.org/x/net v0.57.0
 	golang.org/x/sys v0.47.0
 	google.golang.org/protobuf v1.36.11
+	gopkg.in/yaml.v3 v3.0.1
 	howett.net/plist v1.0.2-0.20250314012144-ee69052608d9
 	modernc.org/sqlite v1.53.0
 )

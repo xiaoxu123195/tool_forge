@@ -1041,6 +1041,40 @@ async function main() {
     if (!txt().includes('search_files')) throw new Error('调用历史里没有记录')
   })
 
+  // OpenAPI 导入:文档里已经写清楚的东西(路径、方法、参数、类型)不该让人再抄一遍。
+  // 三步走:给文档 → 勾接口 → 填地址和认证
+  delete __last.apiPacks
+  delete __last.savedPack
+  await mount('MCP 工作台 · 导入 OpenAPI', <MemoryRouter><MCPWorkbench /></MemoryRouter>, async () => {
+    const txt = () => document.body.textContent || ''
+    if (!txt().includes('接口包')) throw new Error('没有接口包这一栏')
+    await mustClick('从 OpenAPI 文档导入接口')
+
+    await typeArea('openapi: 3.0.0', '{"openapi":"3.0.0"}')
+    await mustClick('解析粘贴的内容')
+    if (!txt().includes('/orders/{orderId}')) throw new Error('没列出解析到的接口')
+    if (!txt().includes('已废弃')) throw new Error('文档标了废弃的接口没标出来')
+    // 跳过了什么必须说 —— 跳过的接口在列表里是看不见的
+    if (!txt().includes('multipart')) throw new Error('解析时跳过的内容没有说明')
+
+    await mustClick('下一步')
+    if (!txt().includes('api-')) throw new Error('没有预览会生成什么工具名')
+    // 认证方式选了才问密钥,而且要说清楚密钥存哪儿
+    const sel = document.querySelectorAll('select')
+    const auth = sel[sel.length - 1] as HTMLSelectElement
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')?.set
+    setter?.call(auth, 'bearer')
+    await act(async () => {
+      auth.dispatchEvent(new window.Event('change', { bubbles: true }))
+    })
+    if (!txt().includes('系统凭据库')) throw new Error('没说清楚密钥存在哪儿')
+
+    await mustClick('保存并生成工具')
+    const saved = __last.savedPack as { name: string; ops: unknown[] } | undefined
+    if (!saved || saved.ops.length !== 2) throw new Error('保存的接口包不对: ' + JSON.stringify(saved))
+    if (!txt().includes('2 个')) throw new Error('保存后列表里没显示这个包')
+  })
+
   // SM2 加解密与签名验签往返。
   //
   // sm-crypto 0.3.13 → 0.3.14 修的是 SM2 解密里的私钥可恢复漏洞(CVE-2026-23966),

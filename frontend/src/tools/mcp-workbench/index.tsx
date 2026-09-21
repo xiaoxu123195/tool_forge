@@ -16,15 +16,19 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import {
   CallMCPToolRaw,
+  DeleteAPIPack,
   DisconnectMCPWorkbench,
   GetMCPPrompt,
   InspectMCPServer,
+  ListAPIPacks,
   ListMCPServers,
   ReadMCPResource,
 } from '../../../wailsjs/go/main/App'
-import type { mcp } from '../../../wailsjs/go/models'
+import type { apitool, mcp } from '../../../wailsjs/go/models'
 import { meta } from './meta'
 import { ServerPicker, targetOf } from './ServerPicker'
+import { PackList } from './PackList'
+import { ImportDialog } from './ImportDialog'
 import { SchemaForm } from './SchemaForm'
 import { ResponsePane } from './ResponsePane'
 import { buildArgs, fieldsOf, initialValues, suspiciousSpans, type Field } from './schema'
@@ -51,6 +55,9 @@ const MAX_HISTORY = 50
 
 export default function MCPWorkbench() {
   const [servers, setServers] = useState<mcp.Server[]>([])
+  const [packs, setPacks] = useState<apitool.Pack[]>([])
+  // null = 没开;{pack:null} = 新导入;{pack:x} = 改 x
+  const [importing, setImporting] = useState<{ pack: apitool.Pack | null } | null>(null)
   const [current, setCurrent] = useState<mcp.Server | null>(null)
   const [inspect, setInspect] = useState<mcp.InspectResult | null>(null)
   const [connecting, setConnecting] = useState(false)
@@ -65,11 +72,18 @@ export default function MCPWorkbench() {
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [historyOpen, setHistoryOpen] = useState(false)
 
+  const loadPacks = useCallback(() => {
+    ListAPIPacks()
+      .then((list) => setPacks(list ?? []))
+      .catch(() => setPacks([]))
+  }, [])
+
   useEffect(() => {
     ListMCPServers()
       .then((list) => setServers(list ?? []))
       .catch(() => setServers([]))
-  }, [])
+    loadPacks()
+  }, [loadPacks])
 
   const connect = useCallback(async (s: mcp.Server) => {
     setCurrent(s)
@@ -216,6 +230,19 @@ export default function MCPWorkbench() {
             onAdHoc={(s) => void connect(s)}
           />
 
+          {/* 接口包:OpenAPI 文档导进来变成工具。它们最终也是通过 MCP 被调用的,
+              所以放在同一页,不另开一处 */}
+          <PackList
+            packs={packs}
+            onImport={() => setImporting({ pack: null })}
+            onEdit={(p) => setImporting({ pack: p })}
+            onDelete={(p) => {
+              void DeleteAPIPack(p.id)
+                .then(loadPacks)
+                .catch((e) => setConnectError(String(e)))
+            }}
+          />
+
           {connecting && (
             <p className="flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
               <Loader2 className="h-3 w-3 animate-spin" />
@@ -331,6 +358,17 @@ export default function MCPWorkbench() {
           )}
         </div>
       </div>
+
+      {importing && (
+        <ImportDialog
+          editing={importing.pack}
+          onClose={() => setImporting(null)}
+          onSaved={() => {
+            setImporting(null)
+            loadPacks()
+          }}
+        />
+      )}
     </ToolShell>
   )
 }

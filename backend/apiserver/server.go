@@ -40,11 +40,21 @@ func New() *Server {
 }
 
 // Register 注册一个工具 handler。可多次调用,Name() 重复时后注册覆盖前者。
-// 必须在 Start 之前调用。
+//
+// 运行中注册是安全的:handlers 的每一次读写都在锁里。
+// OpenAPI 导入的接口就是运行时才有的,不可能在 Start 之前注册
 func (s *Server) Register(h ToolHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.handlers[h.Name()] = h
+}
+
+// Unregister 撤销一个工具。删掉一个接口包时要用 ——
+// 不撤的话它的工具会一直挂在 /mcp 的 tools/list 上,调用时打到一个已经没人维护的地址
+func (s *Server) Unregister(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.handlers, name)
 }
 
 // ListTools 列出所有已注册的工具(给 UI 显示用)
