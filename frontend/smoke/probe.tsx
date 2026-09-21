@@ -29,6 +29,7 @@ import MobileForensic from '../src/tools/mobile-forensic/index'
 import AppSearch from '../src/tools/app-search/index'
 import SQLiteSearch from '../src/tools/sqlite-search/index'
 import ClipboardTool from '../src/tools/clipboard/index'
+import MCPWorkbench from '../src/tools/mcp-workbench/index'
 import { ConfirmProvider } from '../src/components/ui/confirm'
 import { LocalAPISection } from '../src/profile/sections/LocalAPI'
 import { useForensicStore } from '../src/stores/forensic'
@@ -88,17 +89,14 @@ const btn = (label: string) => {
  * 找不到框时返回 false,不抛 —— 所以几乎所有地方都该用下面的 mustType。
  * 名字里带 try 是故意的:省得有人顺手写 type() 又掉进静默失败里
  */
-const tryType = async (placeholder: string, value: string) => {
-  const el = document.querySelector(
-    `input[placeholder*="${placeholder}"]`,
-  ) as HTMLInputElement | null
-  if (!el) return false
+const fillEl = async (el: HTMLInputElement | HTMLTextAreaElement, value: string) => {
   // 注意用 window.Event 而不是全局 Event:Node 自己也有一个同名的 Event 类,
   // 拿它构造出来的对象 jsdom 的 dispatchEvent 不认
-  const setter = Object.getOwnPropertyDescriptor(
-    window.HTMLInputElement.prototype,
-    'value',
-  )?.set
+  const proto =
+    el instanceof window.HTMLTextAreaElement
+      ? window.HTMLTextAreaElement.prototype
+      : window.HTMLInputElement.prototype
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
   setter?.call(el, value)
   await act(async () => {
     el.dispatchEvent(new window.Event('input', { bubbles: true }))
@@ -106,7 +104,22 @@ const tryType = async (placeholder: string, value: string) => {
   await act(async () => {
     await sleep(50)
   })
+}
+
+const tryType = async (placeholder: string, value: string) => {
+  const el = document.querySelector(
+    `input[placeholder*="${placeholder}"]`,
+  ) as HTMLInputElement | null
+  if (!el) return false
+  await fillEl(el, value)
   return true
+}
+
+/** 按 CSS 选择器填一个框。表单控件没有 placeholder 时用它(schema 生成的那种) */
+const fillBy = async (selector: string, value: string) => {
+  const el = document.querySelector(selector) as HTMLInputElement | HTMLTextAreaElement | null
+  if (!el) throw new Error('找不到控件「' + selector + '」')
+  await fillEl(el, value)
 }
 
 async function mount(name: string, el: React.ReactNode, after?: () => Promise<void>) {
@@ -978,6 +991,54 @@ async function main() {
     const area = document.querySelector('textarea') as HTMLTextAreaElement | null
     if (!area?.value.includes('收款方 张三')) throw new Error('认出来的文字没放进可改的框里')
     await mustClick('关闭')
+  })
+
+  // MCP 工作台:MCP 版的 Postman。
+  //
+  // 这一页的全部价值在「照 schema 生成表单 + 原始报文可见」——
+  // 在 AI 那头出问题时只看得到"工具调用失败",发出去的参数和服务器的回复都被吞了
+  await mount('MCP 工作台', <MemoryRouter><MCPWorkbench /></MemoryRouter>, async () => {
+    const txt = () => document.body.textContent || ''
+    await mustClick('demo')
+    if (!txt().includes('已连接')) throw new Error('连上了却没显示连接状态')
+    if (!txt().includes('2025-06-18')) throw new Error('没显示协议版本 —— 版本对不上是最难猜的症状')
+    if (!txt().includes('resources 列表拉取失败')) throw new Error('可选能力的告警没显示')
+    if (!txt().includes('search_files')) throw new Error('没列出工具')
+
+    // 挑一个工具,表单要照 schema 生成,每种类型给对应的控件
+    await mustClick('search_files')
+    const form = document.body.textContent || ''
+    for (const label of ['query', 'limit', 'recursive', 'mode', 'paths', 'filter']) {
+      if (!form.includes(label)) throw new Error(`表单少了字段「${label}」`)
+    }
+    if (!form.includes('枚举')) throw new Error('enum 字段没标成枚举')
+    if (!document.querySelector('select')) throw new Error('enum 该给下拉框')
+    if (!document.querySelector('input[type=checkbox]')) throw new Error('boolean 该给复选框')
+    if (!form.includes('必填')) throw new Error('必填字段没标出来')
+
+    // 必填留空时不该发出请求
+    delete __last.mcpCall
+    await mustClick('调用')
+    if (__last.mcpCall) throw new Error('必填留空却把请求发出去了')
+
+    await fillBy('input[name="query"]', 'wechat')
+    await mustClick('调用')
+    if (!txt().includes('命中 3 个文件')) throw new Error('没显示调用结果')
+    if (!txt().includes('成功')) throw new Error('没显示调用成败')
+
+    // 三个页签分别是"模型看到的""服务器真回的""我们真发的",调试时缺一不可
+    await mustClick('查看：请求')
+    if (!txt().includes('"query"')) throw new Error('看不到发出去的参数')
+    await mustClick('查看：原始响应')
+    if (!txt().includes('"content"')) throw new Error('看不到原始响应')
+
+    // 描述里带注入特征的工具要标出来 —— 描述是直接进模型上下文的
+    await mustClick('read_note')
+    if (!txt().includes('要求忽略先前指令')) throw new Error('投毒的工具描述没有被标出来')
+
+    // 历史
+    await mustClick('调用历史')
+    if (!txt().includes('search_files')) throw new Error('调用历史里没有记录')
   })
 
   // SM2 加解密与签名验签往返。

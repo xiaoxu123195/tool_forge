@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 )
@@ -21,6 +22,11 @@ type transport interface {
 type client struct {
 	tr         transport
 	serverInfo string
+	// protocolVersion 服务器自报的版本。可能和我们声称的不一样,不强行中断,
+	// 但工作台上要显示出来 —— 版本对不上是一类很难猜的症状
+	protocolVersion string
+	// capabilities 服务器自报支持的能力名(tools / prompts / resources / logging…)
+	capabilities []string
 
 	mu    sync.Mutex
 	tools []ToolInfo
@@ -70,6 +76,12 @@ func (c *client) initialize(ctx context.Context) error {
 	if res.ServerInfo.Version != "" {
 		c.serverInfo += " " + res.ServerInfo.Version
 	}
+	c.protocolVersion = res.ProtocolVersion
+	c.capabilities = make([]string, 0, len(res.Capabilities))
+	for k := range res.Capabilities {
+		c.capabilities = append(c.capabilities, k)
+	}
+	sort.Strings(c.capabilities)
 	if err := c.tr.notify(ctx, "notifications/initialized", map[string]any{}); err != nil {
 		return fmt.Errorf("initialized 通知发送失败: %w", err)
 	}
@@ -150,6 +162,59 @@ func (c *client) callTool(ctx context.Context, name string, args map[string]any)
 		return "(工具没有返回内容)", nil
 	}
 	return text, nil
+}
+
+// listPrompts 拉提示词模板。服务器没实现时返回的是 -32601,由调用方决定怎么说
+func (c *client) listPrompts(ctx context.Context) ([]PromptInfo, error) {
+	out := []PromptInfo{}
+	err := c.paged(ctx, "prompts/list", func(raw json.RawMessage) (string, error) {
+		var res listPromptsResult
+		if err := json.Unmarshal(raw, &res); err != nil {
+			return "", err
+		}
+		out = append(out, res.Prompts...)
+		return res.NextCursor, nil
+	})
+	return out, err
+}
+
+// listResources 拉资源列表
+func (c *client) listResources(ctx context.Context) ([]ResourceInfo, error) {
+	out := []ResourceInfo{}
+	err := c.paged(ctx, "resources/list", func(raw json.RawMessage) (string, error) {
+		var res listResourcesResult
+		if err := json.Unmarshal(raw, &res); err != nil {
+			return "", err
+		}
+		out = append(out, res.Resources...)
+		return res.NextCursor, nil
+	})
+	return out, err
+}
+
+// paged 把带游标的列表翻到底。
+// 上限 20 页是防呆:游标实现有 bug 的服务器会永远返回同一个游标
+func (c *client) paged(ctx context.Context, method string, take func(json.RawMessage) (string, error)) error {
+	cursor := ""
+	for page := 0; page < 20; page++ {
+		params := map[string]any{}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		raw, err := c.tr.call(ctx, method, params)
+		if err != nil {
+			return err
+		}
+		next, err := take(raw)
+		if err != nil {
+			return fmt.Errorf("%s 响应解析失败: %w", method, err)
+		}
+		if next == "" || next == cursor {
+			return nil
+		}
+		cursor = next
+	}
+	return nil
 }
 
 func (c *client) close() error { return c.tr.close() }

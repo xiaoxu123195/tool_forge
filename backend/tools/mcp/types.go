@@ -6,8 +6,10 @@
 //	notifications/initialized  告诉服务器可以开始了
 //	tools/list                 列出它提供的工具
 //	tools/call                 调用一个工具
+//	prompts/list  prompts/get      提示词模板
+//	resources/list resources/read  资源
 //
-// prompts / resources / sampling 这些暂不支持 —— AI 问答目前只用得上工具。
+// 后两组只有 MCP 工作台在用 —— AI 问答那条路只用得上工具。sampling 不支持。
 //
 // 持久化路径: ~/.toolforge/mcp/servers.json
 package mcp
@@ -114,6 +116,21 @@ type initializeResult struct {
 		Name    string `json:"name"`
 		Version string `json:"version"`
 	} `json:"serverInfo"`
+	// Capabilities 服务器自报支持什么。工作台据此说明"它没有 prompts"
+	// 到底是没实现还是拉取失败
+	Capabilities map[string]json.RawMessage `json:"capabilities"`
+}
+
+// listPromptsResult prompts/list 的响应
+type listPromptsResult struct {
+	Prompts    []PromptInfo `json:"prompts"`
+	NextCursor string       `json:"nextCursor,omitempty"`
+}
+
+// listResourcesResult resources/list 的响应
+type listResourcesResult struct {
+	Resources  []ResourceInfo `json:"resources"`
+	NextCursor string         `json:"nextCursor,omitempty"`
 }
 
 // listToolsResult tools/list 的响应

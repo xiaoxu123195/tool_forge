@@ -72,6 +72,9 @@ type App struct {
 	devicefs  *devicefs.Manager
 	llmproxy  *llmproxy.Server
 	mcp       *mcp.Service
+	// mcpWB 工作台自己的一套连接,和上面那批给 AI 用的常驻连接分开:
+	// 工作台上试一个服务器不该影响正在对话的那条
+	mcpWB *mcp.Workbench
 
 	// windowShown:启动时窗口 StartHidden;首帧后由前端 ShowWindow 显示,后端 5s 兜底显示。
 	// 两者用这个原子标记去重,保证只有一方真正执行,避免重复显示/抢焦点。
@@ -168,6 +171,7 @@ func NewApp() *App {
 		devicefs:  dfs,
 		llmproxy:  lp,
 		mcp:       mcpSvc,
+		mcpWB:     mcp.NewWorkbench(),
 	}
 }
 
@@ -264,6 +268,9 @@ func (a *App) shutdown(ctx context.Context) {
 	// 把起的 MCP 服务器进程一并收掉,否则退出后它们会留在进程表里
 	if a.mcp != nil {
 		a.mcp.Shutdown()
+	}
+	if a.mcpWB != nil {
+		a.mcpWB.Shutdown()
 	}
 	// 真机会话下面挂着 go-forensic 的 USB 转发进程。不收的话它会活过 app,
 	// 一直占着设备的通道,下次连接直接失败
@@ -1648,6 +1655,51 @@ func (a *App) SaveMCPServer(s mcp.Server) (mcp.Server, error) {
 	}
 	a.mcp.Warm(a.ctx)
 	return saved, nil
+}
+
+// ================ MCP 工作台 ================
+//
+// 和上面那组 MCP 绑定的区别:那组管的是"给 AI 问答用的常驻连接",
+// 这组是调试用的一次性连接,原始报文一个字节不改地交给界面。
+// 传进来的 Server 不必是保存过的 —— 工作台上临时填一个也能连
+
+// InspectMCPServer 连上一个 MCP 服务器,把它提供的工具、提示词、资源全拉一遍
+func (a *App) InspectMCPServer(srv mcp.Server) (*mcp.InspectResult, error) {
+	if a.mcpWB == nil {
+		return nil, fmt.Errorf("MCP 工作台未初始化")
+	}
+	return a.mcpWB.Inspect(a.ctx, srv)
+}
+
+// CallMCPToolRaw 手动调一次工具,返回完整的来回报文
+func (a *App) CallMCPToolRaw(srv mcp.Server, name string, args map[string]any) (*mcp.CallResult, error) {
+	if a.mcpWB == nil {
+		return nil, fmt.Errorf("MCP 工作台未初始化")
+	}
+	return a.mcpWB.CallTool(a.ctx, srv, name, args)
+}
+
+// GetMCPPrompt 取一个提示词模板渲染后的内容
+func (a *App) GetMCPPrompt(srv mcp.Server, name string, args map[string]any) (*mcp.CallResult, error) {
+	if a.mcpWB == nil {
+		return nil, fmt.Errorf("MCP 工作台未初始化")
+	}
+	return a.mcpWB.GetPrompt(a.ctx, srv, name, args)
+}
+
+// ReadMCPResource 读一个资源
+func (a *App) ReadMCPResource(srv mcp.Server, uri string) (*mcp.CallResult, error) {
+	if a.mcpWB == nil {
+		return nil, fmt.Errorf("MCP 工作台未初始化")
+	}
+	return a.mcpWB.ReadResource(a.ctx, srv, uri)
+}
+
+// DisconnectMCPWorkbench 主动断开工作台的一条连接(stdio 的会把进程收掉)
+func (a *App) DisconnectMCPWorkbench(srv mcp.Server) {
+	if a.mcpWB != nil {
+		a.mcpWB.Disconnect(srv)
+	}
 }
 
 // DeleteMCPServer 删除一个 MCP 服务器(会断开连接)

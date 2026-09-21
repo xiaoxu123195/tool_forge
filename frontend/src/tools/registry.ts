@@ -131,6 +131,8 @@ import LlmProxy from './llm-proxy'
 import { meta as llmProxyMeta } from './llm-proxy/meta'
 import AIConfig from './ai-config'
 import { meta as aiConfigMeta } from './ai-config/meta'
+import MCPWorkbench from './mcp-workbench'
+import { meta as mcpWorkbenchMeta } from './mcp-workbench/meta'
 
 export interface ToolEntry {
   meta: ToolMeta
@@ -182,6 +184,7 @@ export const tools: ToolEntry[] = [
   { meta: netEnvCheckMeta, Component: NetEnvCheck },
   { meta: llmProxyMeta, Component: LlmProxy },
   { meta: aiConfigMeta, Component: AIConfig },
+  { meta: mcpWorkbenchMeta, Component: MCPWorkbench },
 ]
 
 export const toolRegistry: ToolMeta[] = tools.map((t) => t.meta)
