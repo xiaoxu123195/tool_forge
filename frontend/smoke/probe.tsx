@@ -30,6 +30,7 @@ import AppSearch from '../src/tools/app-search/index'
 import SQLiteSearch from '../src/tools/sqlite-search/index'
 import ClipboardTool from '../src/tools/clipboard/index'
 import MCPWorkbench from '../src/tools/mcp-workbench/index'
+import { useWorkbenchLayout, WB_DEFAULT, WB_MIN } from '../src/stores/mcp-workbench'
 import { ConfirmProvider } from '../src/components/ui/confirm'
 import { LocalAPISection } from '../src/profile/sections/LocalAPI'
 import { useForensicStore } from '../src/stores/forensic'
@@ -191,6 +192,25 @@ const typeArea = async (placeholderPart: string, value: string) => {
   })
   await act(async () => {
     await sleep(50)
+  })
+}
+
+/**
+ * 拖一根分隔条。
+ *
+ * 三个事件要分三次 act:按下之后 React 得先提交状态、effect 才会把 mousemove
+ * 挂到 window 上。挤在同一个 act 里的话 mousemove 派发时还没人听,拖动静悄悄失败
+ */
+const drag = async (sep: HTMLElement, from: number, to: number, axis: 'x' | 'y' = 'x') => {
+  const at = (v: number) => (axis === 'x' ? { clientX: v } : { clientY: v })
+  await act(async () => {
+    sep.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true, ...at(from) }))
+  })
+  await act(async () => {
+    window.dispatchEvent(new window.MouseEvent('mousemove', { bubbles: true, ...at(to) }))
+  })
+  await act(async () => {
+    window.dispatchEvent(new window.MouseEvent('mouseup', { bubbles: true }))
   })
 }
 
@@ -1069,6 +1089,53 @@ async function main() {
     // 历史
     await mustClick('调用历史')
     if (!txt().includes('search_files')) throw new Error('调用历史里没有记录')
+
+    // 分栏:尺寸不是写死的,分隔条能拖、拖完记住,而且每一栏自己管滚动。
+    //
+    // 中间那栏当初没有滚动条,根子是它拿不到确定高度。jsdom 不做真实排版,
+    // 量不出像素,所以这里守两样能守的:结构上每一栏都是有界的滚动容器,
+    // 以及拖动确实改到了尺寸
+    const seps = Array.from(document.querySelectorAll('[role="separator"]')) as HTMLElement[]
+    if (seps.length !== 2) throw new Error(`三栏之间该有 2 根分隔条,现在有 ${seps.length} 根`)
+
+    const panes = Array.from(document.querySelectorAll('[data-pane]')) as HTMLElement[]
+    if (panes.length !== 3) throw new Error(`该是三栏,现在有 ${panes.length} 栏`)
+    for (const pane of panes) {
+      const bounded = pane.className.includes('min-h-0')
+      const scrolls =
+        pane.className.includes('overflow-auto') || pane.className.includes('overflow-hidden')
+      if (!bounded || !scrolls) {
+        throw new Error(`「${pane.dataset.pane}」栏没有自己管滚动: ${pane.className}`)
+      }
+    }
+    // 中间那栏内部还要有一块真正滚动的内容区 —— 它才是当初看不到后面内容的地方
+    const mid = panes.find((p) => p.dataset.pane === 'params')
+    if (!mid?.querySelector('.overflow-auto')) {
+      throw new Error('参数栏内部没有滚动区,内容长了就看不到后面')
+    }
+
+    // 拖一下左边的分隔条,宽度要真的跟着变并记下来
+    useWorkbenchLayout.getState().reset()
+    const before = useWorkbenchLayout.getState().leftWidth
+    await drag(seps[0], 300, 360)
+    const after = useWorkbenchLayout.getState().leftWidth
+    if (after !== before + 60) throw new Error(`拖动没改到宽度: ${before} → ${after}`)
+
+    // 再怎么拖也不能把一栏压到没法读
+    await drag(seps[0], 300, -2000)
+    const narrow = document.querySelector('[data-pane="list"]') as HTMLElement
+    if (parseFloat(narrow.style.width) < WB_MIN.left) {
+      throw new Error(`拖过头了,左栏被压到 ${narrow.style.width},下限是 ${WB_MIN.left}px`)
+    }
+
+    // 双击恢复默认
+    useWorkbenchLayout.getState().setLeftWidth(999)
+    await act(async () => {
+      seps[0].dispatchEvent(new window.MouseEvent('dblclick', { bubbles: true }))
+    })
+    if (useWorkbenchLayout.getState().leftWidth !== WB_DEFAULT.leftWidth) {
+      throw new Error('双击分隔条没有恢复默认宽度')
+    }
   })
 
   // OpenAPI 导入:文档里已经写清楚的东西(路径、方法、参数、类型)不该让人再抄一遍。

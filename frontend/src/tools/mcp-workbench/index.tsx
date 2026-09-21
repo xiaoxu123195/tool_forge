@@ -32,6 +32,8 @@ import { ImportDialog } from './ImportDialog'
 import { SchemaForm } from './SchemaForm'
 import { ResponsePane } from './ResponsePane'
 import { buildArgs, fieldsOf, initialValues, suspiciousSpans, type Field } from './schema'
+import { Divider, clamp, useMeasure } from './panes'
+import { WB_DEFAULT, WB_MIN, useWorkbenchLayout } from '@/stores/mcp-workbench'
 
 /**
  * MCP 工作台 —— 连上一个服务器，照着它自己给的 schema 填参数，调一次，看原始报文。
@@ -71,6 +73,24 @@ export default function MCPWorkbench() {
   const [result, setResult] = useState<mcp.CallResult | null>(null)
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [historyOpen, setHistoryOpen] = useState(false)
+
+  // 分栏尺寸。量的是这一页自己的可用宽度,不是窗口 —— 侧边栏能收起来,
+  // 按窗口判断会在收起时判错一档
+  const box = useMeasure<HTMLDivElement>()
+  const layout = useWorkbenchLayout()
+  // 三栏横排要塞得下三个下限再加两根分隔条;塞不下就把结果区挪到参数区下面,
+  // 而不是逼人横向滚动
+  const wide = box.width === 0 || box.width >= WB_MIN.left + WB_MIN.mid + WB_MIN.right + 24
+  const leftW = clamp(
+    layout.leftWidth,
+    WB_MIN.left,
+    Math.max(WB_MIN.left, box.width ? box.width - (wide ? WB_MIN.mid + WB_MIN.right + 24 : WB_MIN.right + 12) : 420),
+  )
+  const midW = clamp(
+    layout.midWidth,
+    WB_MIN.mid,
+    Math.max(WB_MIN.mid, box.width ? box.width - leftW - WB_MIN.right - 24 : 560),
+  )
 
   const loadPacks = useCallback(() => {
     ListAPIPacks()
@@ -179,6 +199,7 @@ export default function MCPWorkbench() {
     <ToolShell
       title={meta.title}
       description={meta.description}
+      fullBleed
       actions={
         <div className="flex items-center gap-1.5">
           {inspect && (
@@ -219,9 +240,18 @@ export default function MCPWorkbench() {
         </div>
       }
     >
-      <div className="grid h-full min-h-0 grid-cols-[minmax(200px,1fr)_minmax(260px,1.3fr)_minmax(300px,1.6fr)] gap-2">
-        {/* 左:服务器 + 条目 */}
-        <div className="flex min-h-0 flex-col gap-2 overflow-auto">
+      {/* 自适应而不是写死比例:
+          · 宽度是量出来的(量这一页自己的可用区,不是窗口 —— 侧边栏能收起来)
+          · 分隔条可以拖,双击恢复默认,拖完记住 —— 翻工具列表时想要左栏宽,
+            读几百行 JSON 时想要右栏宽,写死一个比例伺候不了两头
+          · 塞不下三栏就把结果区挪到参数区下面,而不是逼人横着拉 */}
+      <div ref={box.ref} className="flex min-h-0 flex-1 p-2">
+        {/* 左:服务器 + 接口包 + 条目 */}
+        <div
+          data-pane="list"
+          style={{ width: leftW }}
+          className="flex min-h-0 shrink-0 flex-col gap-2 overflow-auto"
+        >
           <ServerPicker
             servers={servers}
             current={current}
@@ -265,7 +295,7 @@ export default function MCPWorkbench() {
 
           {inspect && (
             <>
-              <div className="flex gap-1 px-1">
+              <div className="flex flex-wrap gap-1 px-1">
                 {(
                   [
                     ['tools', '工具', Wrench],
@@ -306,56 +336,96 @@ export default function MCPWorkbench() {
           )}
         </div>
 
-        {/* 中:参数 */}
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card">
-          {!picked ? (
-            <div className="flex h-full items-center justify-center px-4 text-center text-[11px] text-muted-foreground">
-              {inspect ? '左边挑一个，参数表单会照它的 schema 生成。' : '先连一个 MCP 服务器。'}
-            </div>
-          ) : (
-            <>
-              <div className="shrink-0 border-b border-border px-3 py-2">
-                <div className="font-mono text-xs font-medium">{picked}</div>
-                <Detail kind={kind} inspect={inspect} name={picked} />
-              </div>
-              <div className="min-h-0 flex-1 overflow-auto p-3">
-                {kind === 'resources' ? (
-                  <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
-                    资源按 URI 读取，不需要参数。
-                  </p>
-                ) : (
-                  <SchemaForm
-                    fields={fields}
-                    values={values}
-                    errors={errors}
-                    onChange={(n, v) => setValues((p) => ({ ...p, [n]: v }))}
-                  />
-                )}
-              </div>
-              <div className="flex shrink-0 items-center gap-2 border-t border-border bg-muted/30 px-3 py-2">
-                <span className="text-[11px] text-muted-foreground">
-                  {kind === 'tools' ? 'tools/call' : kind === 'prompts' ? 'prompts/get' : 'resources/read'}
-                </span>
-                <Button size="sm" className="ml-auto" onClick={() => void run()} disabled={calling}>
-                  {calling ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Play className="h-3.5 w-3.5" />
-                  )}
-                  调用
-                </Button>
-              </div>
-            </>
-          )}
-        </div>
+        <Divider
+          direction="x"
+          title="拖动调整左栏宽度（双击恢复默认）"
+          onDrag={(d) => layout.setLeftWidth(leftW + d)}
+          onReset={() => layout.setLeftWidth(WB_DEFAULT.leftWidth)}
+        />
 
-        {/* 右:结果或历史 */}
-        <div className="min-h-0 overflow-hidden rounded-lg border border-border bg-card">
-          {historyOpen ? (
-            <HistoryPane items={history} onPick={(h) => setResult(h.result)} onClear={() => setHistory([])} />
-          ) : (
-            <ResponsePane result={result} />
-          )}
+        {/* 参数和结果:宽度够就并排,不够就上下摞 */}
+        <div className={cn('flex min-h-0 min-w-0 flex-1', wide ? 'flex-row' : 'flex-col')}>
+          <div
+            data-pane="params"
+            style={wide ? { width: midW } : { height: `${layout.vRatio * 100}%` }}
+            className={cn(
+              'flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card',
+              wide && 'shrink-0',
+            )}
+          >
+            {!picked ? (
+              <div className="flex h-full items-center justify-center px-4 text-center text-[11px] text-muted-foreground">
+                {inspect ? '左边挑一个，参数表单会照它的 schema 生成。' : '先连一个 MCP 服务器。'}
+              </div>
+            ) : (
+              <>
+                {/* 描述可能很长。给它自己的上限和滚动,否则表单会被挤到只剩一条缝 */}
+                <div className="max-h-32 shrink-0 overflow-auto border-b border-border px-3 py-2">
+                  <div className="break-all font-mono text-xs font-medium">{picked}</div>
+                  <Detail kind={kind} inspect={inspect} name={picked} />
+                </div>
+                <div className="min-h-0 flex-1 overflow-auto p-3">
+                  {kind === 'resources' ? (
+                    <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
+                      资源按 URI 读取，不需要参数。
+                    </p>
+                  ) : (
+                    <SchemaForm
+                      fields={fields}
+                      values={values}
+                      errors={errors}
+                      onChange={(n, v) => setValues((p) => ({ ...p, [n]: v }))}
+                    />
+                  )}
+                </div>
+                <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border bg-muted/30 px-3 py-2">
+                  <span className="text-[11px] text-muted-foreground">
+                    {kind === 'tools' ? 'tools/call' : kind === 'prompts' ? 'prompts/get' : 'resources/read'}
+                  </span>
+                  <Button size="sm" className="ml-auto" onClick={() => void run()} disabled={calling}>
+                    {calling ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Play className="h-3.5 w-3.5" />
+                    )}
+                    调用
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+
+          <Divider
+            direction={wide ? 'x' : 'y'}
+            title={wide ? '拖动调整参数栏宽度（双击恢复默认）' : '拖动调整上下高度（双击恢复默认）'}
+            onDrag={(d) => {
+              if (wide) layout.setMidWidth(midW + d)
+              else if (box.height > 0) {
+                layout.setVRatio(
+                  clamp(
+                    layout.vRatio + d / box.height,
+                    WB_MIN.vPane / box.height,
+                    1 - WB_MIN.vPane / box.height,
+                  ),
+                )
+              }
+            }}
+            onReset={() =>
+              wide ? layout.setMidWidth(WB_DEFAULT.midWidth) : layout.setVRatio(WB_DEFAULT.vRatio)
+            }
+          />
+
+          {/* 右:结果或历史 */}
+          <div
+            data-pane="result"
+            className="min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg border border-border bg-card"
+          >
+            {historyOpen ? (
+              <HistoryPane items={history} onPick={(h) => setResult(h.result)} onClear={() => setHistory([])} />
+            ) : (
+              <ResponsePane result={result} />
+            )}
+          </div>
         </div>
       </div>
 
