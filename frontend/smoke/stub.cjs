@@ -358,30 +358,29 @@ const special = {
   ListDeviceDir: (id) =>
     Promise.resolve(id === 'dev-2' ? fx.deviceListingAndroid : fx.deviceListing),
   SearchDeviceFiles: () => Promise.resolve(fx.deviceSearch),
-  // 监视模式:reset 那次是基线,之后每次都回一处深层的改动
-  DiffDeviceDir: (_id, dir, reset) =>
-    Promise.resolve(
-      reset
-        ? { dir, baseline: true, changes: [], total: 2, truncated: false }
-        : {
-            dir,
-            baseline: false,
-            since: 1782812272,
-            changes: [
-              {
-                name: 'msg.db',
-                path: dir + '/com.tencent.mm/MicroMsg/msg.db',
-                kind: 'modified',
-                isDir: false,
-                size: 8192,
-                modTime: 1782812300,
-                sizeDelta: 512,
-              },
-            ],
-            total: 3,
-            truncated: false,
-          },
-    ),
+  // 监视模式:reset 那次是基线,之后按模式回不同的东西。
+  // 基线对比给的是"从基线到现在"的净变化(每次都是同一批),
+  // 持续监视给的是"这两次之间"(每次不同)——两者混淆会让列表重复堆积
+  DiffDeviceDir: (_id, dir, mode) => {
+    last.diffMode = mode
+    if (mode === 'reset') {
+      return Promise.resolve({ dir, baseline: true, changes: [], total: 2, truncated: false, mode })
+    }
+    const db = {
+      name: 'msg.db',
+      path: dir + '/com.tencent.mm/MicroMsg/msg.db',
+      kind: 'modified',
+      isDir: false,
+      size: 8192,
+      modTime: 1782812300,
+      sizeDelta: mode === 'baseline' ? 4096 : 512,
+    }
+    const changes =
+      mode === 'baseline'
+        ? [db, { name: 'wal', path: dir + '/com.tencent.mm/MicroMsg/msg.db-wal', kind: 'added', isDir: false, size: 32, modTime: 1782812300, sizeDelta: 0 }]
+        : [db]
+    return Promise.resolve({ dir, baseline: false, since: 1782812272, changes, total: 3, truncated: false, mode })
+  },
   PreviewDeviceFile: (_id, p) =>
     Promise.resolve(
       String(p).endsWith('.plist') ? fx.devicePreviewPlist : fx.devicePreviewEmptyMmkv,

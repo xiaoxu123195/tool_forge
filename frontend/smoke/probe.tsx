@@ -634,15 +634,45 @@ async function main() {
     if (!btn('用移动取证导出')) throw new Error('没有跳去移动取证的入口')
 
     // 监视模式:拍基线 → 去手机上操作 → 列出变化。点「立即检查」不用等定时
+    delete __last.diffMode
     await mustClick('监视此目录')
     const t2 = () => document.body.textContent || ''
     if (!t2().includes('监视中')) throw new Error('开始监视后没有面板')
+    // 开始监视的第一下必须是重新拍基线,不然拿到的是上一次留下的旧基线
+    if (__last.diffMode !== 'reset') {
+      throw new Error('开始监视没有先拍基线: ' + __last.diffMode)
+    }
+
+    // 默认是基线对比:现场的问法几乎都是"这一趟操作总共动了哪些文件"
     await mustClick('立即检查')
+    if (__last.diffMode !== 'baseline') throw new Error('默认该是基线对比: ' + __last.diffMode)
     if (!t2().includes('msg.db')) throw new Error('检查后没列出变化的文件')
     if (!t2().includes('修改')) throw new Error('变化类型没标出来')
+    if (!t2().includes('净变化')) throw new Error('基线模式该说清楚这是净变化')
+    if (!t2().includes('基线 ')) throw new Error('没显示基线是什么时候拍的')
     // 变化在 com.tencent.mm 底下两层,列表里那个目录要标出"底下有变化" ——
     // 目录自己的修改时间不会变,不标的话人看不出该往哪儿点
     if (!t2().includes('内有变化')) throw new Error('列表行没标出底下有变化')
+
+    // 基线模式下再查一次,拿到的是同一批净变化,不能累积成两倍
+    const before = (document.querySelectorAll('button[title*="点击跳到它所在的目录"]') || []).length
+    await mustClick('立即检查')
+    const after = (document.querySelectorAll('button[title*="点击跳到它所在的目录"]') || []).length
+    if (after !== before) {
+      throw new Error(`基线模式给的是全量净变化,不该累积:${before} → ${after}`)
+    }
+
+    // 重新拍基线:以此刻为准,记录清空
+    await mustClick('以此刻为准重新拍基线 —— 去手机上做操作之前按一下')
+    if (__last.diffMode !== 'reset') throw new Error('没有重新拍基线: ' + __last.diffMode)
+    if (t2().includes('msg.db')) throw new Error('重新拍基线后旧记录该清掉')
+
+    // 切到持续监视:回答的是另一个问题,记录也要清掉
+    await mustClick('持续监视')
+    await mustClick('立即检查')
+    if (__last.diffMode !== 'rolling') throw new Error('切模式后没按新模式比: ' + __last.diffMode)
+    if (t2().includes('净变化')) throw new Error('持续监视不该还说净变化')
+
     await mustClick('停止监视')
     if (t2().includes('监视中')) throw new Error('停止后面板还在')
   })

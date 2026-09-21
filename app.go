@@ -600,13 +600,17 @@ func (a *App) SearchDeviceFiles(sessionID, root, pattern string, limit int) (*de
 	return a.devicefs.Search(sessionID, root, pattern, limit)
 }
 
-// DiffDeviceDir 拍一张目录子树的快照和上一张比,给界面上的监视模式用。
-// reset 为真先丢掉基线 —— 开始监视的第一下就是它
-func (a *App) DiffDeviceDir(sessionID, dir string, reset bool) (*devicefs.DiffResult, error) {
-	if reset {
-		a.devicefs.ResetSnapshot(sessionID, dir)
+// DiffDeviceDir 拍一张目录子树的快照和基线比,给界面上的监视模式用。
+//
+// mode 见 devicefs.DiffMode:
+//   - reset    以此刻为准重新拍基线(去手机上操作之前按一下)
+//   - baseline 和钉住的基线比,基线不动(回来看这一趟总共动了什么)
+//   - rolling  和上一次比,比完基线往前挪(盯着看刚刚又发生了什么)
+func (a *App) DiffDeviceDir(sessionID, dir, mode string) (*devicefs.DiffResult, error) {
+	if mode == "" {
+		mode = devicefs.DiffRolling
 	}
-	return a.devicefs.DiffTree(sessionID, dir)
+	return a.devicefs.DiffTree(sessionID, dir, mode)
 }
 
 // PreviewDeviceFile 拉一份到本地缓存,认出类型并直接解开

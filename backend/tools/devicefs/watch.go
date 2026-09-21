@@ -17,6 +17,24 @@ import (
 // 对取证来说这反而是最常用的手法:在手机上做一个动作之前拍一次,做完再拍一次,
 // 差异就是那个动作落到了哪些文件上。想知道某个功能的数据存在哪儿,这是最直接的路。
 
+// DiffMode 一次对比怎么对待基线。
+//
+// 这三种对应三种真实用法,区别不在实现而在"你想知道什么":
+//
+//	DiffReset     丢掉旧的,以此刻为准。去手机上操作之前按一下
+//	DiffBaseline  和那张钉住的基线比,基线不动。回来之后看"这一趟操作总共动了哪些文件"
+//	DiffRolling   和上一次比,比完基线往前挪。盯着看"刚刚又发生了什么"
+//
+// 取证现场用得最多的是前两个连着用:钉一张基线,去操作,回来看净变化。
+// 滚动模式下同一个文件被改三次就是三行,而人想要的是"它变了,现在多大"
+type DiffMode = string
+
+const (
+	DiffRolling  DiffMode = "rolling"
+	DiffBaseline DiffMode = "baseline"
+	DiffReset    DiffMode = "reset"
+)
+
 // stamp 一个条目在某一刻的样子。
 // 只看大小和修改时间:内容哈希要把文件整个拉下来,一个目录几百个文件根本跑不动
 type stamp struct {
@@ -52,6 +70,8 @@ type DiffResult struct {
 	Total int `json:"total"`
 	// Truncated 目录条目太多被截断了 —— 截断之后的对比是不完整的,必须说
 	Truncated bool `json:"truncated"`
+	// Mode 这次是按哪种模式比的,原样回给界面
+	Mode DiffMode `json:"mode,omitempty"`
 }
 
 // snapshots 每个会话+目录记一张快照。
@@ -87,7 +107,7 @@ func (m *Manager) Diff(sessionID, dir string) (*DiffResult, error) {
 	for _, e := range lst.Entries {
 		now[joinRemote(lst.Path, e.Name)] = stamp{size: e.Size, modTime: e.ModTime, isDir: e.IsDir}
 	}
-	return m.snaps.compare(m.snaps.key(sessionID, lst.Path), lst.Path, now, lst.Total, lst.Truncated), nil
+	return m.snaps.compare(m.snaps.key(sessionID, lst.Path), lst.Path, now, lst.Total, lst.Truncated, DiffRolling), nil
 }
 
 // treeLimit 递归快照最多记多少条。一个 App 的数据目录几千个文件是常态,
@@ -99,8 +119,10 @@ const treeLimit = 20000
 // 只看一层的话,深处文件的改动看不见:目录的修改时间只在直接子项增删时变,
 // databases/msg.db 被写了一笔,上层目录纹丝不动。想知道"这个动作落到了哪些文件上",
 // 非递归不可。递归交给设备上的 find —— 和 search 走的是同一条路,模式给 * 就是全部。
-// 基线和 Diff 的分开记,两种看法互不干扰
-func (m *Manager) DiffTree(sessionID, dir string) (*DiffResult, error) {
+// 基线和 Diff 的分开记,两种看法互不干扰。
+//
+// mode 决定比完之后基线动不动,见 DiffMode
+func (m *Manager) DiffTree(sessionID, dir string, mode DiffMode) (*DiffResult, error) {
 	s, err := m.get(sessionID)
 	if err != nil {
 		return nil, err
@@ -108,6 +130,9 @@ func (m *Manager) DiffTree(sessionID, dir string) (*DiffResult, error) {
 	dir = cleanRemote(dir)
 	if dir == "" {
 		dir = s.t.startPath()
+	}
+	if mode == DiffReset {
+		m.ResetSnapshot(sessionID, dir)
 	}
 	res, err := s.t.search(dir, "*", treeLimit)
 	if err != nil {
@@ -121,29 +146,37 @@ func (m *Manager) DiffTree(sessionID, dir string) (*DiffResult, error) {
 		}
 		now[h.Path] = stamp{size: h.Size, modTime: h.ModTime, isDir: h.IsDir}
 	}
-	return m.snaps.compare(m.snaps.treeKey(sessionID, dir), dir, now, len(now), res.Truncated), nil
+	return m.snaps.compare(m.snaps.treeKey(sessionID, dir), dir, now, len(now), res.Truncated, mode), nil
 }
 
 func (s *snapshots) treeKey(sessionID, dir string) string {
 	return sessionID + "\x00tree\x00" + dir
 }
 
-// compare 用这张快照换掉基线,算出和基线的差异。now 的键是完整路径
-func (s *snapshots) compare(key, dir string, now map[string]stamp, total int, truncated bool) *DiffResult {
+// compare 算出这张快照和基线的差异。now 的键是完整路径。
+//
+// mode 决定比完之后基线动不动:DiffBaseline 下基线钉住不动,
+// 所以连着调两次看到的都是"从基线到现在",而不是"这两次之间"
+func (s *snapshots) compare(key, dir string, now map[string]stamp, total int, truncated bool, mode DiffMode) *DiffResult {
 	res := &DiffResult{
 		Dir:       dir,
 		Changes:   []Change{},
 		Total:     total,
 		Truncated: truncated,
+		Mode:      mode,
 	}
 
 	s.mu.Lock()
 	prev, had := s.m[key]
-	s.m[key] = snapEntry{at: time.Now().Unix(), files: now}
+	// 没有基线时无论哪种模式都要记一张,否则永远比不出东西
+	if !had || mode != DiffBaseline {
+		s.m[key] = snapEntry{at: time.Now().Unix(), files: now}
+	}
 	s.mu.Unlock()
 
 	if !had {
 		res.Baseline = true
+		res.Since = time.Now().Unix()
 		return res
 	}
 	res.Since = prev.at

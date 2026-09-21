@@ -44,6 +44,7 @@ import {
   newWatch,
   type WatchEvent,
   type WatchKind,
+  type WatchMode,
   type WatchState,
 } from './WatchPanel'
 
@@ -129,12 +130,13 @@ export default function DeviceBrowser() {
   }, [sessionId, listing, cwd, load])
 
   const pollWatch = useCallback(
-    async (reset = false) => {
+    async (rebase = false) => {
       const w = watchRef.current
       if (!w || !sessionId) return
+      const mode = rebase ? 'reset' : w.mode
       setWatch((s) => s && { ...s, busy: true })
       try {
-        const r = await DiffDeviceDir(sessionId, w.dir, reset)
+        const r = await DiffDeviceDir(sessionId, w.dir, mode)
         const now = Date.now()
         const fresh: WatchEvent[] = (r.changes ?? []).map((c) => ({
           at: now,
@@ -153,11 +155,18 @@ export default function DeviceBrowser() {
               error: '',
               ticks: s.ticks + 1,
               lastAt: now,
+              baselineAt: r.baseline ? now : s.baselineAt || now,
               total: r.total,
               truncated: r.truncated,
-              events: fresh.length
-                ? [...fresh, ...s.events].slice(0, WATCH_MAX_EVENTS)
-                : s.events,
+              // 基线对比给的是"从基线到现在"的全量净变化,整体换掉;
+              // 累积的话同一个文件会随着每次检查重复出现一行
+              events: r.baseline
+                ? []
+                : mode === 'baseline'
+                  ? fresh
+                  : fresh.length
+                    ? [...fresh, ...s.events].slice(0, WATCH_MAX_EVENTS)
+                    : s.events,
             },
         )
         // 当前正看着的目录就在被监视的树里:刷新列表,新文件才会出现在眼前
@@ -194,7 +203,7 @@ export default function DeviceBrowser() {
     }
     // ticks 故意不在依赖里:每次检查都会变,放进去就成了查完立刻再查
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [watch?.dir, watch?.interval, watch?.paused, sessionId, pollWatch])
+  }, [watch?.dir, watch?.interval, watch?.paused, watch?.mode, sessionId, pollWatch])
 
   const connect = async (password: string) => {
     setConnecting(true)
@@ -292,8 +301,13 @@ export default function DeviceBrowser() {
     }
   }
 
-  const startWatch = (dir: string) => setWatch(newWatch(dir, watch?.interval ?? 5))
+  const startWatch = (dir: string) =>
+    setWatch(newWatch(dir, watch?.mode ?? 'baseline', watch?.interval ?? 5))
   const stopWatch = () => setWatch(null)
+  // 换模式要把已有的记录清掉:两种模式下 events 的含义不一样
+  // (一个是净变化,一个是流水),混在一起没法读
+  const setMode = (mode: WatchMode) =>
+    setWatch((s) => s && { ...s, mode, ticks: 0, events: [], baselineAt: 0 })
   // 点一处变化:跳到它所在的目录并选中它;目录本身变了就进去看
   const goToChange = (ev: WatchEvent) => {
     const parent = ev.path.slice(0, ev.path.lastIndexOf('/')) || '/'
@@ -470,6 +484,8 @@ export default function DeviceBrowser() {
             watch={watch}
             onPause={() => setWatch((s) => s && { ...s, paused: !s.paused })}
             onCheckNow={() => void pollWatch(false)}
+            onRebase={() => void pollWatch(true)}
+            onMode={setMode}
             onClear={() => setWatch((s) => s && { ...s, events: [] })}
             onStop={stopWatch}
             onInterval={(sec) => setWatch((s) => s && { ...s, interval: sec })}

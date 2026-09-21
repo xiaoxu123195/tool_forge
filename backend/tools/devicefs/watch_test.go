@@ -232,7 +232,7 @@ func TestDiffTreeSeesDeepChanges(t *testing.T) {
 		hit("/d/files/a.txt", 10, 100),
 	}}
 	m, id := withFake(t, ft)
-	res, err := m.DiffTree(id, "/d")
+	res, err := m.DiffTree(id, "/d", DiffRolling)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestDiffTreeSeesDeepChanges(t *testing.T) {
 		hit("/d/databases/msg.db", 8192, 200),
 		hit("/d/databases/msg.db-wal", 512, 200),
 	}
-	res, err = m.DiffTree(id, "/d")
+	res, err = m.DiffTree(id, "/d", DiffRolling)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,14 +284,14 @@ func TestDiffTreeKeepsSeparateBaselineAndReset(t *testing.T) {
 	if res, _ := m.Diff(id, "/d"); !res.Baseline {
 		t.Fatal("Diff 第一次该是基线")
 	}
-	if res, _ := m.DiffTree(id, "/d"); !res.Baseline {
+	if res, _ := m.DiffTree(id, "/d", DiffRolling); !res.Baseline {
 		t.Error("DiffTree 有自己的基线,不该拿 Diff 的来比")
 	}
-	if res, _ := m.DiffTree(id, "/d"); res.Baseline {
+	if res, _ := m.DiffTree(id, "/d", DiffRolling); res.Baseline {
 		t.Error("第二次不该还是基线")
 	}
 	m.ResetSnapshot(id, "/d")
-	if res, _ := m.DiffTree(id, "/d"); !res.Baseline {
+	if res, _ := m.DiffTree(id, "/d", DiffRolling); !res.Baseline {
 		t.Error("reset 之后整棵树也该重新记基线")
 	}
 }
@@ -299,7 +299,92 @@ func TestDiffTreeKeepsSeparateBaselineAndReset(t *testing.T) {
 func TestDiffTreeReportsTruncation(t *testing.T) {
 	ft := &fakeTransport{tree: []SearchHit{hit("/d/a", 1, 100)}, treeTrunc: true}
 	m, id := withFake(t, ft)
-	if res, _ := m.DiffTree(id, "/d"); !res.Truncated {
+	if res, _ := m.DiffTree(id, "/d", DiffRolling); !res.Truncated {
 		t.Error("子树被截断了却没说")
+	}
+}
+
+// 基线模式:基线钉住不动,所以连着比两次看到的都是"从基线到现在"。
+//
+// 这是取证现场最常用的手法 —— 钉一张基线,去手机上操作,回来看这一趟总共动了哪些文件。
+// 滚动模式下这件事做不到:轮询期间基线一直往前挪,一个文件被改三次就是三行,
+// 而人想知道的是"它变了,现在多大"
+func TestDiffTreeBaselineModePinsBaseline(t *testing.T) {
+	ft := &fakeTransport{tree: []SearchHit{hit("/d/a", 1, 100), hit("/d/b", 2, 100)}}
+	m, id := withFake(t, ft)
+
+	if res, _ := m.DiffTree(id, "/d", DiffBaseline); !res.Baseline {
+		t.Fatal("第一次该是基线")
+	}
+
+	// 手机上第一步操作:a 变大
+	ft.tree = []SearchHit{hit("/d/a", 5, 200), hit("/d/b", 2, 100)}
+	res, _ := m.DiffTree(id, "/d", DiffBaseline)
+	if len(res.Changes) != 1 || res.Changes[0].SizeDelta != 4 {
+		t.Fatalf("第一次对比: %+v", res.Changes)
+	}
+
+	// 第二步:a 又变大,b 被删,新增 c。和基线比,三处都该在,
+	// 而且 a 的增量是相对基线的 +9 而不是相对上一次的 +5
+	ft.tree = []SearchHit{hit("/d/a", 10, 300), hit("/d/c", 3, 300)}
+	res, _ = m.DiffTree(id, "/d", DiffBaseline)
+	got := map[string]Change{}
+	for _, c := range res.Changes {
+		got[c.Path] = c
+	}
+	if len(got) != 3 {
+		t.Fatalf("和基线比该有 3 处: %+v", res.Changes)
+	}
+	if got["/d/a"].SizeDelta != 9 {
+		t.Errorf("增量该是相对基线的 +9,得到 %d", got["/d/a"].SizeDelta)
+	}
+	if got["/d/b"].Kind != "removed" || got["/d/c"].Kind != "added" {
+		t.Errorf("增删没认出来: %+v", res.Changes)
+	}
+	if res.Mode != DiffBaseline {
+		t.Errorf("没把模式回给界面: %q", res.Mode)
+	}
+	// 基线的时间要一直是拍基线那一刻,不能跟着每次对比往前走
+	if res.Since == 0 {
+		t.Error("没给出基线是什么时候拍的")
+	}
+}
+
+// 滚动模式每次把基线往前挪 —— 两种模式的基线是同一份,别互相踩
+func TestDiffTreeRollingStillMovesBaseline(t *testing.T) {
+	ft := &fakeTransport{tree: []SearchHit{hit("/d/a", 1, 100)}}
+	m, id := withFake(t, ft)
+	_, _ = m.DiffTree(id, "/d", DiffRolling)
+
+	ft.tree = []SearchHit{hit("/d/a", 2, 200)}
+	if res, _ := m.DiffTree(id, "/d", DiffRolling); len(res.Changes) != 1 {
+		t.Fatalf("该看到 1 处变化: %+v", res.Changes)
+	}
+	if res, _ := m.DiffTree(id, "/d", DiffRolling); len(res.Changes) != 0 {
+		t.Errorf("滚动模式下基线该往前挪,同一处不能报两遍: %+v", res.Changes)
+	}
+}
+
+// reset 以此刻为准重新拍,且这一次不该报出任何变化 ——
+// 去手机上操作之前按的就是它,报一堆变化会让人以为操作已经生效了
+func TestDiffTreeResetTakesFreshBaseline(t *testing.T) {
+	ft := &fakeTransport{tree: []SearchHit{hit("/d/a", 1, 100)}}
+	m, id := withFake(t, ft)
+	_, _ = m.DiffTree(id, "/d", DiffBaseline)
+
+	ft.tree = []SearchHit{hit("/d/a", 9, 900), hit("/d/new", 1, 900)}
+	res, _ := m.DiffTree(id, "/d", DiffReset)
+	if !res.Baseline {
+		t.Error("reset 之后该是一张新基线")
+	}
+	if len(res.Changes) != 0 {
+		t.Errorf("重新拍基线那一次不该报变化: %+v", res.Changes)
+	}
+
+	// 新基线生效:再动一下,只看得到这一下
+	ft.tree = []SearchHit{hit("/d/a", 10, 1000), hit("/d/new", 1, 900)}
+	res, _ = m.DiffTree(id, "/d", DiffBaseline)
+	if len(res.Changes) != 1 || res.Changes[0].Path != "/d/a" {
+		t.Errorf("新基线没生效: %+v", res.Changes)
 	}
 }

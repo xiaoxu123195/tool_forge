@@ -1,13 +1,22 @@
-import { Eye, Pause, Play, RefreshCw, Square, Trash2 } from 'lucide-react'
+import { Camera, Eye, Pause, Play, RefreshCw, Square, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { fmtSize } from './PreviewPane'
 
 /**
- * 监视模式:定时给目录子树拍快照、和上一张比,把变化按时间列出来。
+ * 监视模式:给目录子树拍快照、和基线比,把变化列出来。
  *
  * 取证里最常用的手法就是"在手机上做一个动作,看它落到了哪些文件上" ——
  * 想知道某个功能的数据存在哪儿,这是最直接的路。设备上没有 inotify 这类东西,
- * 只能轮询对比;所以它叫监视而不是监听,变化不会自己冒出来,是每隔几秒去看一眼。
+ * 只能轮询对比;所以它叫监视而不是监听,变化不会自己冒出来,是主动去看一眼。
+ *
+ * 两种模式对应两种问法,差别在基线动不动:
+ *
+ *   基线对比  钉一张基线,之后每次都和它比。回答"这一趟操作总共动了哪些文件"。
+ *             同一个文件改三次也只有一行,大小增量是相对基线算的
+ *   持续监视  每次和上一次比,基线跟着往前走。回答"刚刚又发生了什么"
+ *
+ * 默认是基线对比 —— 现场的问法几乎都是前者,而且滚动模式下走开几分钟回来,
+ * 看到的是一堆被切碎的中间态
  */
 
 export type WatchKind = 'added' | 'removed' | 'modified'
@@ -23,8 +32,11 @@ export interface WatchEvent {
   sizeDelta: number
 }
 
+export type WatchMode = 'baseline' | 'rolling'
+
 export interface WatchState {
   dir: string
+  mode: WatchMode
   /** 秒 */
   interval: number
   paused: boolean
@@ -32,10 +44,15 @@ export interface WatchState {
   /** 已经检查了几次(含拍基线那次) */
   ticks: number
   lastAt: number
+  /** 基线是什么时候拍的(ms)。基线对比模式下这个值要一直不变 */
+  baselineAt: number
   total: number
   truncated: boolean
   error: string
-  /** 最新的在前 */
+  /**
+   * 基线对比模式:这是"从基线到现在"的全量净变化,每次检查整体换掉
+   * 持续监视模式:按时间累积,最新的在前
+   */
   events: WatchEvent[]
 }
 
@@ -43,14 +60,16 @@ export const WATCH_INTERVALS = [2, 5, 10, 30]
 /** 记录最多留多少条;取证现场一次操作也就几十处变化,留几百条足够翻 */
 export const WATCH_MAX_EVENTS = 500
 
-export function newWatch(dir: string, interval = 5): WatchState {
+export function newWatch(dir: string, mode: WatchMode = 'baseline', interval = 5): WatchState {
   return {
     dir,
+    mode,
     interval,
     paused: false,
     busy: false,
     ticks: 0,
     lastAt: 0,
+    baselineAt: 0,
     total: 0,
     truncated: false,
     error: '',
@@ -86,6 +105,8 @@ export function WatchPanel({
   watch,
   onPause,
   onCheckNow,
+  onRebase,
+  onMode,
   onClear,
   onStop,
   onInterval,
@@ -94,19 +115,48 @@ export function WatchPanel({
   watch: WatchState
   onPause: () => void
   onCheckNow: () => void
+  onRebase: () => void
+  onMode: (m: WatchMode) => void
   onClear: () => void
   onStop: () => void
   onInterval: (sec: number) => void
   onGo: (ev: WatchEvent) => void
 }) {
+  const baseline = watch.mode === 'baseline'
   return (
     <div className="rounded-lg border border-info/40 bg-card">
       <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 text-xs">
         <Eye className={cn('h-3.5 w-3.5 text-info', watch.busy && 'animate-pulse')} />
         <span className="font-medium">{watch.paused ? '监视已暂停' : '监视中'}</span>
-        <span className="min-w-0 max-w-[40%] truncate font-mono text-[11px]" title={watch.dir}>
+        <span className="min-w-0 max-w-[30%] truncate font-mono text-[11px]" title={watch.dir}>
           {watch.dir}
         </span>
+
+        {/* 模式切换:两种模式回答的是两个不同的问题,不是同一件事的快慢档 */}
+        <span className="flex shrink-0 items-center gap-0.5 rounded-md border border-border p-0.5">
+          {(
+            [
+              ['baseline', '基线对比', '钉住一张基线，之后每次都和它比 —— 回答「这一趟操作总共动了哪些文件」'],
+              ['rolling', '持续监视', '每次和上一次比 —— 回答「刚刚又发生了什么」'],
+            ] as const
+          ).map(([m, label, hint]) => (
+            <button
+              key={m}
+              type="button"
+              title={hint}
+              onClick={() => onMode(m)}
+              className={cn(
+                'rounded px-1.5 py-0.5 text-[11px] transition-colors',
+                watch.mode === m
+                  ? 'bg-secondary font-medium text-foreground'
+                  : 'text-muted-foreground hover:bg-secondary/60',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </span>
+
         <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
           每
           <select
@@ -121,7 +171,8 @@ export function WatchPanel({
               </option>
             ))}
           </select>
-          秒 · 已检查 {watch.ticks} 次 · {watch.events.length} 处变化
+          秒 · {baseline ? `${watch.events.length} 处净变化` : `${watch.events.length} 处变化`}
+          {watch.baselineAt > 0 && baseline && ` · 基线 ${hhmmss(watch.baselineAt)}`}
           {watch.total > 0 && ` · 子树 ${watch.total} 条`}
         </span>
         {watch.truncated && (
@@ -130,6 +181,13 @@ export function WatchPanel({
           </span>
         )}
         <div className="ml-auto flex items-center gap-0.5">
+          <PanelBtn
+            title="以此刻为准重新拍基线 —— 去手机上做操作之前按一下"
+            onClick={onRebase}
+            disabled={watch.busy}
+          >
+            <Camera className="h-3.5 w-3.5" />
+          </PanelBtn>
           <PanelBtn title="立即检查" onClick={onCheckNow} disabled={watch.busy}>
             <RefreshCw className={cn('h-3.5 w-3.5', watch.busy && 'animate-spin')} />
           </PanelBtn>
@@ -154,7 +212,9 @@ export function WatchPanel({
           <p className="px-3 py-2 text-[11px] text-muted-foreground">
             {watch.ticks === 0
               ? '正在拍基线…'
-              : '基线拍好了。去手机上操作，落到这棵目录树里的改动会按时间列在这儿。'}
+              : baseline
+                ? '基线拍好了。去手机上操作，回来看这一趟总共动了哪些文件。'
+                : '基线拍好了。落到这棵目录树里的改动会按时间列在这儿。'}
           </p>
         ) : (
           <ul className="text-[11px]">
