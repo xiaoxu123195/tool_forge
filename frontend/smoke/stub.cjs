@@ -393,6 +393,119 @@ const special = {
   ListSQLiteTables: () => Promise.resolve(fx.sqliteTables),
   ReadSQLiteRows: () => Promise.resolve(fx.sqlitePage),
 
+  // ---- 磁盘清理 ----
+  // 扫描、删除都记下最后一次的入参:删除类的用例全靠它断言"发出去的到底是什么"
+  DiskPlaces: () =>
+    Promise.resolve({
+      home: 'C:\\Users\\demo',
+      volumes: [
+        { path: 'C:\\', label: '', total: 256e9, free: 12e9, system: true, removable: false },
+        { path: 'D:\\', label: '数据', total: 1e12, free: 400e9, system: false, removable: false },
+      ],
+    }),
+  ScanCacheRules: () => {
+    last.cacheScans = (last.cacheScans || 0) + 1
+    const item = (o) => ({
+      group: '系统', desc: '说明', paths: ['C:\\Users\\demo\\AppData\\Local\\Temp'], size: 0, files: 0,
+      found: true, admin: false, needAdmin: false, running: [], default: false, recycleBin: false, ...o,
+    })
+    return Promise.resolve({
+      supported: true,
+      elevated: false,
+      cancelled: false,
+      elapsedMs: 120,
+      items: [
+        item({ id: 'sys-user-temp', name: '用户临时文件', size: 1.2e9, files: 3400, default: true }),
+        // 要管理员、现在不是:看得到多大,勾不上
+        item({ id: 'sys-win-temp', name: '系统临时文件', size: 8e8, files: 900, admin: true, needAdmin: true, default: true }),
+        item({ id: 'sys-recycle-bin', name: '回收站', size: 2e9, files: 12, recycleBin: true, paths: [] }),
+        item({ id: 'browser-chrome', group: '浏览器', name: 'Chrome 缓存', size: 9e8, files: 5000, running: ['chrome.exe'] }),
+        item({ id: 'browser-brave', group: '浏览器', name: 'Brave 缓存', found: false, paths: [] }),
+        // 有这个程序,但没有可清的东西
+        item({ id: 'dev-npm', group: '开发工具', name: 'npm 缓存' }),
+      ],
+    })
+  },
+  CleanCacheRules: (_job, ids) => {
+    last.cleanIds = ids
+    return Promise.resolve({
+      freed: 3.1e9,
+      deleted: 8000,
+      cancelled: false,
+      elapsedMs: 900,
+      items: (ids || []).map((id) => ({
+        id, name: id, freed: 1e9, deleted: 2000, inUse: id === 'browser-chrome' ? 37 : 0, denied: 0, recent: 0,
+      })),
+    })
+  },
+  ScanLargeFiles: (opt) => {
+    last.largeOpts = opt
+    const f = (path, size, o) => ({
+      path, name: path.split('\\').pop(), dir: path.slice(0, path.lastIndexOf('\\')),
+      ext: path.split('.').pop(), size, modTime: 1750000000, blocked: false, ...o,
+    })
+    return Promise.resolve({
+      matched: 4, matchedBytes: 0, scanned: 123456, scannedBytes: 2e11,
+      skippedLinks: 3, cancelled: false, elapsedMs: 4200,
+      // 已经是管理员,进不去的全在系统目录里:这时候再劝人"以管理员身份运行"就是瞎指挥
+      denied: {
+        count: 2, protected: 2, elevated: true,
+        dirs: ['C:\\Windows\\CSC', 'C:\\Windows\\System32\\LogFiles\\WMI\\RtBackup'],
+      },
+      files: [
+        f('C:\\pagefile.sys', 1.6e10, { blocked: true, reason: '虚拟内存文件:由系统管理' }),
+        f('C:\\Users\\demo\\vm\\ubuntu.vhdx', 6e10, { warn: '虚拟机 / WSL / Docker 的磁盘镜像:删掉等于把里面的系统和数据一起删了' }),
+        f('C:\\Users\\demo\\Videos\\movie.mkv', 4e9),
+        f('C:\\Users\\demo\\Downloads\\old.iso', 5e9, { modTime: 1600000000 }),
+      ],
+    })
+  },
+  DeleteDiskFiles: (req) => {
+    last.deleteReq = req
+    const items = req.files.map((f) =>
+      f.path.endsWith('.vhdx') ? { path: f.path, ok: false, reason: '文件正被别的程序占用' } : { path: f.path, ok: true },
+    )
+    return Promise.resolve({
+      items,
+      deleted: items.filter((i) => i.ok).length,
+      failed: items.filter((i) => !i.ok).length,
+      bytes: 4e9,
+      recycled: !req.permanent,
+      cancelled: false,
+    })
+  },
+  ScanDuplicateFiles: (opt) => {
+    last.dupOpts = opt
+    const file = (path, modTime) => ({
+      path, name: path.split('\\').pop(), dir: path.slice(0, path.lastIndexOf('\\')), modTime, blocked: false,
+    })
+    return Promise.resolve({
+      totalGroups: 2, wasted: 6.05e8, scanned: 9000, scannedBytes: 5e10, hashedBytes: 2e9,
+      hardlinks: 1, skippedLinks: 0, unreadable: 0, cancelled: false, elapsedMs: 3000,
+      // 不是管理员,而且有一个进不去的不在系统目录里:那几处真的漏扫了
+      denied: { count: 1, protected: 0, elevated: false, dirs: ['C:\\Users\\demo\\AppData\\Local\\Packages\\demo\\AC'] },
+      groups: [
+        {
+          id: 'a'.repeat(64), size: 3e8, wasted: 6e8,
+          files: [
+            file('C:\\Users\\demo\\Desktop\\trip (1).mp4', 1700000300),
+            file('C:\\Users\\demo\\Downloads\\trip.mp4', 1700000200),
+            file('C:\\Users\\demo\\Videos\\trip.mp4', 1700000000),
+          ],
+        },
+        {
+          id: 'b'.repeat(64), size: 5e6, wasted: 5e6,
+          files: [file('D:\\资料\\a.pdf', 1600000000), file('D:\\资料\\备份\\a.pdf', 1600000100)],
+        },
+      ],
+    })
+  },
+  DeleteDuplicateFiles: (req) => {
+    last.dupReq = req
+    const items = req.groups.flatMap((g) => g.delete.map((p) => ({ path: p, ok: true })))
+    return Promise.resolve({ items, deleted: items.length, failed: 0, bytes: 6.05e8, recycled: !req.permanent, cancelled: false })
+  },
+
   // ---- 运行时事件 ----
   EventsOn: on,
   EventsOnMultiple: (name, cb) => on(name, cb),

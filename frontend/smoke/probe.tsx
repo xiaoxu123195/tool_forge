@@ -31,6 +31,7 @@ import SQLiteSearch from '../src/tools/sqlite-search/index'
 import ClipboardTool from '../src/tools/clipboard/index'
 import MCPWorkbench from '../src/tools/mcp-workbench/index'
 import { useWorkbenchLayout, WB_DEFAULT, WB_MIN } from '../src/stores/mcp-workbench'
+import DiskClean from '../src/tools/disk-clean/index'
 import { ConfirmProvider } from '../src/components/ui/confirm'
 import { LocalAPISection } from '../src/profile/sections/LocalAPI'
 import { useForensicStore } from '../src/stores/forensic'
@@ -213,6 +214,31 @@ const drag = async (sep: HTMLElement, from: number, to: number, axis: 'x' | 'y' 
     window.dispatchEvent(new window.MouseEvent('mouseup', { bubbles: true }))
   })
 }
+
+/**
+ * 点确认框里的按钮。
+ *
+ * 确认框挂在 body 末尾,而页面上常有同名的按钮(底栏的「移到回收站」点开确认框,
+ * 确认框里的确认按钮还叫「移到回收站」)。按文字全局找会点回底栏那个
+ */
+const confirmIn = async (label: string) => {
+  const overlays = Array.from(document.querySelectorAll('div.fixed.inset-0')) as HTMLElement[]
+  const box = overlays[overlays.length - 1]
+  const b = box
+    ? (Array.from(box.querySelectorAll('button')) as HTMLElement[]).find((x) => (x.textContent || '').trim() === label)
+    : undefined
+  if (!b) throw new Error('确认框里找不到按钮「' + label + '」')
+  await act(async () => {
+    b.click()
+  })
+  await act(async () => {
+    await sleep(80)
+  })
+}
+
+/** 按 data-* 属性的值找元素。值里有反斜杠的路径,写进 CSS 选择器要转义得眼花 */
+const byData = (attr: string, value: string) =>
+  (Array.from(document.querySelectorAll(`[${attr}]`)) as HTMLElement[]).find((e) => e.getAttribute(attr) === value)
 
 /** 点一个必须存在的按钮;找不到就是回归 —— 静悄悄跳过等于这条用例白测 */
 const mustClick = async (label: string) => {
@@ -1170,6 +1196,159 @@ async function main() {
     const saved = __last.savedPack as { name: string; ops: unknown[] } | undefined
     if (!saved || saved.ops.length !== 2) throw new Error('保存的接口包不对: ' + JSON.stringify(saved))
     if (!txt().includes('2 个')) throw new Error('保存后列表里没显示这个包')
+  })
+
+  // 磁盘清理 · 缓存。删除类的用例只认一件事:真正发到后端的是什么 ——
+  // 界面上勾的、确认框里说的、请求里带的,三者必须对得上
+  delete __last.cleanIds
+  delete __last.cacheScans
+  await mount('磁盘清理 · 缓存', <DiskClean />, async () => {
+    const txt = () => document.body.textContent || ''
+    if (!__last.cacheScans) throw new Error('打开缓存页没有自动统计')
+    if (!txt().includes('用户临时文件')) throw new Error('没列出缓存规则')
+    if (txt().includes('Brave 缓存')) throw new Error('本机没有的规则不该列出来')
+    if (!txt().includes('另有 1 项')) throw new Error('隐藏了几项没说')
+    if (!txt().includes('chrome.exe 正在运行')) throw new Error('程序开着没提示')
+    if (!txt().includes('以管理员身份运行')) throw new Error('不是管理员时没说怎么办')
+
+    const boxOf = (name: string) =>
+      (Array.from(document.querySelectorAll('label')) as HTMLElement[])
+        .find((l) => (l.textContent || '').includes(name))
+        ?.querySelector('input[type=checkbox]') as HTMLInputElement | undefined
+    if (!boxOf('用户临时文件')?.checked) throw new Error('系统那几项应该默认勾上')
+    if (!boxOf('系统临时文件')?.disabled) throw new Error('要管理员的那项现在不该能勾')
+    if (!boxOf('npm 缓存')?.disabled) throw new Error('没东西可清的那项不该能勾')
+
+    await check('系统临时文件') // 点了也不该勾上
+    await check('回收站')
+    await check('Chrome 缓存')
+    await mustClick('清理已选')
+    if (!txt().includes('不进回收站')) throw new Error('确认框没说缓存是直接删的')
+    if (!txt().includes('chrome.exe')) throw new Error('确认框没提开着的程序')
+    if (!txt().includes('回收站会被清空')) throw new Error('勾了回收站,确认框没单独提醒')
+    await confirmIn('清理')
+
+    const ids = ((__last.cleanIds as string[] | undefined) ?? []).slice().sort()
+    if (ids.join(',') !== 'browser-chrome,sys-recycle-bin,sys-user-temp') {
+      throw new Error('发出去的清理项不对: ' + ids.join(','))
+    }
+    if (!txt().includes('清掉了')) throw new Error('清完没给结果')
+    if (!txt().includes('正被占用')) throw new Error('被占用跳过的没说')
+    if ((__last.cacheScans as number) < 2) throw new Error('清完没重新统计,列表上的数字对不上')
+  })
+
+  // 磁盘清理 · 大文件:系统文件勾不上、虚拟机磁盘要在确认框里点名、默认进回收站
+  delete __last.largeOpts
+  delete __last.deleteReq
+  await mount('磁盘清理 · 大文件', <DiskClean />, async () => {
+    const txt = () => document.body.textContent || ''
+    await mustClick('大文件')
+    await mustClick('开始扫描')
+    const opts = __last.largeOpts as { roots: string[]; minSize: number } | undefined
+    if (!opts || opts.roots.join() !== 'C:\\') throw new Error('默认该扫系统盘: ' + JSON.stringify(opts))
+    // 已经是管理员了:不能再劝人「以管理员身份运行」,要说清楚进不去的是什么地方
+    const pane = () => document.querySelector('[data-tab="large"]')?.textContent || ''
+    if (!pane().includes('连管理员身份也进不去')) throw new Error('管理员身份下进不去的目录没说对')
+    if (!pane().includes('本来也删不了')) throw new Error('进不去的都在系统目录里,却没说不影响结果')
+    if (pane().includes('以管理员身份运行工具箱')) throw new Error('已经是管理员了还劝人以管理员身份运行')
+    if (!pane().includes('C:\\Windows\\CSC')) throw new Error('进不去的是哪些目录没列出来')
+    if (!txt().includes('网盘同步')) throw new Error('跳过的网盘文件没说')
+
+    const row = (p: string) => byData('data-path', p)?.querySelector('input[type=checkbox]') as HTMLInputElement | undefined
+    const page = row('C:\\pagefile.sys')
+    if (!page?.disabled) throw new Error('pagefile.sys 不该能勾')
+    if (!txt().includes('不能删：虚拟内存文件')) throw new Error('勾不上的没说为什么')
+
+    // 全选不带上虚拟机磁盘这种带提醒的:那类要一个个看清楚了单独勾
+    const all = document.querySelector('input[title^="全选当前列表"]') as HTMLInputElement | null
+    if (!all) throw new Error('没有全选')
+    await act(async () => {
+      all.click()
+    })
+    if (row('C:\\Users\\demo\\vm\\ubuntu.vhdx')?.checked) throw new Error('全选把虚拟机磁盘也勾上了')
+    if (!row('C:\\Users\\demo\\Downloads\\old.iso')?.checked) throw new Error('全选没勾上普通文件')
+    await act(async () => {
+      all.click()
+    })
+    if (row('C:\\Users\\demo\\Downloads\\old.iso')?.checked) throw new Error('再点一次全选没有全部取消')
+
+    for (const p of ['C:\\Users\\demo\\vm\\ubuntu.vhdx', 'C:\\Users\\demo\\Videos\\movie.mkv']) {
+      const box = row(p)
+      if (!box) throw new Error('找不到这一行: ' + p)
+      await act(async () => {
+        box.click()
+      })
+    }
+    // 永久删除是个看得见的开关,按钮上的字要跟着变
+    await check('永久删除（不进回收站）')
+    if (!btn('永久删除')) throw new Error('勾了永久删除,按钮没跟着变')
+    await check('永久删除（不进回收站）')
+
+    await mustClick('移到回收站')
+    if (!txt().includes('磁盘镜像')) throw new Error('删虚拟机磁盘之前没点名提醒')
+    if (!txt().includes('清空回收站之后')) throw new Error('没说进回收站不等于腾出了空间')
+    await confirmIn('移到回收站')
+
+    const req = __last.deleteReq as { permanent: boolean; files: { path: string; size: number; modTime: number }[] } | undefined
+    if (!req || req.permanent) throw new Error('默认应该进回收站: ' + JSON.stringify(req))
+    if (req.files.length !== 2 || req.files.some((f) => !f.size || !f.modTime)) {
+      throw new Error('删除请求要带着扫描时的大小和时间,后端拿它核对文件变没变: ' + JSON.stringify(req.files))
+    }
+    if (byData('data-path', 'C:\\Users\\demo\\Videos\\movie.mkv')) throw new Error('删掉的还留在列表里')
+    if (!txt().includes('没删：文件正被别的程序占用')) throw new Error('没删成的没在那一行说原因')
+  })
+
+  // 磁盘清理 · 重复文件:每组至少留一份 —— 前端勾不上,发出去的请求里也必须有
+  delete __last.dupOpts
+  delete __last.dupReq
+  await mount('磁盘清理 · 重复文件', <DiskClean />, async () => {
+    const txt = () => document.body.textContent || ''
+    await mustClick('重复文件')
+    await mustClick('开始查找')
+    const opts = __last.dupOpts as { roots: string[]; skipDevDirs: boolean } | undefined
+    if (!opts || opts.roots.join() !== 'C:\\Users\\demo' || !opts.skipDevDirs) {
+      throw new Error('默认该扫个人目录并跳过开发目录: ' + JSON.stringify(opts))
+    }
+    if (!txt().includes('硬链接')) throw new Error('硬链接不算重复,没说')
+    // 不是管理员、而且有进不去的不在系统目录里:这才该劝人提权
+    const pane = () => document.querySelector('[data-tab="dup"]')?.textContent || ''
+    if (!pane().includes('不在系统目录里')) throw new Error('真漏扫的目录没单独说')
+    if (!pane().includes('以管理员身份运行工具箱能看到')) throw new Error('不是管理员时没说怎么补全')
+
+    const boxes = (id: string) =>
+      Array.from(document.querySelectorAll(`[data-group="${id}"] input[type=checkbox]`)) as HTMLInputElement[]
+    const ga = 'a'.repeat(64)
+    const gb = 'b'.repeat(64)
+    await mustClick('每组只留一份')
+    if (boxes(ga).filter((b) => b.checked).length !== 2) throw new Error('三份里应该勾两份')
+    // 留的是最早的那份:原件一般最早
+    if (boxes(ga)[2].checked) throw new Error('该留修改时间最早的那份(Videos 下的)')
+
+    // 再勾最后一份没勾的:勾不上,并说明为什么
+    const lastKept = boxes(gb).find((b) => !b.checked)!
+    await act(async () => {
+      lastKept.click()
+    })
+    await act(async () => {
+      await sleep(30)
+    })
+    if (boxes(gb).every((b) => b.checked)) throw new Error('一组全勾上了 —— 这份内容会彻底没了')
+    if (!txt().includes('每组至少要留一份')) throw new Error('勾不上没说为什么')
+
+    await mustClick('移到回收站')
+    if (!txt().includes('逐个重新核对')) throw new Error('确认框没说删之前会核对内容')
+    await confirmIn('移到回收站')
+    const req = __last.dupReq as { permanent: boolean; groups: { id: string; keep: string[]; delete: string[] }[] } | undefined
+    if (!req || req.permanent || req.groups.length !== 2) throw new Error('删除请求不对: ' + JSON.stringify(req))
+    for (const g of req.groups) {
+      if (g.keep.length < 1) throw new Error('有一组一份都没留: ' + g.id)
+    }
+    const a = req.groups.find((g) => g.id === ga)!
+    if (a.keep.join() !== 'C:\\Users\\demo\\Videos\\trip.mp4' || a.delete.length !== 2) {
+      throw new Error('第一组留错了: ' + JSON.stringify(a))
+    }
+    if (!txt().includes('移到了回收站')) throw new Error('删完没给结果')
+    if (byData('data-group', ga)) throw new Error('只剩一份的组还挂在列表里')
   })
 
   // SM2 加解密与签名验签往返。

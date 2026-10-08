@@ -28,6 +28,7 @@ import (
 	"tool_forge/backend/tools/clipboard"
 	"tool_forge/backend/tools/codexinsight"
 	"tool_forge/backend/tools/devicefs"
+	"tool_forge/backend/tools/diskclean"
 	"tool_forge/backend/tools/envscan"
 	"tool_forge/backend/tools/filehash"
 	"tool_forge/backend/tools/forensic"
@@ -78,6 +79,7 @@ type App struct {
 	// mcpWB 工作台自己的一套连接,和上面那批给 AI 用的常驻连接分开:
 	// 工作台上试一个服务器不该影响正在对话的那条
 	mcpWB *mcp.Workbench
+	disk  *diskclean.Service
 
 	// windowShown:启动时窗口 StartHidden;首帧后由前端 ShowWindow 显示,后端 5s 兜底显示。
 	// 两者用这个原子标记去重,保证只有一方真正执行,避免重复显示/抢焦点。
@@ -185,6 +187,7 @@ func NewApp() *App {
 		mcp:       mcpSvc,
 		mcpWB:     mcp.NewWorkbench(),
 		apiTools:  apiTools,
+		disk:      diskclean.New(),
 	}
 }
 
@@ -230,6 +233,10 @@ func (a *App) startup(ctx context.Context) {
 	// 文件哈希:持有 wails ctx 用于推送进度事件
 	if a.filehash != nil {
 		a.filehash.SetContext(ctx)
+	}
+	// 磁盘清理:同上;应用退出时这个 ctx 被取消,进行中的扫描跟着停
+	if a.disk != nil {
+		a.disk.SetContext(ctx)
 	}
 	// MCP:后台预热已启用的服务器。不阻塞启动,也不阻塞第一条聊天消息
 	if a.mcp != nil {
@@ -956,6 +963,81 @@ func (a *App) InspectFile(path string) (*filehash.FileInfo, error) {
 // PickHashFiles 弹多选文件对话框,返回所选文件绝对路径
 func (a *App) PickHashFiles() ([]string, error) {
 	return system.PickFiles(a.ctx, "选择要计算哈希的文件")
+}
+
+// ================ 磁盘清理 ================
+//
+// 没有挂到本地 API / MCP:这里的每个动作都可能删文件,
+// 删哪些、什么时候删,该是人在界面上看过、确认过的,不该由模型在一轮对话里决定。
+//
+// 扫描和删除都是阻塞调用,直到做完才返回;jobID 由前端生成,
+// 调用之前先按它订阅 diskclean:progress:<jobID>,中途用 CancelDiskJob 取消
+
+var errDiskNotReady = errors.New("磁盘清理服务未初始化")
+
+// DiskPlaces 可以扫描的地方:本机的盘,加上个人目录
+func (a *App) DiskPlaces() *diskclean.Places {
+	return diskclean.GetPlaces()
+}
+
+// ScanLargeFiles 找出最大的那些文件
+func (a *App) ScanLargeFiles(opt diskclean.LargeOptions) (*diskclean.LargeResult, error) {
+	if a.disk == nil {
+		return nil, errDiskNotReady
+	}
+	return a.disk.ScanLarge(opt)
+}
+
+// ScanDuplicateFiles 找内容完全一样的文件
+func (a *App) ScanDuplicateFiles(opt diskclean.DupOptions) (*diskclean.DupResult, error) {
+	if a.disk == nil {
+		return nil, errDiskNotReady
+	}
+	return a.disk.ScanDuplicates(opt)
+}
+
+// ScanCacheRules 看看每条缓存规则在这台机器上有多少可清
+func (a *App) ScanCacheRules(jobID string) (*diskclean.CacheScanResult, error) {
+	if a.disk == nil {
+		return nil, errDiskNotReady
+	}
+	return a.disk.ScanCache(jobID)
+}
+
+// CleanCacheRules 按选中的规则清缓存(直接删,不进回收站)
+func (a *App) CleanCacheRules(jobID string, ids []string) (*diskclean.CacheCleanResult, error) {
+	if a.disk == nil {
+		return nil, errDiskNotReady
+	}
+	return a.disk.CleanCache(jobID, ids)
+}
+
+// DeleteDiskFiles 删大文件页挑中的文件(默认进回收站)
+func (a *App) DeleteDiskFiles(req diskclean.DeleteRequest) (*diskclean.DeleteResult, error) {
+	if a.disk == nil {
+		return nil, errDiskNotReady
+	}
+	return a.disk.DeleteFiles(req)
+}
+
+// DeleteDuplicateFiles 删重复文件:逐组核对留下的那份还在、内容没变,再删其余的
+func (a *App) DeleteDuplicateFiles(req diskclean.DupDeleteRequest) (*diskclean.DeleteResult, error) {
+	if a.disk == nil {
+		return nil, errDiskNotReady
+	}
+	return a.disk.DeleteDuplicates(req)
+}
+
+// CancelDiskJob 取消进行中的扫描或删除,已经做完的部分照常交回
+func (a *App) CancelDiskJob(jobID string) {
+	if a.disk != nil {
+		a.disk.Cancel(jobID)
+	}
+}
+
+// RevealInExplorer 打开文件所在的文件夹并选中它
+func (a *App) RevealInExplorer(path string) error {
+	return system.RevealInExplorer(path)
 }
 
 // SaveImageFile 把前端 canvas 导出的 base64 图片保存到用户选定路径(原生对话框)。

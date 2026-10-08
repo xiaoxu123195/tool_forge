@@ -133,6 +133,8 @@ import AIConfig from './ai-config'
 import { meta as aiConfigMeta } from './ai-config/meta'
 import MCPWorkbench from './mcp-workbench'
 import { meta as mcpWorkbenchMeta } from './mcp-workbench/meta'
+import DiskClean from './disk-clean'
+import { meta as diskCleanMeta } from './disk-clean/meta'
 
 export interface ToolEntry {
   meta: ToolMeta
@@ -185,6 +187,7 @@ export const tools: ToolEntry[] = [
   { meta: llmProxyMeta, Component: LlmProxy },
   { meta: aiConfigMeta, Component: AIConfig },
   { meta: mcpWorkbenchMeta, Component: MCPWorkbench },
+  { meta: diskCleanMeta, Component: DiskClean },
 ]
 
 export const toolRegistry: ToolMeta[] = tools.map((t) => t.meta)
