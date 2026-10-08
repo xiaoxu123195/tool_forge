@@ -18,7 +18,9 @@ export function ModeToggle<T extends string>({
           key={opt.value}
           onClick={() => onChange(opt.value)}
           className={cn(
-            'h-7 rounded-sm px-3 text-xs font-medium transition-colors',
+            // 标签文字不能折行:中文在任意两个字之间都能断开,
+            // 位置一紧就会被折成「缓存清 / 理」两行
+            'h-7 whitespace-nowrap rounded-sm px-3 text-xs font-medium transition-colors',
             value === opt.value
               ? 'bg-primary text-primary-foreground'
               : 'text-muted-foreground hover:text-foreground'

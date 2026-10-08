@@ -29,14 +29,17 @@ export function ToolShell({
 }: ToolShellProps) {
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-card px-5">
+      <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border bg-card px-5">
         <div className="min-w-0">
           <h1 className="truncate text-base font-semibold">{title}</h1>
           {description && (
-            <p className="truncate text-xs text-muted-foreground">{description}</p>
+            <p className="truncate text-xs text-muted-foreground" title={description}>
+              {description}
+            </p>
           )}
         </div>
-        <div className="flex items-center gap-1.5">
+        {/* 右边的按钮不参与挤压:位置不够时让左边的说明截断,而不是把按钮压窄、把字折成两行 */}
+        <div className="flex shrink-0 items-center gap-1.5">
           {actions}
           {onLoadExample && (
             <Button variant="ghost" size="sm" onClick={onLoadExample}>
