@@ -44,6 +44,8 @@ type guardSpec struct {
 	noWipe []string
 	// noWipeParents 这些目录的直接子目录都不能被整个清空(C:\Users 下面每个人的家)
 	noWipeParents []string
+	// appDataName 个人目录下放程序数据的那个目录叫什么:Windows 上是 AppData,macOS 上是 Library
+	appDataName string
 }
 
 // Guard 判断一个路径能不能删。
@@ -58,6 +60,7 @@ type Guard struct {
 	baseNames     map[string]string
 	noWipe        map[string]bool
 	noWipeParents map[string]bool
+	appDataName   string
 }
 
 func newGuard(spec guardSpec) *Guard {
@@ -68,6 +71,7 @@ func newGuard(spec guardSpec) *Guard {
 		baseNames:     map[string]string{},
 		noWipe:        map[string]bool{},
 		noWipeParents: map[string]bool{},
+		appDataName:   strings.ToLower(spec.appDataName),
 	}
 	for _, t := range spec.trees {
 		if t.root == "" {
@@ -141,6 +145,51 @@ func (g *Guard) Check(path string) Verdict {
 	return Verdict{Warn: warnFor(p)}
 }
 
+// programDir 放在文档、个人目录里,但归程序管的目录
+type programDir struct {
+	owner string
+	// sync 网盘的同步目录:在这里删,云端那份也跟着删
+	sync bool
+}
+
+// programDirs 按目录名认。两种后果不一样,提醒也分开说:
+//   - 聊天软件的数据目录:文件被聊天记录引用着,删了点开就是"文件已过期或已被清理"
+//   - 网盘的同步目录:删了会同步到云端,网盘里的那份也没了
+var programDirs = map[string]programDir{
+	"wechat files":    {"微信", false},
+	"xwechat_files":   {"微信", false},
+	"tencent files":   {"QQ", false},
+	"wxwork":          {"企业微信", false},
+	"wps cloud files": {"WPS 云文档", true},
+	"wpsdrive":        {"WPS 云盘", true},
+	"onedrive":        {"OneDrive", true},
+	"dropbox":         {"Dropbox", true},
+	"iclouddrive":     {"iCloud", true},
+	"google drive":    {"Google 云端硬盘", true},
+}
+
+// programDirOf 一个目录名是不是程序的数据目录。OneDrive 的企业版叫「OneDrive - 公司名」
+func programDirOf(name string) (programDir, bool) {
+	name = strings.ToLower(name)
+	if d, ok := programDirs[name]; ok {
+		return d, true
+	}
+	if strings.HasPrefix(name, "onedrive - ") {
+		return programDirs["onedrive"], true
+	}
+	return programDir{}, false
+}
+
+// programOwner p 在不在某个程序的数据目录里
+func programOwner(p string) (programDir, bool) {
+	for _, part := range strings.Split(filepath.Clean(p), string(filepath.Separator)) {
+		if d, ok := programDirOf(part); ok {
+			return d, true
+		}
+	}
+	return programDir{}, false
+}
+
 // CheckContents 能不能清掉 dir 里面的东西(dir 本身留着)。缓存规则走这条
 func (g *Guard) CheckContents(dir string) Verdict {
 	if dir == "" || !filepath.IsAbs(dir) {
@@ -156,6 +205,26 @@ func (g *Guard) CheckContents(dir string) Verdict {
 		return blocked("目录层级太浅,不像是缓存目录")
 	}
 	return g.Check(filepath.Join(p, "x"))
+}
+
+// Structural 个人目录本身,以及个人目录下面直接那一层(桌面、文档、图片、联系人……)。
+// 这些是系统和程序认定该在的位置,空着也不该删 —— 删了有的程序会出错,有的系统会再建回来
+func (g *Guard) Structural(dir string) bool {
+	p := norm(dir)
+	if g.noWipe[p] {
+		return true
+	}
+	parent := norm(filepath.Dir(p))
+	return g.noWipeParents[parent] || g.noWipeParents[norm(filepath.Dir(parent))]
+}
+
+// IsAppData 个人目录下放程序数据的那个目录(Windows 的 AppData、macOS 的 Library)。
+// 里面的空目录是程序自己建的,删了腾不出空间,个别程序找不到还会出错
+func (g *Guard) IsAppData(dir string) bool {
+	if g.appDataName == "" || strings.ToLower(filepath.Base(dir)) != g.appDataName {
+		return false
+	}
+	return g.noWipeParents[norm(filepath.Dir(filepath.Dir(dir)))]
 }
 
 // CheckFinal 和 Check 一样,另外把路径解到底(链接、目录联接、短文件名)再判一次,
@@ -204,7 +273,18 @@ var warnExt = map[string]string{
 	".kdbx":  "KeePass 密码库,删了里面的密码就没了",
 }
 
-func warnFor(p string) string { return warnExt[strings.ToLower(filepath.Ext(p))] }
+func warnFor(p string) string {
+	if w := warnExt[strings.ToLower(filepath.Ext(p))]; w != "" {
+		return w
+	}
+	if d, ok := programOwner(p); ok {
+		if d.sync {
+			return "这是" + d.owner + "的同步目录:在这里删,云端的那份也会跟着删掉"
+		}
+		return "这是" + d.owner + "自己的数据目录:删了以后,聊天记录里用到它的图片和文件会打不开"
+	}
+	return ""
+}
 
 // appDirs 工具箱自己的数据目录和程序所在目录:删了工具箱自己就坏了
 func appDirs() []treeSpec {

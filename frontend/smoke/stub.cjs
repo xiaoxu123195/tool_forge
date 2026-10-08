@@ -423,8 +423,67 @@ const special = {
         item({ id: 'browser-brave', group: '浏览器', name: 'Brave 缓存', found: false, paths: [] }),
         // 有这个程序,但没有可清的东西
         item({ id: 'dev-npm', group: '开发工具', name: 'npm 缓存' }),
+        // 用户自己加的
+        item({ id: 'custom:abc', group: '自定义', name: '模拟器缓存', size: 5e8, files: 20, custom: true }),
       ],
     })
+  },
+  SaveCustomCacheRule: (r) => {
+    last.customSaved = r
+    return Promise.resolve({ ...r, id: 'new1' })
+  },
+  DeleteCustomCacheRule: (id) => {
+    last.customDeleted = id
+    return Promise.resolve()
+  },
+  // 按目录看:每层只回这一层,记下点过哪些层
+  DiskUsageChildren: (_id, dir) => {
+    last.usageDirs = [...(last.usageDirs || []), dir]
+    const e = (name, path, size, o) => ({ name, path, size, files: 100, isDir: true, partial: false, ...o })
+    const levels = {
+      '': [e('C:\\', 'C:\\', 2e11)],
+      'C:\\': [
+        e('Users', 'C:\\Users', 1e11),
+        e('Windows', 'C:\\Windows', 3e10, { note: 'Windows 系统目录' }),
+        e('直接放在这里的文件', 'C:\\', 2e9, { isDir: false, files: 3 }),
+      ],
+      'C:\\Users': [e('demo', 'C:\\Users\\demo', 9e10, { partial: true })],
+    }
+    const entries = levels[dir] || []
+    return Promise.resolve({
+      path: dir, size: entries.reduce((n, x) => n + x.size, 0), files: 1000, partial: false,
+      entries, more: 0, moreSize: 0,
+    })
+  },
+  ScanEmptyFolders: (opt) => {
+    last.emptyOpts = opt
+    const d = (path, nested) => ({ path, name: path.split('\\').pop(), parent: '', modTime: 1700000000, nested })
+    return Promise.resolve({
+      dirs: [d('C:\\Users\\demo\\Documents\\HiSuite', 2), d('C:\\Users\\demo\\Documents\\Sunlogin Files', 0)],
+      recent: 3, scanned: 525, truncated: false, cancelled: false, elapsedMs: 40,
+      denied: { count: 0, protected: 0, dirs: [], elevated: false },
+    })
+  },
+  DeleteEmptyFolders: (req) => {
+    last.emptyReq = req
+    const items = req.paths.map((p) => ({ path: p, ok: true }))
+    return Promise.resolve({ items, deleted: items.length, failed: 0, bytes: 0, recycled: false, cancelled: false })
+  },
+  ScanBrokenShortcuts: () => {
+    last.shortcutScans = (last.shortcutScans || 0) + 1
+    return Promise.resolve({
+      supported: true, locations: ['开始菜单:C:\\Users\\demo\\Start Menu'], scanned: 296, unknown: 9,
+      cancelled: false, elapsedMs: 300,
+      shortcuts: [{
+        path: 'C:\\Users\\demo\\Start Menu\\Programs\\Old Tool.lnk', name: 'Old Tool', location: '开始菜单',
+        target: 'D:\\tools\\old\\tool.exe', size: 1200, modTime: 1700000000, blocked: false,
+      }],
+    })
+  },
+  DeleteBrokenShortcuts: (req) => {
+    last.shortcutReq = req
+    const items = req.files.map((f) => ({ path: f.path, ok: true }))
+    return Promise.resolve({ items, deleted: items.length, failed: 0, bytes: 1200, recycled: !req.permanent, cancelled: false })
   },
   CleanCacheRules: (_job, ids) => {
     last.cleanIds = ids
@@ -445,7 +504,7 @@ const special = {
       ext: path.split('.').pop(), size, modTime: 1750000000, blocked: false, ...o,
     })
     return Promise.resolve({
-      matched: 4, matchedBytes: 0, scanned: 123456, scannedBytes: 2e11,
+      matched: 4, matchedBytes: 0, scanned: 123456, scannedBytes: 2e11, usageId: 'u1',
       skippedLinks: 3, cancelled: false, elapsedMs: 4200,
       // 已经是管理员,进不去的全在系统目录里:这时候再劝人"以管理员身份运行"就是瞎指挥
       denied: {

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // entryKind 一个目录项该怎么对待
@@ -62,6 +63,9 @@ type walker struct {
 	// isProtected 没权限进的目录要按它分开数:系统保护位置里的进不去无所谓
 	// (那里的东西本来也删不了),别处的进不去才是真漏掉了
 	isProtected func(path string) bool
+	// onDir 每个目录读完之后调一次,给出这一层的统计。
+	// 中途取消时没读完的目录不会调 —— 用的一方要把"没有记录"当成"不知道"
+	onDir func(dir string, st dirStat)
 
 	links           atomic.Int64 // 跳过的链接 / 网盘文件
 	denied          atomic.Int64 // 没权限进的目录
@@ -103,38 +107,60 @@ func newWalker(ctx context.Context, rep *reporter) *walker {
 	return &walker{ctx: ctx, rep: rep, sem: make(chan struct{}, n)}
 }
 
+// dirStat 一个目录这一层的情况,不含子目录里面的
+type dirStat struct {
+	mod   time.Time // 目录自己的修改时间
+	files int64     // 普通文件
+	bytes int64
+	// others 链接、联接、网盘文件、设备之类。对"空目录"来说它们也算有东西
+	others int64
+	// subdirs 进去了的子目录;skipped 没进去的(受保护的、跳过的)
+	subdirs int64
+	skipped int64
+	// incomplete 没读全(没权限或者读的时候出错),这一层到底有什么不知道
+	incomplete bool
+}
+
 func (w *walker) run(roots []string) {
 	for _, r := range roots {
-		w.dispatch(r)
+		var mod time.Time
+		if fi, err := os.Stat(r); err == nil {
+			mod = fi.ModTime()
+		}
+		w.dispatch(r, mod)
 	}
 	w.pending.Wait()
 }
 
-func (w *walker) dispatch(dir string) {
+func (w *walker) dispatch(dir string, mod time.Time) {
 	w.pending.Add(1)
 	select {
 	case w.sem <- struct{}{}:
 		go func() {
 			defer func() { <-w.sem }()
-			w.visit(dir)
+			w.visit(dir, mod)
 		}()
 	default:
 		// 没有空闲的就在当前这个 goroutine 里接着走,不排队:
 		// 排队的话一旦队列满了、所有 goroutine 又都在等着往里塞,就死锁了
-		w.visit(dir)
+		w.visit(dir, mod)
 	}
 }
 
-func (w *walker) visit(dir string) {
+func (w *walker) visit(dir string, mod time.Time) {
 	defer w.pending.Done()
 	if w.ctx.Err() != nil {
 		return
 	}
 	w.rep.setCurrent(dir)
+	st := dirStat{mod: mod}
 	// 读到一半出错时 ReadDir 也会把已经读到的交回来,照样处理
 	entries, err := os.ReadDir(dir)
-	if err != nil && errors.Is(err, fs.ErrPermission) {
-		w.noteDenied(dir)
+	if err != nil {
+		st.incomplete = true
+		if errors.Is(err, fs.ErrPermission) {
+			w.noteDenied(dir)
+		}
 	}
 	for _, e := range entries {
 		if w.ctx.Err() != nil {
@@ -148,20 +174,33 @@ func (w *walker) visit(dir string) {
 		switch kindOf(fi) {
 		case kindDir:
 			if defaultSkip(p, e.Name()) || (w.skipDir != nil && w.skipDir(p, e.Name())) {
+				st.skipped++
 				continue
 			}
-			w.dispatch(p)
+			st.subdirs++
+			w.dispatch(p, fi.ModTime())
 		case kindFile:
 			w.rep.files.Add(1)
 			w.rep.bytes.Add(fi.Size())
+			st.files++
+			st.bytes += fi.Size()
 			if w.onFile != nil {
 				w.onFile(p, fi)
 			}
 		case kindLink:
 			w.links.Add(1)
+			st.others++
+		default:
+			st.others++
 		}
 	}
+	if w.onDir != nil {
+		w.onDir(dir, st)
+	}
 }
+
+// silent 不往外推进度的 reporter,给不需要进度的内部遍历用
+func silent() *reporter { return &reporter{stop: make(chan struct{})} }
 
 // defaultSkip 哪儿都不该进去的目录:回收站里是已经删掉的东西,
 // 系统卷信息是还原点,两者都进不去,进得去也不该算在"占了多少空间"里

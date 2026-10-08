@@ -36,11 +36,19 @@ func TestBuiltinRulesAreSafe(t *testing.T) {
 			t.Errorf("%q: ID 重复", r.ID)
 		}
 		seen[r.ID] = true
-		if r.RecycleBin {
+		// 交给系统接口清的(回收站、传递优化缓存):量和清必须成对,不能再带路径 ——
+		// 带了路径就会被当成普通目录去删,那正是交给系统去清想避开的
+		if r.Measure != nil || r.Clean != nil {
+			if r.Measure == nil || r.Clean == nil {
+				t.Errorf("%q: Measure 和 Clean 要成对", r.ID)
+			}
 			if len(r.Paths)+len(r.Files) > 0 {
-				t.Errorf("%q: 回收站规则不该再带路径", r.ID)
+				t.Errorf("%q: 交给系统清的规则不该再带路径", r.ID)
 			}
 			continue
+		}
+		if r.RecycleBin {
+			t.Errorf("%q: 回收站规则得走系统接口", r.ID)
 		}
 		if len(r.Paths)+len(r.Files) == 0 {
 			t.Errorf("%q: 没有路径", r.ID)

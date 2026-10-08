@@ -28,6 +28,7 @@ func unixSpec(home string) guardSpec {
 		},
 		noWipe:        []string{"/Users"},
 		noWipeParents: []string{"/Users", "/Volumes"},
+		appDataName:   "Library",
 	}
 	if home != "" {
 		j := func(p string) string { return filepath.Join(home, p) }

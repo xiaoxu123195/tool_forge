@@ -2,16 +2,23 @@
 
 package diskclean
 
-import "time"
+import (
+	"context"
+	"os"
+	"time"
+)
 
 // builtinRules Windows 上的缓存规则。
 //
 // 收录标准只有一条:删了之后程序会自己重新生成,用户除了"第一次打开慢一点"
 // 感觉不到任何区别。所以这里只有缓存、临时文件、日志和转储 ——
-// Cookie、历史记录、登录状态、会话记录这些一概不碰,那是隐私擦除,不是清理。
+// Cookie、历史记录、登录状态、聊天记录、会话这些一概不碰,那是隐私擦除,不是清理。
 //
-// 默认只勾系统那几项;开发工具的缓存删了要重新下载,浏览器开着时多半删不动,
-// 都留给用户自己勾
+// 每条路径都对着真实的目录核过里面装的是什么。核不了的(机器上没装、文档也没写清楚的)
+// 宁可不收:路径写错了只是这条不显示,可要是写对了路径、却没弄清里面是什么,删掉的就是用户的数据。
+// 比如 WPS 的 office6 下面有个 backup,里面是文档的自动备份,和缓存挨着,所以 WPS 整个不收。
+//
+// 默认只勾系统那几项;其余的删了要重新下载、或者程序开着时多半删不动,都留给用户自己勾
 func builtinRules() []CacheRule {
 	const day = 24 * time.Hour
 	return []CacheRule{
@@ -71,6 +78,13 @@ func builtinRules() []CacheRule {
 			},
 		},
 		{
+			ID: "sys-delivery-opt", Group: "系统", Name: "传递优化缓存",
+			Desc:    "Windows 更新和应用商店下载时留下的分发缓存。交给系统自己的清理命令来清,不直接删文件",
+			Admin:   true,
+			Measure: measureDeliveryOptimization,
+			Clean:   cleanDeliveryOptimization,
+		},
+		{
 			ID: "sys-wu-download", Group: "系统", Name: "Windows 更新下载缓存",
 			Desc:  "已经装好的更新留下的安装包。正在下载或安装更新时不要清",
 			Paths: []string{`%SystemRoot%\SoftwareDistribution\Download`}, Admin: true,
@@ -95,6 +109,11 @@ func builtinRules() []CacheRule {
 			ID: "sys-recycle-bin", Group: "系统", Name: "回收站",
 			Desc:       "清空所有盘的回收站。回收站是删错时的后悔药,确定不要了再清",
 			RecycleBin: true,
+			Measure: func(context.Context) (int64, int64, bool) {
+				size, n, err := recycleBinInfo()
+				return size, n, err == nil
+			},
+			Clean: func(context.Context) error { return emptyRecycleBin() },
 		},
 
 		// ---- 浏览器 ----
@@ -112,6 +131,89 @@ func builtinRules() []CacheRule {
 			Procs: []string{"firefox.exe"},
 		},
 
+		// ---- 常用软件 ----
+		electronApp("app-discord", "常用软件", "Discord", `%APPDATA%\discord`, "Discord.exe"),
+		electronApp("app-slack", "常用软件", "Slack", `%APPDATA%\Slack`, "slack.exe"),
+		electronApp("app-postman", "常用软件", "Postman", `%APPDATA%\Postman`, "Postman.exe"),
+		electronApp("app-notion", "常用软件", "Notion", `%APPDATA%\Notion`, "Notion.exe"),
+
+		// ---- 国产软件 ----
+		{
+			ID: "cn-feishu", Group: "国产软件", Name: "飞书 缓存",
+			Desc: "界面的代码缓存和显卡缓存。不碰聊天记录、文件和登录状态",
+			Paths: []string{
+				`%APPDATA%\LarkShell\CodeCache`,
+				`%APPDATA%\LarkShell\ShaderCache`,
+				`%APPDATA%\LarkShell\GrShaderCache`,
+				`%APPDATA%\LarkShell\GraphiteDawnCache`,
+			},
+			Procs: []string{"Feishu.exe"},
+		},
+		electronApp("cn-baidunetdisk", "国产软件", "百度网盘", `%APPDATA%\baidunetdisk`, "BaiduNetdisk.exe"),
+		{
+			ID: "cn-cloudmusic", Group: "国产软件", Name: "网易云音乐 缓存",
+			Desc: "边听边存的歌曲缓存和临时文件,删了再听时重新下载。自己下载的歌不在这里,不受影响",
+			Paths: []string{
+				`%LOCALAPPDATA%\NetEase\CloudMusic\Cache`,
+				`%LOCALAPPDATA%\NetEase\CloudMusic\Temp`,
+			},
+			Procs: []string{"cloudmusic.exe"},
+		},
+		{
+			ID: "cn-wemeet-logs", Group: "国产软件", Name: "腾讯会议 日志",
+			Desc:  "运行日志。不碰会议记录、聊天和账号数据",
+			Paths: []string{`%APPDATA%\Tencent\WeMeet\Global\Logs`},
+			Procs: []string{"WeMeetApp.exe"},
+		},
+
+		// ---- 影音创作 ----
+		{
+			ID: "media-adobe", Group: "影音创作", Name: "Adobe 媒体缓存",
+			Desc: "Premiere、After Effects 为了流畅预览生成的媒体缓存,删了下次打开工程会重新生成,要等一会儿",
+			Paths: []string{
+				`%APPDATA%\Adobe\Common\Media Cache Files`,
+				`%APPDATA%\Adobe\Common\Media Cache`,
+			},
+			Procs: []string{"Adobe Premiere Pro.exe", "AfterFX.exe"},
+		},
+		{
+			ID: "media-obs", Group: "影音创作", Name: "OBS 日志",
+			Desc: "OBS 的运行日志和崩溃报告",
+			Paths: []string{
+				`%APPDATA%\obs-studio\logs`,
+				`%APPDATA%\obs-studio\crashes`,
+			},
+			Procs: []string{"obs64.exe"},
+		},
+
+		// ---- 设计建模 ----
+		{
+			ID: "3d-unity", Group: "设计建模", Name: "Unity 全局缓存",
+			Desc:  "Unity 编辑器下载的包和资源商店缓存,删了用到时重新下载",
+			Paths: []string{`%LOCALAPPDATA%\Unity\cache`},
+			Procs: []string{"Unity.exe"},
+		},
+		{
+			ID: "3d-unreal", Group: "设计建模", Name: "虚幻引擎派生数据缓存",
+			Desc:  "编译好的着色器等派生数据,删了下次打开项目要重新编译,可能要很久",
+			Paths: []string{`%LOCALAPPDATA%\UnrealEngine\Common\DerivedDataCache`},
+			Procs: []string{"UnrealEditor.exe"},
+		},
+
+		// ---- 游戏平台 ----
+		{
+			ID: "game-steam", Group: "游戏平台", Name: "Steam 网页缓存",
+			Desc:  "Steam 客户端内置浏览器的缓存。不碰游戏、存档和账号",
+			Paths: []string{`%LOCALAPPDATA%\Steam\htmlcache`},
+			Procs: []string{"steam.exe"},
+		},
+		{
+			ID: "game-epic", Group: "游戏平台", Name: "Epic 网页缓存",
+			Desc:  "Epic 启动器内置浏览器的缓存。不碰游戏、存档和账号",
+			Paths: []string{`%LOCALAPPDATA%\EpicGamesLauncher\Saved\webcache*`},
+			Procs: []string{"EpicGamesLauncher.exe"},
+		},
+
 		// ---- 开发工具 ----
 		{
 			ID: "dev-npm", Group: "开发工具", Name: "npm 缓存",
@@ -119,14 +221,33 @@ func builtinRules() []CacheRule {
 			Paths: []string{`%LOCALAPPDATA%\npm-cache`},
 		},
 		{
+			ID: "dev-pnpm", Group: "开发工具", Name: "pnpm 元数据缓存",
+			Desc:  "包的元数据缓存,删了下次安装时重新拉取。不碰 pnpm 的包仓库",
+			Paths: []string{`%LOCALAPPDATA%\pnpm-cache`},
+		},
+		{
 			ID: "dev-yarn", Group: "开发工具", Name: "Yarn 缓存",
 			Desc:  "下载过的包,删了下次安装时重新下载",
 			Paths: []string{`%LOCALAPPDATA%\Yarn\Cache`},
 		},
 		{
+			ID: "dev-node-build", Group: "开发工具", Name: "Node 构建下载缓存",
+			Desc: "Electron、electron-builder、node-gyp 下载的二进制和头文件,删了下次构建时重新下载",
+			Paths: []string{
+				`%LOCALAPPDATA%\electron\Cache`,
+				`%LOCALAPPDATA%\electron-builder\Cache`,
+				`%LOCALAPPDATA%\node-gyp\Cache`,
+			},
+		},
+		{
 			ID: "dev-pip", Group: "开发工具", Name: "pip 缓存",
 			Desc:  "下载过的 Python 包和编译好的 wheel,删了下次安装时重新下载",
 			Paths: []string{`%LOCALAPPDATA%\pip\Cache`},
+		},
+		{
+			ID: "dev-uv", Group: "开发工具", Name: "uv 缓存",
+			Desc:  "uv 下载和解包过的 Python 包,删了下次安装时重新下载。不碰 uv 装的 Python 本身",
+			Paths: []string{`%LOCALAPPDATA%\uv\cache`},
 		},
 		{
 			ID: "dev-go-build", Group: "开发工具", Name: "Go 编译缓存",
@@ -165,12 +286,23 @@ func builtinRules() []CacheRule {
 			Procs: []string{"Code.exe"},
 		},
 		{
-			ID: "dev-jetbrains", Group: "开发工具", Name: "JetBrains IDE 缓存和日志",
-			Desc: "IntelliJ IDEA、GoLand、PyCharm 等的缓存和日志,删了下次打开项目要重新建索引",
+			ID: "dev-jetbrains", Group: "开发工具", Name: "JetBrains IDE 缓存、索引和日志",
+			Desc: "IntelliJ IDEA、GoLand、PyCharm 等的缓存、索引和日志,删了下次打开项目要重新建索引",
 			Paths: []string{
 				`%LOCALAPPDATA%\JetBrains\*\caches`,
+				`%LOCALAPPDATA%\JetBrains\*\index`,
 				`%LOCALAPPDATA%\JetBrains\*\log`,
 			},
+		},
+		{
+			ID: "dev-android-studio", Group: "开发工具", Name: "Android Studio 缓存、索引和日志",
+			Desc: "和 JetBrains 的一样,删了下次打开项目要重新建索引。不碰 SDK 和模拟器",
+			Paths: []string{
+				`%LOCALAPPDATA%\Google\AndroidStudio*\caches`,
+				`%LOCALAPPDATA%\Google\AndroidStudio*\index`,
+				`%LOCALAPPDATA%\Google\AndroidStudio*\log`,
+			},
+			Procs: []string{"studio64.exe"},
 		},
 	}
 }
@@ -195,4 +327,43 @@ func chromium(id, name, userData, exe string) CacheRule {
 		},
 		Procs: []string{exe},
 	}
+}
+
+// electronApp 用 Electron / Chromium 内核做的桌面程序:缓存目录都是这几个固定的名字。
+// 只清这几个 —— 登录状态、聊天记录、本地数据库都在同一层的别的目录里
+func electronApp(id, group, name, userData, exe string) CacheRule {
+	sub := func(s string) string { return userData + `\` + s }
+	return CacheRule{
+		ID: id, Group: group, Name: name + " 缓存",
+		Desc: "界面的网页缓存、代码缓存和显卡缓存。不碰登录状态、聊天记录和本地数据",
+		Paths: []string{
+			sub("Cache"),
+			sub("Code Cache"),
+			sub("GPUCache"),
+			sub("DawnCache"),
+			sub("DawnGraphiteCache"),
+			sub("DawnWebGPUCache"),
+			sub("ShaderCache"),
+			sub("GrShaderCache"),
+			sub("GraphiteDawnCache"),
+		},
+		Procs: []string{exe},
+	}
+}
+
+// deliveryOptimizationCache 传递优化服务的缓存目录
+func deliveryOptimizationCache() string {
+	root := os.Getenv("SystemRoot")
+	if root == "" {
+		return ""
+	}
+	return root + `\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache`
+}
+
+func measureDeliveryOptimization(ctx context.Context) (int64, int64, bool) {
+	dir := deliveryOptimizationCache()
+	if dir == "" {
+		return 0, 0, false
+	}
+	return measureDir(ctx, dir)
 }

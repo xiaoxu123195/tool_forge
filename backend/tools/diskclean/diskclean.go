@@ -54,14 +54,26 @@ type Service struct {
 	ctx   context.Context
 	guard *Guard
 	rules []CacheRule
+	// customPath 自定义缓存规则存在哪儿
+	customPath string
+	customMu   sync.Mutex
 
 	mu   sync.Mutex
 	jobs map[string]context.CancelFunc
+
+	// usage 最近一次大文件扫描顺带建的目录树
+	usageMu sync.Mutex
+	usage   *usageTree
 }
 
 // New 新建服务
 func New() *Service {
-	return &Service{guard: NewGuard(), rules: builtinRules(), jobs: map[string]context.CancelFunc{}}
+	return &Service{
+		guard:      NewGuard(),
+		rules:      builtinRules(),
+		customPath: defaultCustomPath(),
+		jobs:       map[string]context.CancelFunc{},
+	}
 }
 
 // SetContext 保存 Wails 上下文(推进度事件用;应用退出时它被取消,进行中的任务跟着停)

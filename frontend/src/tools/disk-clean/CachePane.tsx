@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, FolderOpen, RefreshCw, Trash2 } from 'lucide-react'
-import { CleanCacheRules, OpenInExplorer, ScanCacheRules } from '../../../wailsjs/go/main/App'
+import { ChevronDown, FolderOpen, FolderPlus, RefreshCw, Trash2, X } from 'lucide-react'
+import {
+  CleanCacheRules,
+  DeleteCustomCacheRule,
+  OpenInExplorer,
+  PickDirectory,
+  SaveCustomCacheRule,
+  ScanCacheRules,
+} from '../../../wailsjs/go/main/App'
 import type { diskclean } from '../../../wailsjs/go/models'
 import { Button } from '@/components/ui/button'
 import { useConfirm } from '@/components/ui/confirm'
@@ -49,7 +56,8 @@ export function CachePane({ active }: { active: boolean }) {
   }, [active])
 
   const items = scan?.items ?? []
-  const shown = items.filter((i) => i.found)
+  // 自己加的目录就算没了也要列出来:不然想移除这条规则都找不到地方点
+  const shown = items.filter((i) => i.found || i.custom)
   const hidden = items.length - shown.length
   const byGroup = new Map<string, Item[]>()
   for (const it of shown) byGroup.set(it.group, [...(byGroup.get(it.group) ?? []), it])
@@ -141,7 +149,7 @@ export function CachePane({ active }: { active: boolean }) {
         {err && <Notice tone="error">{err}</Notice>}
         {result && <CleanSummary r={result} onClose={() => setResult(null)} />}
         {scan && !scan.supported && (
-          <Notice>缓存清理目前只有 Windows 的规则；大文件和重复文件两页照常能用。</Notice>
+          <Notice>这个系统上还没有内置的缓存规则，可以在下面自己加目录；大文件和重复文件两页照常能用。</Notice>
         )}
         {scan && scan.supported && !scan.elevated && needAdmin && (
           <Notice tone="warn">
@@ -168,10 +176,22 @@ export function CachePane({ active }: { active: boolean }) {
                     return next
                   })
                 }
+                onRemove={
+                  it.custom
+                    ? () => {
+                        // 只是不再清它,目录本身不动,用不着确认
+                        void DeleteCustomCacheRule(it.id.replace(/^custom:/, ''))
+                          .then(doScan)
+                          .catch((e) => setErr(errText(e)))
+                      }
+                    : undefined
+                }
               />
             ))}
           </section>
         ))}
+
+        <AddCustomRule disabled={job.running} onAdded={() => void doScan()} />
 
         {hidden > 0 && (
           <p className="px-1 text-[11px] text-muted-foreground">另有 {hidden} 项这台机器上没装，没列出来。</p>
@@ -191,6 +211,7 @@ function CacheRow({
   disabled,
   onToggle,
   onExpand,
+  onRemove,
 }: {
   it: Item
   picked: boolean
@@ -198,6 +219,7 @@ function CacheRow({
   disabled: boolean
   onToggle: () => void
   onExpand: () => void
+  onRemove?: () => void
 }) {
   const can = selectable(it)
   return (
@@ -222,6 +244,9 @@ function CacheRow({
               )}
             </span>
             <span className="block text-[11px] leading-relaxed text-muted-foreground">{it.desc}</span>
+            {it.custom && !it.found && (
+              <span className="block text-[11px] text-amber-600 dark:text-amber-400">这个目录现在不在了</span>
+            )}
             {it.note && <span className="block break-all text-[11px] text-amber-600 dark:text-amber-400">{it.note}</span>}
           </span>
         </label>
@@ -229,6 +254,17 @@ function CacheRow({
           <div className="text-sm tabular-nums">{fmtBytes(it.size)}</div>
           <div className="text-[11px] text-muted-foreground">{fmtCount(it.files)} 个</div>
         </div>
+        {onRemove && (
+          <button
+            type="button"
+            onClick={onRemove}
+            disabled={disabled}
+            title="不再清这个目录（目录本身不动）"
+            className="mt-0.5 shrink-0 text-muted-foreground hover:text-destructive disabled:opacity-50"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
         {it.paths.length > 0 && (
           <button
             type="button"
@@ -259,6 +295,99 @@ function CacheRow({
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * 自己加一个当缓存清的目录:内置规则覆盖不到的(模拟器缓存、某个工具的下载目录之类)。
+ * 能不能加由后端的守卫说了算,这里只把它给的原因原样显示出来
+ */
+function AddCustomRule({ disabled, onAdded }: { disabled: boolean; onAdded: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [dir, setDir] = useState('')
+  const [name, setName] = useState('')
+  const [days, setDays] = useState(0)
+  const [err, setErr] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const reset = () => {
+    setOpen(false)
+    setDir('')
+    setName('')
+    setDays(0)
+    setErr('')
+  }
+
+  if (!open) {
+    return (
+      <Button size="sm" variant="outline" disabled={disabled} onClick={() => setOpen(true)}>
+        <FolderPlus className="h-3.5 w-3.5" />
+        添加自定义目录
+      </Button>
+    )
+  }
+
+  const pick = async () => {
+    const p = await PickDirectory('选择要当缓存清的目录', '').catch(() => '')
+    if (p) {
+      setDir(p)
+      setErr('')
+    }
+  }
+
+  const save = async () => {
+    setSaving(true)
+    setErr('')
+    try {
+      await SaveCustomCacheRule({ id: '', name: name.trim(), dir, minAgeDays: days } as diskclean.CustomRule)
+      reset()
+      onAdded()
+    } catch (e) {
+      setErr(errText(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded-md border border-dashed border-border p-3" data-form="custom-rule">
+      <div className="flex items-center gap-2">
+        <Button size="sm" variant="outline" onClick={() => void pick()}>
+          选目录
+        </Button>
+        <code className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground" title={dir}>
+          {dir || '还没选'}
+        </code>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="名字（不填就用目录名）"
+          className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+        />
+        <select
+          value={days}
+          onChange={(e) => setDays(Number(e.target.value))}
+          className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+        >
+          <option value={0}>清掉里面的全部内容</option>
+          <option value={1}>只清 1 天以前的</option>
+          <option value={7}>只清 7 天以前的</option>
+          <option value={30}>只清 30 天以前的</option>
+        </select>
+        <Button size="sm" disabled={!dir || saving} onClick={() => void save()}>
+          保存
+        </Button>
+        <Button size="sm" variant="ghost" onClick={reset}>
+          取消
+        </Button>
+      </div>
+      {err && <p className="text-xs text-destructive">{err}</p>}
+      <p className="text-[11px] text-muted-foreground">
+        系统目录、程序目录、个人目录、文档这些地方加不进来。清的时候和内置规则一样：只清目录里面的东西，目录本身留着，而且是直接删、不进回收站。
+      </p>
     </div>
   )
 }

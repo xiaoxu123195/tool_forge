@@ -46,6 +46,11 @@ func TestGuardCheck(t *testing.T) {
 		{`C:\Program Files (x86)\App\app.exe`, true, "卸载", ""},
 		{`C:\ProgramData\Vendor\db.dat`, true, "共享", ""},
 		{`C:\ProgramData\Microsoft\Windows\WER\ReportQueue\r1\Report.wer`, false, "", ""},
+		// 所有用户的开始菜单里全是快捷方式,清无效快捷方式要能动它
+		{`C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Old App.lnk`, false, "", ""},
+		{`C:\ProgramData\Microsoft\Windows\Start Menu`, true, "共享", ""},
+		// 传递优化缓存不能直接删,但要告诉人该去哪儿清
+		{`C:\Windows\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache\a\content.bin`, true, "缓存清理", ""},
 		{`C:\pagefile.sys`, true, "虚拟内存", ""},
 		{`D:\pagefile.sys`, true, "虚拟内存", ""},
 		{`C:\hiberfil.sys`, true, "powercfg", ""},
@@ -59,6 +64,13 @@ func TestGuardCheck(t *testing.T) {
 		{`C:\Users\u\Videos\movie.mkv`, false, "", ""},
 		{`D:\vm\ubuntu.vhdx`, false, "", "磁盘镜像"},
 		{`C:\Users\u\Documents\Outlook\me.pst`, false, "", "Outlook"},
+		// 微信、QQ 放在文档里的数据:能删,但删了聊天记录里的文件就打不开了
+		{`C:\Users\u\Documents\WeChat Files\wxid_x\FileStorage\File\2026-01\报告.pdf`, false, "", "微信"},
+		{`D:\Documents\xwechat_files\wxid_x\msg\video\a.mp4`, false, "", "微信"},
+		{`C:\Users\u\Documents\Tencent Files\123\FileRecv\a.zip`, false, "", "QQ"},
+		// 网盘同步目录:删了会同步到云端
+		{`C:\Users\u\Documents\WPSDrive\309\合同.docx`, false, "", "云端"},
+		{`D:\OneDrive - Contoso\报表.xlsx`, false, "", "云端"},
 		// 系统盘以外的盘上,叫这些名字的目录是用户自己的数据,不能误伤
 		{`D:\Recovery\phone.img`, false, "", ""},
 		{`D:\Boot\notes.txt`, false, "", ""},

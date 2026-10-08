@@ -4,9 +4,11 @@ import { DeleteDiskFiles, DiskPlaces, RevealInExplorer, ScanLargeFiles } from '.
 import type { diskclean } from '../../../wailsjs/go/models'
 import { Button } from '@/components/ui/button'
 import { useConfirm } from '@/components/ui/confirm'
+import { ModeToggle } from '@/components/tool/ModeToggle'
 import { cn } from '@/lib/utils'
 import { errText, fmtBytes, fmtCount, fmtDate, useDiskJob } from './lib'
 import { DeleteBar, DeleteSummary, DeniedNotice, Notice, ProgressLine, RootPicker } from './Shared'
+import { UsageView } from './UsageView'
 
 type Big = diskclean.LargeFile
 
@@ -37,6 +39,7 @@ export function LargePane({ active }: { active: boolean }) {
   const [permanent, setPermanent] = useState(false)
   const [summary, setSummary] = useState<diskclean.DeleteResult | null>(null)
   const [err, setErr] = useState('')
+  const [mode, setMode] = useState<'files' | 'dirs'>('files')
 
   // 默认扫系统盘:「C 盘满了」是最常见的来由
   const loaded = useRef(false)
@@ -196,11 +199,30 @@ export function LargePane({ active }: { active: boolean }) {
                   跳过了 {fmtCount(res.skippedLinks)} 个链接、目录联接和网盘同步的文件：前两种跟进去会走到别处，网盘文件删了会连云端一起删。
                 </Notice>
               )}
+              {/* 同一次扫描,两种看法:按文件找最大的那几个,按目录一层层找是谁占的地方 */}
+              <ModeToggle
+                value={mode}
+                onChange={setMode}
+                options={[
+                  { value: 'files', label: '按文件' },
+                  { value: 'dirs', label: '按目录' },
+                ]}
+              />
             </>
           )}
         </div>
 
-        {res && files.length > 0 && (
+        {res && mode === 'dirs' && (
+          <UsageView
+            usageId={res.usageId}
+            onShowFiles={(d) => {
+              setFilter(d)
+              setMode('files')
+            }}
+          />
+        )}
+
+        {res && mode === 'files' && files.length > 0 && (
           <>
             <div className="sticky top-0 z-10 flex items-center gap-3 border-y border-border bg-card px-4 py-1.5 text-[11px] text-muted-foreground">
               <input
@@ -253,7 +275,7 @@ export function LargePane({ active }: { active: boolean }) {
             </div>
           </>
         )}
-        {res && files.length === 0 && !res.cancelled && (
+        {res && mode === 'files' && files.length === 0 && !res.cancelled && (
           <p className="p-6 text-center text-sm text-muted-foreground">没有超过 {minLabel} 的文件</p>
         )}
       </div>

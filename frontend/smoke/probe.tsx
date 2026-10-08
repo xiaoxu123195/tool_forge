@@ -1235,6 +1235,19 @@ async function main() {
     if (!txt().includes('清掉了')) throw new Error('清完没给结果')
     if (!txt().includes('正被占用')) throw new Error('被占用跳过的没说')
     if ((__last.cacheScans as number) < 2) throw new Error('清完没重新统计,列表上的数字对不上')
+
+    // 自定义目录:能移除(只是不再清它),能新加
+    delete __last.customDeleted
+    delete __last.customSaved
+    await mustClick('不再清这个目录（目录本身不动）')
+    if (__last.customDeleted !== 'abc') throw new Error('移除自定义目录发错了: ' + String(__last.customDeleted))
+    await mustClick('添加自定义目录')
+    await mustClick('选目录')
+    await mustClick('保存')
+    const saved = __last.customSaved as { dir: string; minAgeDays: number } | undefined
+    if (!saved || saved.dir !== 'D:/导出' || saved.minAgeDays !== 0) {
+      throw new Error('新加的自定义目录发错了: ' + JSON.stringify(saved))
+    }
   })
 
   // 磁盘清理 · 大文件:系统文件勾不上、虚拟机磁盘要在确认框里点名、默认进回收站
@@ -1296,6 +1309,35 @@ async function main() {
     }
     if (byData('data-path', 'C:\\Users\\demo\\Videos\\movie.mkv')) throw new Error('删掉的还留在列表里')
     if (!txt().includes('没删：文件正被别的程序占用')) throw new Error('没删成的没在那一行说原因')
+
+    // 按目录看:同一次扫描,一层层点进去
+    delete __last.usageDirs
+    await mustClick('按目录')
+    // StrictMode 下副作用会跑两遍,取几次不要紧,要紧的是取的都是最顶层
+    const level = () => (__last.usageDirs as string[] | undefined) ?? []
+    if (level().length === 0 || level().some((d) => d !== '')) {
+      throw new Error('切到按目录没有先取最顶层: ' + JSON.stringify(level()))
+    }
+    const open = async (attr: string) => {
+      const row = byData('data-usage', attr)
+      if (!row) throw new Error('找不到这一项: ' + attr)
+      await act(async () => {
+        row.click()
+      })
+      await act(async () => {
+        await sleep(50)
+      })
+    }
+    await open('C:\\')
+    if (!pane().includes('Users') || !pane().includes('Windows 系统目录')) throw new Error('点进 C 盘没列出下一层')
+    await open('C:\\Users')
+    if (!pane().includes('demo') || !pane().includes('全部')) throw new Error('再点一层没有面包屑或内容')
+    await mustClick('全部')
+    await open('C:\\')
+    // 「直接放在这里的文件」那一项:切回按文件,按这个目录筛
+    await open('files')
+    const filter = document.querySelector('input[placeholder^="按路径筛选"]') as HTMLInputElement | null
+    if (!filter || filter.value !== 'C:\\') throw new Error('点「直接放在这里的文件」没切回文件列表并筛到这个目录')
   })
 
   // 磁盘清理 · 重复文件:每组至少留一份 —— 前端勾不上,发出去的请求里也必须有
@@ -1349,6 +1391,53 @@ async function main() {
     }
     if (!txt().includes('移到了回收站')) throw new Error('删完没给结果')
     if (byData('data-group', ga)) throw new Error('只剩一份的组还挂在列表里')
+  })
+
+  // 磁盘清理 · 更多清理:空文件夹直接删、核过再删;无效快捷方式默认进回收站
+  delete __last.emptyOpts
+  delete __last.emptyReq
+  delete __last.shortcutScans
+  delete __last.shortcutReq
+  await mount('磁盘清理 · 更多清理', <DiskClean />, async () => {
+    const txt = () => document.body.textContent || ''
+    await mustClick('更多清理')
+    await mustClick('查找空文件夹')
+    const opts = __last.emptyOpts as { roots: string[]; skipDevDirs: boolean } | undefined
+    if (!opts || opts.roots.join() !== 'C:\\Users\\demo' || !opts.skipDevDirs) {
+      throw new Error('空文件夹默认该扫个人目录: ' + JSON.stringify(opts))
+    }
+    if (!txt().includes('一天以内动过的')) throw new Error('刚动过的空目录没列出来,没说')
+    if (!txt().includes('里面还套着 2 个空文件夹')) throw new Error('套着的空子目录会一起删,没说')
+    const all = document.querySelector('[data-list="empty"] input[title="全选"]') as HTMLInputElement | null
+    if (!all) throw new Error('空文件夹列表没有全选')
+    await act(async () => {
+      all.click()
+    })
+    await mustClick('删除选中的空文件夹')
+    if (!txt().includes('不进回收站')) throw new Error('确认框没说空文件夹是直接删的')
+    if (!txt().includes('逐个确认还是空的')) throw new Error('确认框没说删之前会核对')
+    await confirmIn('删除')
+    const req = __last.emptyReq as { paths: string[] } | undefined
+    if (!req || req.paths.length !== 2) throw new Error('发出去的空文件夹不对: ' + JSON.stringify(req))
+
+    await mustClick('无效快捷方式')
+    if (!__last.shortcutScans) throw new Error('切到无效快捷方式没有自动检查')
+    if (!txt().includes('判断不了')) throw new Error('判断不了的没说')
+    if (!txt().includes('D:\\tools\\old\\tool.exe')) throw new Error('没说它指向哪儿')
+    const row = byData('data-path', 'C:\\Users\\demo\\Start Menu\\Programs\\Old Tool.lnk')?.querySelector(
+      'input[type=checkbox]',
+    ) as HTMLInputElement | undefined
+    if (!row) throw new Error('找不到这个快捷方式')
+    await act(async () => {
+      row.click()
+    })
+    await mustClick('移到回收站')
+    if (!txt().includes('删的只是快捷方式本身')) throw new Error('确认框没说删的是什么')
+    await confirmIn('移到回收站')
+    const sreq = __last.shortcutReq as { permanent: boolean; files: { size: number; modTime: number }[] } | undefined
+    if (!sreq || sreq.permanent || sreq.files[0]?.size !== 1200 || !sreq.files[0]?.modTime) {
+      throw new Error('快捷方式默认该进回收站,并带着扫描时的样子去核对: ' + JSON.stringify(sreq))
+    }
   })
 
   // SM2 加解密与签名验签往返。

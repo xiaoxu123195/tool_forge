@@ -1028,6 +1028,70 @@ func (a *App) DeleteDuplicateFiles(req diskclean.DupDeleteRequest) (*diskclean.D
 	return a.disk.DeleteDuplicates(req)
 }
 
+// DiskUsageChildren 按目录看占用:某一层下面各项多大。目录树是大文件扫描时顺带建的
+func (a *App) DiskUsageChildren(usageID, dir string) (*diskclean.UsageLevel, error) {
+	if a.disk == nil {
+		return nil, errDiskNotReady
+	}
+	return a.disk.UsageChildren(usageID, dir)
+}
+
+// ScanEmptyFolders 找空文件夹
+func (a *App) ScanEmptyFolders(opt diskclean.EmptyOptions) (*diskclean.EmptyResult, error) {
+	if a.disk == nil {
+		return nil, errDiskNotReady
+	}
+	return a.disk.ScanEmptyDirs(opt)
+}
+
+// DeleteEmptyFolders 删空文件夹:每个都重新核一遍还是空的
+func (a *App) DeleteEmptyFolders(req diskclean.EmptyDeleteRequest) (*diskclean.DeleteResult, error) {
+	if a.disk == nil {
+		return nil, errDiskNotReady
+	}
+	return a.disk.DeleteEmptyDirs(req)
+}
+
+// ScanBrokenShortcuts 找桌面、开始菜单、任务栏里指向的东西已经不在了的快捷方式
+func (a *App) ScanBrokenShortcuts(jobID string) (*diskclean.ShortcutResult, error) {
+	if a.disk == nil {
+		return nil, errDiskNotReady
+	}
+	return a.disk.ScanShortcuts(jobID)
+}
+
+// DeleteBrokenShortcuts 删无效快捷方式(默认进回收站),删前重新判一次
+func (a *App) DeleteBrokenShortcuts(req diskclean.DeleteRequest) (*diskclean.DeleteResult, error) {
+	if a.disk == nil {
+		return nil, errDiskNotReady
+	}
+	return a.disk.DeleteShortcuts(req)
+}
+
+// ListCustomCacheRules 用户自己加的缓存目录
+func (a *App) ListCustomCacheRules() []diskclean.CustomRule {
+	if a.disk == nil {
+		return []diskclean.CustomRule{}
+	}
+	return a.disk.CustomRules()
+}
+
+// SaveCustomCacheRule 加一个自定义缓存目录。过不了守卫的直接拒绝
+func (a *App) SaveCustomCacheRule(r diskclean.CustomRule) (*diskclean.CustomRule, error) {
+	if a.disk == nil {
+		return nil, errDiskNotReady
+	}
+	return a.disk.SaveCustomRule(r)
+}
+
+// DeleteCustomCacheRule 移除一个自定义缓存目录(只是不再清它,目录本身不动)
+func (a *App) DeleteCustomCacheRule(id string) error {
+	if a.disk == nil {
+		return errDiskNotReady
+	}
+	return a.disk.DeleteCustomRule(id)
+}
+
 // CancelDiskJob 取消进行中的扫描或删除,已经做完的部分照常交回
 func (a *App) CancelDiskJob(jobID string) {
 	if a.disk != nil {

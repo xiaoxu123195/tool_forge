@@ -63,6 +63,8 @@ func windowsSpec(e winEnv) guardSpec {
 				sr + `\Logs\CBS`,
 			}},
 			{sr + `\WinSxS`, "系统组件存储:看着大是因为里面大量是硬链接。要瘦身用系统自带的「磁盘清理 → 清理系统文件」", nil},
+			{sr + `\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization`,
+				"传递优化缓存:在「缓存清理」里清,走的是系统自己的清理命令", nil},
 			{sr + `\Installer`, "Windows 安装缓存:删了以后已经装好的软件没法修复、更新和卸载", nil},
 			{sr + `\System32`, "Windows 核心文件", nil},
 			{sd + `\Windows.old`, "旧版 Windows 的备份:用系统自带的「磁盘清理 → 清理系统文件 → 以前的 Windows 安装」来删", nil},
@@ -101,6 +103,7 @@ func windowsSpec(e winEnv) guardSpec {
 			"usrclass.dat.log2": "用户的注册表文件:删了这个用户就登不进去了",
 		},
 		noWipeParents: []string{sd + `\Users`},
+		appDataName:   "AppData",
 	}
 
 	for _, pf := range e.programFiles {
@@ -111,6 +114,8 @@ func windowsSpec(e winEnv) guardSpec {
 			wer + `\ReportArchive`,
 			wer + `\ReportQueue`,
 			wer + `\Temp`,
+			// 所有用户的开始菜单:里面全是快捷方式,清无效快捷方式要能动它
+			pd + `\Microsoft\Windows\Start Menu`,
 		}})
 	}
 	if h := e.home; h != "" {

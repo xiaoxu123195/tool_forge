@@ -61,6 +61,8 @@ type LargeFile struct {
 // LargeResult 大文件扫描的结果
 type LargeResult struct {
 	Files []LargeFile `json:"files"`
+	// UsageID 这一次扫描顺带建的目录树,「按目录看」拿它去取每一层
+	UsageID string `json:"usageId"`
 	// Matched 超过阈值的一共多少个。可能比 Files 多 —— 被 Limit 截掉的那些
 	Matched      int64 `json:"matched"`
 	MatchedBytes int64 `json:"matchedBytes"`
@@ -125,8 +127,11 @@ func (s *Service) ScanLarge(opt LargeOptions) (*LargeResult, error) {
 	var mu sync.Mutex
 	top := &bySize{}
 	var matched, matchedBytes int64
+	tree := &usageBuilder{}
 	w := newWalker(ctx, rep)
 	w.isProtected = s.protectedDir
+	// 每个目录这一层多大顺手记下来,扫完拼成目录树 —— 「按目录看」不用再扫一遍
+	w.onDir = tree.add
 	w.onFile = func(p string, fi fs.FileInfo) {
 		size := fi.Size()
 		if size < opt.MinSize {
@@ -147,9 +152,19 @@ func (s *Service) ScanLarge(opt LargeOptions) (*LargeResult, error) {
 	}
 	w.run(roots)
 
+	usageID := opt.JobID
+	if usageID == "" {
+		usageID = time.Now().Format("20060102150405.000000000")
+	}
+	t := tree.build(usageID, roots)
+	s.usageMu.Lock()
+	s.usage = t
+	s.usageMu.Unlock()
+
 	found := []sized(*top)
 	sort.Slice(found, func(i, j int) bool { return found[i].size > found[j].size })
 	res := &LargeResult{
+		UsageID:      usageID,
 		Files:        make([]LargeFile, 0, len(found)),
 		Matched:      matched,
 		MatchedBytes: matchedBytes,

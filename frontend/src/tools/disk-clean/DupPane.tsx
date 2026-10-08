@@ -30,13 +30,17 @@ const SIZES = [
 const PAGE = 100
 
 /**
- * 每组留哪一份:删不掉的那份(系统保护的)本来就留着,其次留修改时间最早的 ——
- * 原件一般最早,复制出来的晚;再一样就留路径短的
+ * 每组留哪一份:
+ *   - 删不掉的那份(系统保护的)本来就留着
+ *   - 其次留带提醒的:微信、QQ 收到的文件被聊天记录引用着,网盘同步目录里的删了会同步到云端 ——
+ *     同样的内容别处还有一份,删那一份才没有副作用
+ *   - 再其次留修改时间最早的:原件一般最早,复制出来的晚;再一样就留路径短的
  */
 function keeperOf(g: Group): diskclean.DupFile {
   return [...g.files].sort(
     (a, b) =>
       Number(b.blocked) - Number(a.blocked) ||
+      Number(!!b.warn) - Number(!!a.warn) ||
       a.modTime - b.modTime ||
       a.path.length - b.path.length ||
       a.path.localeCompare(b.path),

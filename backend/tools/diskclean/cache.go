@@ -15,8 +15,9 @@ import (
 
 // CacheRule 一条缓存规则。
 //
-// 规则是写死在程序里的,不从文件或网络加载:规则的内容就是"删掉这些路径",
-// 能改规则的人就能删用户的任何东西。新增一条要过 rules_test 里那几道检查
+// 内置规则写死在程序里,不从网络加载:规则的内容就是"删掉这些路径",
+// 能改规则的人就能删用户的任何东西。新增一条要过 rules_test 里那几道检查。
+// 用户自己加的规则存在本机配置里,清之前同样过守卫
 type CacheRule struct {
 	ID    string
 	Group string
@@ -37,8 +38,17 @@ type CacheRule struct {
 	// Procs 这些进程开着时,缓存文件多半被占着
 	Procs   []string
 	Default bool
-	// RecycleBin 不按路径删,走系统接口清空回收站
+	// Measure / Clean 不按路径删,交给系统接口或系统自带的清理命令。
+	// 回收站、传递优化缓存都是这种:里面的结构归系统管,直接删文件会把它的账弄乱
+	Measure func(ctx context.Context) (size, files int64, found bool)
+	Clean   func(ctx context.Context) error
+	// RecycleBin 清的是回收站,确认时要单独提一句
 	RecycleBin bool
+	// Literal 路径原样用,不认通配符。自定义规则用:
+	// 用户的目录名里本来就可能有 * ?(macOS 上合法),不能当成通配符
+	Literal bool
+	// Custom 用户自己加的
+	Custom bool
 }
 
 // CacheItem 一条规则在这台机器上的情况
@@ -61,6 +71,8 @@ type CacheItem struct {
 	Default bool     `json:"default"`
 	// RecycleBin 清的是回收站:那是用户自己留的后悔药,确认时要单独提一句
 	RecycleBin bool `json:"recycleBin"`
+	// Custom 用户自己加的规则,可以从列表里移除
+	Custom bool `json:"custom"`
 	// Note 补充说明,比如某个目录是链接、被跳过了
 	Note string `json:"note,omitempty"`
 }
@@ -105,13 +117,15 @@ func (s *Service) ScanCache(jobID string) (*CacheScanResult, error) {
 	defer end()
 	rep := s.report(jobID)
 	defer rep.close()
+	defer withBackupPrivilege()()
 	start := time.Now()
 
 	elevated := isElevated()
 	procs := runningProcs()
-	res := &CacheScanResult{Items: []CacheItem{}, Supported: len(s.rules) > 0, Elevated: elevated}
-	rep.setPhase("统计缓存", int64(len(s.rules)))
-	for _, r := range s.rules {
+	rules := s.allRules()
+	res := &CacheScanResult{Items: []CacheItem{}, Supported: len(rules) > 0, Elevated: elevated}
+	rep.setPhase("统计缓存", int64(len(rules)))
+	for _, r := range rules {
 		if ctx.Err() != nil {
 			break
 		}
@@ -120,17 +134,15 @@ func (s *Service) ScanCache(jobID string) (*CacheScanResult, error) {
 			ID: r.ID, Group: r.Group, Name: r.Name, Desc: r.Desc,
 			Paths: []string{}, Running: []string{},
 			Admin: r.Admin, NeedAdmin: r.Admin && !elevated, Default: r.Default,
-			RecycleBin: r.RecycleBin,
+			RecycleBin: r.RecycleBin, Custom: r.Custom,
 		}
 		for _, p := range r.Procs {
 			if procs[strings.ToLower(p)] {
 				item.Running = append(item.Running, p)
 			}
 		}
-		if r.RecycleBin {
-			size, n, err := recycleBinInfo()
-			item.Found = err == nil
-			item.Size, item.Files = size, n
+		if r.Measure != nil {
+			item.Size, item.Files, item.Found = r.Measure(ctx)
 		} else {
 			t := s.resolve(r)
 			item.Paths, item.Note = t.shown(), strings.Join(t.notes, ";")
@@ -160,7 +172,7 @@ func (s *Service) CleanCache(jobID string, ids []string) (*CacheCleanResult, err
 	elevated := isElevated()
 	res := &CacheCleanResult{Items: []CacheCleanItem{}}
 	rep.setPhase("清理", int64(len(want)))
-	for _, r := range s.rules {
+	for _, r := range s.allRules() {
 		if !want[r.ID] {
 			continue
 		}
@@ -172,16 +184,19 @@ func (s *Service) CleanCache(jobID string, ids []string) (*CacheCleanResult, err
 		switch {
 		case r.Admin && !elevated:
 			item.Error = "要以管理员身份运行工具箱才清得动"
-		case r.RecycleBin:
-			if size, n, err := recycleBinInfo(); err != nil {
-				item.Error = err.Error()
-			} else if n > 0 {
-				if err := emptyRecycleBin(); err != nil {
-					item.Error = err.Error()
-				} else {
-					item.Freed, item.Deleted = size, n
-				}
+		case r.Clean != nil:
+			// 清之前、清之后各量一次,两次的差就是腾出来的 ——
+			// 系统命令不告诉你它删了多少
+			before, n, found := r.Measure(ctx)
+			if !found || n == 0 {
+				break
 			}
+			if err := r.Clean(ctx); err != nil {
+				item.Error = err.Error()
+				break
+			}
+			after, left, _ := r.Measure(ctx)
+			item.Freed, item.Deleted = before-after, n-left
 		default:
 			t := s.resolve(r)
 			for _, dir := range t.dirs {
@@ -220,7 +235,14 @@ func (s *Service) resolve(r CacheRule) targets {
 		if !ok || !filepath.IsAbs(p) {
 			continue
 		}
-		for _, dir := range expandGlob(p) {
+		dirs := expandGlob(p)
+		if r.Literal {
+			dirs = nil
+			if fi, err := os.Lstat(p); err == nil && kindOf(fi) == kindDir {
+				dirs = []string{p}
+			}
+		}
+		for _, dir := range dirs {
 			if v := s.guard.CheckContentsFinal(dir); v.Blocked {
 				t.notes = append(t.notes, dir+" 跳过了:"+v.Reason)
 				continue
@@ -279,6 +301,24 @@ func (s *Service) measure(ctx context.Context, r CacheRule, t targets, rep *repo
 		w.run([]string{dir})
 	}
 	return size, files
+}
+
+// measureDir 量一个目录有多大。给"量用目录、清用系统命令"的规则用
+func measureDir(ctx context.Context, dir string) (size, files int64, found bool) {
+	fi, err := os.Lstat(dir)
+	if err != nil || kindOf(fi) != kindDir {
+		return 0, 0, false
+	}
+	var mu sync.Mutex
+	w := newWalker(ctx, silent())
+	w.onFile = func(_ string, fi fs.FileInfo) {
+		mu.Lock()
+		size += fi.Size()
+		files++
+		mu.Unlock()
+	}
+	w.run([]string{dir})
+	return size, files, true
 }
 
 // cleanDir 清掉一个缓存目录里的东西,目录本身留着。

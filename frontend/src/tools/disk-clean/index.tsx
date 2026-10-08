@@ -6,8 +6,9 @@ import { meta } from './meta'
 import { CachePane } from './CachePane'
 import { LargePane } from './LargePane'
 import { DupPane } from './DupPane'
+import { MorePane } from './MorePane'
 
-type Tab = 'cache' | 'large' | 'dup'
+type Tab = 'cache' | 'large' | 'dup' | 'more'
 
 export default function DiskClean() {
   const [tab, setTab] = useState<Tab>('cache')
@@ -25,6 +26,7 @@ export default function DiskClean() {
             { value: 'cache', label: '缓存清理' },
             { value: 'large', label: '大文件' },
             { value: 'dup', label: '重复文件' },
+            { value: 'more', label: '更多清理' },
           ]}
         />
       }
@@ -38,6 +40,9 @@ export default function DiskClean() {
       </div>
       <div data-tab="dup" className={cn('min-h-0 flex-1 flex-col', tab === 'dup' ? 'flex' : 'hidden')}>
         <DupPane active={tab === 'dup'} />
+      </div>
+      <div data-tab="more" className={cn('min-h-0 flex-1 flex-col', tab === 'more' ? 'flex' : 'hidden')}>
+        <MorePane active={tab === 'more'} />
       </div>
     </ToolShell>
   )

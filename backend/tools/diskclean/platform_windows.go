@@ -3,13 +3,20 @@
 package diskclean
 
 import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
+	"unicode/utf16"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -188,6 +195,51 @@ func emptyRecycleBin() error {
 		return fmt.Errorf("清空回收站失败(%#x)", hr)
 	}
 	return nil
+}
+
+// cleanDeliveryOptimization 用系统自带的命令清传递优化缓存。
+//
+// 那个目录归传递优化服务管,服务开着时直接删文件是在和它抢;
+// 它自己的命令会先让服务放手,清完账也是对的
+const deliveryOptimizationScript = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+try {
+  Delete-DeliveryOptimizationCache -Force -ErrorAction Stop
+} catch {
+  Write-Output $_.Exception.Message
+  exit 1
+}`
+
+func cleanDeliveryOptimization(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive",
+		"-ExecutionPolicy", "Bypass", "-EncodedCommand", encodeCommand(deliveryOptimizationScript))
+	// Wails 是 GUI 子系统,不藏的话会闪一个黑框
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(out.String())
+		if i := strings.IndexByte(msg, '\n'); i >= 0 {
+			msg = strings.TrimSpace(msg[:i])
+		}
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("系统的清理命令没成功:%s", msg)
+	}
+	return nil
+}
+
+// encodeCommand PowerShell 的 -EncodedCommand 要 UTF-16LE 的 base64
+func encodeCommand(s string) string {
+	u := utf16.Encode([]rune(s))
+	b := make([]byte, len(u)*2)
+	for i, c := range u {
+		binary.LittleEndian.PutUint16(b[i*2:], c)
+	}
+	return base64.StdEncoding.EncodeToString(b)
 }
 
 // shFileOpStruct 对应 SHFILEOPSTRUCTW(64 位自然对齐)
