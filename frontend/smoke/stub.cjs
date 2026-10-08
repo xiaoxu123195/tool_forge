@@ -85,6 +85,44 @@ const special = {
   GetForensicConfig: () => Promise.resolve({ binPath: '', enabled: false, defaultSshAddr: '' }),
   SaveForensicConfig: () => Promise.resolve(),
   HasQimaiCredential: () => Promise.resolve(false),
+  // 包名搜索:两个源各一条。应用宝那条的图标地址里带 broken,用来走「下不来」的分支
+  SearchApp: () =>
+    Promise.resolve({
+      items: [
+        {
+          source: 'itunes', platform: 'ios', pkgName: 'com.tencent.xin', name: '微信', developer: 'Tencent',
+          icon: 'https://is1-ssl.mzstatic.com/image/thumb/demo/512x512bb.jpg', country: 'cn', extra: { trackId: '414478124' },
+        },
+        {
+          source: 'yingyongbao', platform: 'android', pkgName: 'com.tencent.mm', name: '微信', developer: '腾讯',
+          icon: 'http://pp.myapp.com/ma_icon/0/icon_broken/256', country: 'cn', extra: {},
+        },
+      ],
+      statuses: [
+        { source: 'itunes', ok: true, count: 1 },
+        { source: 'yingyongbao', ok: true, count: 1 },
+      ],
+    }),
+  // 保存图标:last.iconCancelNext 置上时,模拟在保存框里点了取消(回空)
+  SaveAppIcon: (req) => {
+    last.iconSave = req
+    if (last.iconCancelNext) {
+      last.iconCancelNext = false
+      return Promise.resolve(null)
+    }
+    if (String(req.icon).includes('broken')) return Promise.reject(new Error('下载图标失败: http 400'))
+    return Promise.resolve({
+      path: 'D:\\图标\\' + req.name + '_' + req.id + '.png', width: 1024, height: 1024, format: 'png', bytes: 369326,
+    })
+  },
+  CopyAppIcon: (icon) => {
+    last.iconCopy = icon
+    return Promise.resolve({ width: 1024, height: 1024, format: 'png', bytes: 369326 })
+  },
+  RevealInExplorer: (p) => {
+    last.revealed = p
+    return Promise.resolve()
+  },
   // MCP 工作台:一个既有工具又有提示词的服务器,其中一个工具的描述被投了毒
   InspectMCPServer: () =>
     Promise.resolve({

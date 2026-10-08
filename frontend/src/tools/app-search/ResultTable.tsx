@@ -6,10 +6,10 @@ import {
   ChevronRight,
   Copy,
   ExternalLink,
-  Package,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SOURCES, type SourceID } from './types'
+import { AppIcon, IconOutcomeLine, useIconActions } from './AppIcon'
 import type { appsearch } from '../../../wailsjs/go/models'
 
 interface Props {
@@ -209,8 +209,10 @@ function SourceGroup({
         </div>
       ) : (
         <div className="divide-y divide-border">
+          {/* key 带上图标地址:行里记着「已保存」这类状态,换一次搜索、
+              同一个位置上换成别的 App 时得重新来过,不能把上一个的结果挂过来 */}
           {visible.map((it, idx) => (
-            <ResultRow key={`${source}-${idx}`} item={it} />
+            <ResultRow key={`${source}-${idx}-${it.icon || it.name}`} item={it} />
           ))}
         </div>
       )}
@@ -239,21 +241,16 @@ function ResultRow({ item }: { item: appsearch.SearchResultItem }) {
   if (item.country) meta.push(item.country.toUpperCase())
 
   const trackURL = item.extra?.url
+  const iconActions = useIconActions(item.icon ?? '', item.name, primaryId)
 
   return (
     <div className="flex gap-3 p-3 transition-colors hover:bg-accent/30">
-      {item.icon ? (
-        <img
-          src={item.icon}
-          alt=""
-          className="h-14 w-14 shrink-0 rounded-md border border-border object-cover"
-          loading="lazy"
-        />
-      ) : (
-        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-border bg-muted">
-          <Package className="h-5 w-5 text-muted-foreground" />
-        </div>
-      )}
+      <AppIcon
+        src={item.icon}
+        busy={iconActions.busy}
+        onSave={iconActions.save}
+        onCopy={iconActions.copy}
+      />
 
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex flex-wrap items-center gap-2">
@@ -296,6 +293,8 @@ function ResultRow({ item }: { item: appsearch.SearchResultItem }) {
             ))}
           </div>
         )}
+
+        <IconOutcomeLine outcome={iconActions.outcome} />
       </div>
     </div>
   )

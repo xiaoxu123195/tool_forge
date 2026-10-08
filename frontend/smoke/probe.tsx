@@ -1022,6 +1022,70 @@ async function main() {
     if (!txt().includes('系统凭据库')) throw new Error('配置弹窗没说清楚密钥存在哪')
   })
 
+  // 包名搜索 · 图标:列表里是缩略图,保存和复制拿的是原图。
+  // 存完要说清存了多大、存在哪;右键图标也得有反应
+  await mount('包名搜索 · 保存图标', <MemoryRouter><AppSearch /></MemoryRouter>, async () => {
+    const txt = () => document.body.textContent || ''
+    await mustType('微信 / wechat', '微信')
+    await mustClick('搜索')
+    const pic = document.querySelector('img[src*="mzstatic"]')
+    if (!pic) throw new Error('结果里没画出图标')
+
+    // 这两个按钮悬停才显形,但一直在 DOM 里(jsdom 不管透明度)
+    await mustClick('保存原图')
+    const req = __last.iconSave as { icon: string; name: string; id: string } | undefined
+    if (!req || req.name !== '微信' || req.id !== 'com.tencent.xin' || !req.icon.includes('mzstatic')) {
+      throw new Error('保存发出去的不对: ' + JSON.stringify(req))
+    }
+    if (!txt().includes('已保存 · 1024×1024 PNG')) throw new Error('存完没说存下来的有多大')
+    await mustClick('在文件夹中显示')
+    if (!String(__last.revealed).endsWith('微信_com.tencent.xin.png')) {
+      throw new Error('「在文件夹中显示」没指向刚存的文件: ' + String(__last.revealed))
+    }
+
+    await mustClick('复制图标')
+    if (__last.iconCopy !== req.icon) throw new Error('复制的不是这一张')
+    if (!txt().includes('已复制 · 1024×1024 PNG')) throw new Error('复制完没有回话')
+
+    // 在保存框里点了取消:上一句提示收掉,也不能当成失败报出来
+    __last.iconCancelNext = true
+    await mustClick('保存原图')
+    if (txt().includes('已复制') || txt().includes('没保存成')) throw new Error('取消保存之后界面不对')
+
+    // 右键:正式版里 WebView 自带的右键菜单是关的,原来右键图标什么反应都没有
+    const rightClick = async () => {
+      await act(async () => {
+        pic.dispatchEvent(
+          new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 40 }),
+        )
+      })
+      await act(async () => {
+        await sleep(20)
+      })
+    }
+    await rightClick()
+    if (!document.querySelector('[role="menu"]')) throw new Error('右键图标没弹菜单')
+    await act(async () => {
+      window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape' }))
+    })
+    if (document.querySelector('[role="menu"]')) throw new Error('按 Esc 菜单没收起来')
+    await rightClick()
+    await mustClick('保存原图…')
+    if (document.querySelector('[role="menu"]')) throw new Error('点了菜单项,菜单没收起来')
+    if (!txt().includes('已保存 · 1024×1024 PNG')) throw new Error('从右键菜单保存没生效')
+
+    // 下不来要就地说出来:第二条(应用宝)的地址里带 broken
+    const saves = Array.from(document.querySelectorAll('button[title="保存原图"]')) as HTMLElement[]
+    if (saves.length < 2) throw new Error('每条结果都该有保存按钮')
+    await act(async () => {
+      saves[1].click()
+    })
+    await act(async () => {
+      await sleep(50)
+    })
+    if (!txt().includes('没保存成：下载图标失败: http 400')) throw new Error('下载失败没有说出来')
+  })
+
   // 20) SQLite 搜索:命中要给出整行,读不了的库要摆出来,点表名能翻表。
   //
   // 这一页最容易崩的地方是 NULL 和 BLOB —— 真实证据库里到处都是,

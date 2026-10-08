@@ -894,6 +894,30 @@ func (a *App) SaveQimaiCredential(value string) error {
 	return system.SavePassword(appsearch.KeyringQimaiCredential, value)
 }
 
+// SaveAppIcon 下载图标原图,弹保存框存下来;用户取消返回 nil
+func (a *App) SaveAppIcon(req appsearch.IconRequest) (*appsearch.IconInfo, error) {
+	return a.appsearch.SaveIcon(a.ctx, req, func(name, ext string) (string, error) {
+		return system.PickSaveFile(a.ctx, system.PickFileOptions{
+			Title:           "保存图标",
+			DefaultFilename: name,
+			Extensions:      []string{ext},
+			DisplayName:     strings.ToUpper(strings.TrimPrefix(ext, ".")) + " 图片",
+		})
+	})
+}
+
+// CopyAppIcon 下载图标原图放进剪贴板,能直接粘到文档和聊天里
+func (a *App) CopyAppIcon(icon string) (*appsearch.IconInfo, error) {
+	data, info, err := a.appsearch.IconPNG(a.ctx, icon)
+	if err != nil {
+		return nil, err
+	}
+	if err := system.CopyImage(data); err != nil {
+		return nil, fmt.Errorf("写剪贴板失败: %w", err)
+	}
+	return info, nil
+}
+
 // ================ System ================
 
 // PickExecutable 选择一个可执行文件

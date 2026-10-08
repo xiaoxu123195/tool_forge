@@ -15,23 +15,25 @@ const defaultUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 
 // Service 汇聚多源搜索
 type Service struct {
 	client *http.Client
+	// icons 下图标原图专用(见 icon.go):跳转到本机或内网的地址不跟
+	icons *http.Client
 }
 
 // New 构造 Service；client 内部注意把 Transport 的 Proxy 设成 nil，
 // 避免 Windows 下读取 IE 代理而在 TUN 模式下打到没开的 HTTP 代理端口。
 func New() *Service {
+	transport := &http.Transport{
+		Proxy:                 nil, // 显式不走系统代理
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          20,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:   8 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 	return &Service{
-		client: &http.Client{
-			Timeout: 12 * time.Second,
-			Transport: &http.Transport{
-				Proxy:                 nil, // 显式不走系统代理
-				ForceAttemptHTTP2:     true,
-				MaxIdleConns:          20,
-				IdleConnTimeout:       30 * time.Second,
-				TLSHandshakeTimeout:   8 * time.Second,
-				ExpectContinueTimeout: 1 * time.Second,
-			},
-		},
+		client: &http.Client{Timeout: 12 * time.Second, Transport: transport},
+		// 和搜索走同一条路:Google Play 能搜出来,它的图标就下得下来
+		icons: newIconClient(transport),
 	}
 }
 
