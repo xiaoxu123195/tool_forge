@@ -32,6 +32,11 @@ interface DeviceBrowserState {
   serial: string
   model: string
 
+  /** 投屏截图、录屏存到哪个文件夹。第一次截的时候问一次,之后不再弹框 */
+  captureDir: string
+  /** 投屏期间不让手机自动息屏(手机端定时报「有人在用」,不改手机设置) */
+  mirrorKeepAwake: boolean
+
   setSession: (id: string, startPath: string, rooted: boolean, serial: string, model: string) => void
   clearSession: () => void
   setCwd: (p: string) => void
@@ -39,6 +44,8 @@ interface DeviceBrowserState {
   setDeviceId: (d: string) => void
   setPlatform: (p: string) => void
   setAdbPath: (p: string) => void
+  setCaptureDir: (d: string) => void
+  setMirrorKeepAwake: (v: boolean) => void
 }
 
 const MAX_RECENT = 12
@@ -57,6 +64,8 @@ export const useDeviceBrowserStore = create<DeviceBrowserState>()(
       rooted: false,
       serial: '',
       model: '',
+      captureDir: '',
+      mirrorKeepAwake: true,
 
       setSession: (id, startPath, rooted, serial, model) =>
         // startPath 单独留一份:cwd 会随着翻目录一直变,
@@ -76,6 +85,8 @@ export const useDeviceBrowserStore = create<DeviceBrowserState>()(
       // 留着上一个的路径下次连上会直接列到一个不存在的目录
       setPlatform: (p) => set({ platform: p, cwd: '' }),
       setAdbPath: (p) => set({ adbPath: p }),
+      setCaptureDir: (d) => set({ captureDir: d }),
+      setMirrorKeepAwake: (v) => set({ mirrorKeepAwake: v }),
     }),
     {
       name: 'tool-forge:device-browser',
@@ -87,6 +98,8 @@ export const useDeviceBrowserStore = create<DeviceBrowserState>()(
         user: s.user,
         deviceId: s.deviceId,
         adbPath: s.adbPath,
+        captureDir: s.captureDir,
+        mirrorKeepAwake: s.mirrorKeepAwake,
       }),
     }
   )

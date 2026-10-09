@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"io"
 	"math"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // 下面四个用例的期望字节抄自 scrcpy 5.0.1 客户端自己的单元测试
@@ -63,6 +65,103 @@ func TestScrollMessageMatchesUpstream(t *testing.T) {
 func TestBackOrScreenOnMatchesUpstream(t *testing.T) {
 	if got := backOrScreenOnMessage(actionUp); !bytes.Equal(got, []byte{msgBackOrScreenOn, 0x01}) {
 		t.Fatalf("got % x", got)
+	}
+}
+
+// 下面几个同样抄自上游的 test_control_msg_serialize.c
+
+func TestTextMessageMatchesUpstream(t *testing.T) {
+	got := textMessages("hello, world!")
+	want := append([]byte{msgInjectText, 0x00, 0x00, 0x00, 0x0d}, "hello, world!"...)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("\n got  % x\n want % x", got, want)
+	}
+}
+
+func TestSetClipboardMatchesUpstream(t *testing.T) {
+	got := setClipboardMessage(0x0102030405060708, "hello, world!", true)
+	want := append([]byte{
+		msgSetClipboard,
+		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		1,
+		0x00, 0x00, 0x00, 0x0d,
+	}, "hello, world!"...)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("\n got  % x\n want % x", got, want)
+	}
+	// 超长的截到上限,整条消息正好 256K
+	long := setClipboardMessage(1, strings.Repeat("a", clipboardTextMaxLength+10), false)
+	if len(long) != 1<<18 || long[9] != 0 {
+		t.Fatalf("超长剪贴板没截对: 长度 %d", len(long))
+	}
+}
+
+func TestGetClipboardMatchesUpstream(t *testing.T) {
+	if got := getClipboardMessage(copyKeyCopy); !bytes.Equal(got, []byte{msgGetClipboard, 0x01}) {
+		t.Fatalf("got % x", got)
+	}
+}
+
+func TestScanFileMatchesUpstream(t *testing.T) {
+	got, ok := scanFileMessage("/sdcard/Download")
+	want := append([]byte{msgScanFile, 0x00, 0x00, 0x00, 0x10}, "/sdcard/Download"...)
+	if !ok || !bytes.Equal(got, want) {
+		t.Fatalf("\n got  % x\n want % x", got, want)
+	}
+	// 太长的路径手机端会截断,截断了扫的就是别的路径,干脆不发
+	if _, ok := scanFileMessage("/sdcard/" + strings.Repeat("长", 100)); ok {
+		t.Fatal("超长路径不该发")
+	}
+}
+
+// 长文字切成几条,每条不超过 300 字节,而且不能从一个汉字中间切开
+func TestTextMessagesSplit(t *testing.T) {
+	text := strings.Repeat("a", 299) + "中文" + strings.Repeat("b", 400)
+	b := textMessages(text)
+	var parts []string
+	for len(b) > 0 {
+		if b[0] != msgInjectText {
+			t.Fatalf("不是文字消息: % x", b[:1])
+		}
+		n := int(binary.BigEndian.Uint32(b[1:]))
+		if n > injectTextMaxLength {
+			t.Fatalf("一条 %d 字节,超过上限", n)
+		}
+		part := string(b[5 : 5+n])
+		if !utf8.ValidString(part) {
+			t.Fatalf("切出了半个字: %q", part)
+		}
+		parts = append(parts, part)
+		b = b[5+n:]
+	}
+	if strings.Join(parts, "") != text || len(parts) != 3 || parts[0] != strings.Repeat("a", 299) {
+		t.Fatalf("切法不对: %d 段,第一段 %d 字节", len(parts), len(parts[0]))
+	}
+}
+
+func TestReadDeviceMessage(t *testing.T) {
+	var stream bytes.Buffer
+	// 上游 test_device_msg_deserialize.c 里的三种消息
+	stream.Write([]byte{deviceMsgClipboard, 0x00, 0x00, 0x00, 0x03, 0x41, 0x42, 0x43})
+	stream.Write([]byte{deviceMsgAckClipboard, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08})
+	stream.Write([]byte{deviceMsgUhidOutput, 0, 42, 0, 5, 0x01, 0x02, 0x03, 0x04, 0x05})
+	stream.Write(append([]byte{deviceMsgClipboard, 0, 0, 0, 6}, "中文"...))
+
+	for i, want := range []deviceMessage{{deviceMsgClipboard, "ABC"}, {deviceMsgAckClipboard, ""}, {deviceMsgUhidOutput, ""}, {deviceMsgClipboard, "中文"}} {
+		got, err := readDeviceMessage(&stream)
+		if err != nil || got != want {
+			t.Fatalf("第 %d 条: %+v %v,应为 %+v", i+1, got, err, want)
+		}
+	}
+	if _, err := readDeviceMessage(&stream); err != io.EOF {
+		t.Fatalf("读完应该是 EOF,得到 %v", err)
+	}
+	if _, err := readDeviceMessage(bytes.NewReader([]byte{9, 1, 2})); !errors.Is(err, errUnknownDeviceMessage) {
+		t.Fatalf("认不出的类型要报出来,得到 %v", err)
+	}
+	huge := []byte{deviceMsgClipboard, 0xff, 0xff, 0xff, 0xff}
+	if _, err := readDeviceMessage(bytes.NewReader(huge)); err == nil {
+		t.Fatal("长度离谱的剪贴板应该报错")
 	}
 }
 
@@ -145,7 +244,17 @@ func TestEncodeEventGuards(t *testing.T) {
 		{T: "scroll", X: 1, Y: 1, W: 100, H: 100, HS: math.Inf(1)},
 		{T: "key", A: actionDown, K: 0},
 		{T: "key", A: 2, K: 4},
+		{T: "key", A: actionDown, K: 29, M: 0x80000000},
+		{T: "key", A: actionDown, K: 29, M: -1},
 		{T: "back", A: 3},
+		{T: "touch", A: actionDown, P: 3, X: 1, Y: 1, W: 100, H: 100},
+		{T: "touch", A: 5, P: 1, X: 1, Y: 1, W: 100, H: 100},
+		{T: "text"},
+		{T: "text", S: strings.Repeat("a", maxTypedText+1)},
+		{T: "text", S: "\xff\xfe"},
+		{T: "paste"},
+		{T: "getclip", A: 3},
+		{T: "panel", A: 3},
 		{T: "shell"},
 	}
 	for _, e := range bad {
@@ -157,6 +266,10 @@ func TestEncodeEventGuards(t *testing.T) {
 	if b, _ := encodeEvent(event{T: "key", A: actionDown, K: 3}); !bytes.Equal(b, keycodeMessage(actionDown, 3, 0, 0)) {
 		t.Errorf("主页键编错了: % x", b)
 	}
+	// Ctrl+A:修饰键原样带上
+	if b, _ := encodeEvent(event{T: "key", A: actionDown, K: 29, M: 0x3000}); !bytes.Equal(b, keycodeMessage(actionDown, 29, 0, 0x3000)) {
+		t.Errorf("Ctrl+A 编错了: % x", b)
+	}
 	if b, _ := encodeEvent(event{T: "reset"}); !bytes.Equal(b, []byte{msgResetVideo}) {
 		t.Errorf("重置视频编错了: % x", b)
 	}
@@ -164,6 +277,49 @@ func TestEncodeEventGuards(t *testing.T) {
 	b, _ = encodeEvent(event{T: "scroll", X: 1, Y: 1, W: 100, H: 100, HS: 40, VS: -1})
 	if hs, vs := binary.BigEndian.Uint16(b[13:]), binary.BigEndian.Uint16(b[15:]); hs != 0x7fff || vs != 0xf800 {
 		t.Errorf("滚轮编错了: hs=%#x vs=%#x", hs, vs)
+	}
+
+	for _, c := range []struct {
+		e    event
+		want []byte
+	}{
+		{event{T: "text", S: "abc"}, textMessages("abc")},
+		{event{T: "paste", S: "你好"}, setClipboardMessage(0, "你好", true)},
+		{event{T: "getclip", A: copyKeyNone}, []byte{msgGetClipboard, 0}},
+		{event{T: "getclip", A: copyKeyCut}, []byte{msgGetClipboard, 2}},
+		{event{T: "panel", A: 0}, []byte{msgExpandNotificationPanel}},
+		{event{T: "panel", A: 1}, []byte{msgExpandSettingsPanel}},
+		{event{T: "panel", A: 2}, []byte{msgCollapsePanels}},
+	} {
+		if b, err := encodeEvent(c.e); err != nil || !bytes.Equal(b, c.want) {
+			t.Errorf("%+v 编成了 % x(%v),应为 % x", c.e, b, err, c.want)
+		}
+	}
+}
+
+// 双指缩放的两根手指:各用各的指针号,当成真的触摸注入,不带鼠标按键
+func TestEncodeEventFingers(t *testing.T) {
+	for _, c := range []struct {
+		p, a     int
+		pointer  uint64
+		pressure uint16
+	}{
+		{1, actionDown, pointerFinger, 0xffff},
+		{2, actionDown, pointerVirtualFinger, 0xffff},
+		{2, actionMove, pointerVirtualFinger, 0xffff},
+		{1, actionUp, pointerFinger, 0},
+	} {
+		b, err := encodeEvent(event{T: "touch", A: c.a, P: c.p, X: 10, Y: 20, W: 540, H: 1200})
+		if err != nil {
+			t.Fatal(err)
+		}
+		be := binary.BigEndian
+		if b[1] != byte(c.a) || be.Uint64(b[2:]) != c.pointer || be.Uint16(b[22:]) != c.pressure || be.Uint32(b[24:]) != 0 || be.Uint32(b[28:]) != 0 {
+			t.Errorf("手指 %d 动作 %d 编错了: % x", c.p, c.a, b)
+		}
+	}
+	if pointerFinger != 0xfffffffffffffffe || pointerVirtualFinger != 0xfffffffffffffffd {
+		t.Fatal("手指的指针号和上游的 -2、-3 对不上")
 	}
 }
 
@@ -221,8 +377,13 @@ func TestServerCommand(t *testing.T) {
 	if got != want {
 		t.Fatalf("\n got  %s\n want %s", got, want)
 	}
-	if got := serverCommand(1, Options{BitRate: 8_000_000}); strings.Contains(got, "max_fps") {
-		t.Errorf("不限帧率时不该带 max_fps: %s", got)
+	if got := serverCommand(1, Options{BitRate: 8_000_000}); strings.Contains(got, "max_fps") || strings.Contains(got, "keep_active") {
+		t.Errorf("不限帧率时不该带 max_fps,没要保持亮屏时不该带 keep_active: %s", got)
+	}
+	// 保持亮屏用的是定时报「有人在用」,不是改手机设置的 stay_awake
+	got = serverCommand(1, Options{BitRate: 8_000_000, KeepAwake: true})
+	if !strings.HasSuffix(got, " keep_active=true") || strings.Contains(got, "stay_awake") {
+		t.Errorf("保持亮屏的参数不对: %s", got)
 	}
 	if socketName(0xab) != "scrcpy_000000ab" {
 		t.Errorf("套接字名不对: %s", socketName(0xab))
@@ -230,13 +391,14 @@ func TestServerCommand(t *testing.T) {
 }
 
 func TestOptionsValidate(t *testing.T) {
-	good := []Options{{0, 8_000_000, 0}, {1280, 4_000_000, 60}, {320, 500_000, 120}}
+	o := func(size, rate, fps int) Options { return Options{MaxSize: size, BitRate: rate, MaxFps: fps} }
+	good := []Options{o(0, 8_000_000, 0), o(1280, 4_000_000, 60), o(320, 500_000, 120)}
 	for _, o := range good {
 		if err := o.validate(); err != nil {
 			t.Errorf("%+v 应该通过: %v", o, err)
 		}
 	}
-	bad := []Options{{100, 8_000_000, 60}, {5000, 8_000_000, 60}, {1280, 100, 60}, {1280, 8_000_000, -1}, {1280, 8_000_000, 500}}
+	bad := []Options{o(100, 8_000_000, 60), o(5000, 8_000_000, 60), o(1280, 100, 60), o(1280, 8_000_000, -1), o(1280, 8_000_000, 500)}
 	for _, o := range bad {
 		if err := o.validate(); err == nil {
 			t.Errorf("%+v 应该被拒绝", o)

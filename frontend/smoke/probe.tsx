@@ -863,11 +863,13 @@ async function main() {
         await act(async () => {
           await sleep(30)
         })
-        const req = __last.mirrorStart as { serial: string; options: { maxSize: number } } | undefined
+        const req = __last.mirrorStart as { serial: string; options: { maxSize: number; keepAwake: boolean } } | undefined
         // 投的必须是连着的那一台:连接时序列号留空(= 第一台)也一样,不能再按「第一台」猜一次
         if (req?.serial !== 'Y9U469XKRK6XNFGY') throw new Error('没投连着的那一台: ' + JSON.stringify(req))
         // 默认档要传得够大:手机先缩一遍、电脑再缩一遍,细字就糊了
         if (req.options.maxSize !== 1920) throw new Error('默认画质不对: ' + JSON.stringify(req.options))
+        // 默认保持亮屏:手机到点自己息屏,一边翻文件一边看着的画面就黑了
+        if (req.options.keepAwake !== true) throw new Error('默认该保持亮屏: ' + JSON.stringify(req.options))
         const ws = fake.sockets[fake.sockets.length - 1]
         if (!ws?.url.includes('/mirror/')) throw new Error('没去连视频通道')
 
@@ -915,6 +917,222 @@ async function main() {
         const scroll = sent().find((e) => e.t === 'scroll')
         if (scroll?.vs !== -1) throw new Error('滚轮没变成滑动: ' + JSON.stringify(scroll))
 
+        // 按钮的提示很长,按开头找
+        const titled = (prefix: string) =>
+          (Array.from(document.querySelectorAll('button')) as HTMLElement[]).find((b) =>
+            (b.getAttribute('title') || '').startsWith(prefix),
+          )
+        const clickTitled = async (prefix: string) => {
+          const b = titled(prefix)
+          if (!b) throw new Error('找不到按钮「' + prefix + '…」')
+          await act(async () => {
+            b.click()
+          })
+          await act(async () => {
+            await sleep(50)
+          })
+        }
+        const count = (pred: (e: Record<string, number | string>) => boolean) => sent().filter(pred).length
+
+        // ---- 卡键:按着的键在画面外松开、或者窗口被切走,都要替它抬起来 ----
+        // 右键是返回;窗口切走时收不到抬起
+        const backUps = count((e) => e.t === 'back' && e.a === 1)
+        await pointer('pointerdown', 2, 10, 10)
+        await act(async () => {
+          window.dispatchEvent(new window.Event('blur'))
+        })
+        if (count((e) => e.t === 'back' && e.a === 1) !== backUps + 1) throw new Error('窗口切走时右键(返回)没抬起来')
+        // 中键是主页:一直按着手机会当成长按,把语音助手叫出来
+        await pointer('pointerdown', 1, 10, 10)
+        await act(async () => {
+          canvas.dispatchEvent(new window.MouseEvent('lostpointercapture', { bubbles: true }))
+        })
+        if (!sent().some((e) => e.t === 'key' && e.k === 3 && e.a === 1)) throw new Error('中键(主页)丢了指针后没抬起来')
+        // 左键在别的键还按着时松开:浏览器不报抬起,只看得出 buttons 变了
+        await pointer('pointerdown', 0, 135, 300)
+        const touchUps = count((e) => e.t === 'touch' && e.a === 1)
+        await act(async () => {
+          canvas.dispatchEvent(
+            new window.MouseEvent('pointermove', { bubbles: true, cancelable: true, buttons: 2, clientX: 140, clientY: 300 }),
+          )
+        })
+        if (count((e) => e.t === 'touch' && e.a === 1) !== touchUps + 1) throw new Error('左键先松开时手指没抬起来')
+        await pointer('pointerup', 2, 140, 300)
+
+        // ---- 键盘:点过画面,键盘就归手机 ----
+        const kbd = document.querySelector('[data-mirror-keyboard]') as HTMLTextAreaElement
+        if (document.activeElement !== kbd) throw new Error('点了画面键盘没归手机')
+        const keydown = async (key: string, init: Record<string, unknown> = {}) => {
+          await act(async () => {
+            kbd.dispatchEvent(new window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }))
+            await sleep(10)
+          })
+        }
+        const typeIn = async (value: string) => {
+          await act(async () => {
+            kbd.value = value
+            kbd.dispatchEvent(new window.Event('input', { bubbles: true }))
+          })
+        }
+        await keydown('Enter')
+        const enter = sent().filter((e) => e.t === 'key' && e.k === 66)
+        if (enter.length !== 2 || enter[0].a !== 0 || enter[1].a !== 1) throw new Error('回车没发成按键: ' + JSON.stringify(enter))
+        await keydown('a', { ctrlKey: true })
+        if (!sent().some((e) => e.t === 'key' && e.k === 29 && e.m === 0x3000)) throw new Error('Ctrl+A 没变成全选')
+        // 英文按字直接打过去;发出去的字要从输入框里清掉,不然下一个字会把前面的再带一遍
+        await typeIn('a')
+        await typeIn('b')
+        const texts = sent().filter((e) => e.t === 'text').map((e) => e.s)
+        if (texts.join() !== 'a,b' || kbd.value !== '') throw new Error('英文没按字发出去: ' + JSON.stringify(texts))
+        // 中文:输入法拼字时不发,上屏了才发,而且经剪贴板粘贴
+        await act(async () => {
+          kbd.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true }))
+        })
+        await typeIn('ni')
+        if (sent().some((e) => e.s === 'ni')) throw new Error('拼音还没上屏就发出去了')
+        await act(async () => {
+          kbd.value = '你好'
+          kbd.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true, data: '你好' }))
+        })
+        if (!sent().some((e) => e.t === 'paste' && e.s === '你好')) throw new Error('中文没经剪贴板粘贴过去')
+        // 第一次粘贴前手机剪贴板里原来的东西:要提醒一句,而且留着能看
+        await act(async () => {
+          ws.emit(JSON.stringify({ type: 'clipboard', code: 'replaced', text: '原来复制着的' }))
+        })
+        if (!txt().includes('手机剪贴板里原来的内容已被替换')) throw new Error('没提醒剪贴板被替换了')
+        // Ctrl+V:电脑剪贴板粘到手机
+        __last.pcClipboard = '电脑上复制的'
+        await keydown('v', { ctrlKey: true })
+        await act(async () => {
+          await sleep(20)
+        })
+        if (!sent().some((e) => e.t === 'paste' && e.s === '电脑上复制的')) throw new Error('Ctrl+V 没把电脑剪贴板粘过去')
+        // Ctrl+C:手机复制选中的字,回来的内容放进电脑剪贴板
+        await keydown('c', { ctrlKey: true })
+        if (!sent().some((e) => e.t === 'getclip' && e.a === 1)) throw new Error('Ctrl+C 没让手机复制')
+        await act(async () => {
+          ws.emit(JSON.stringify({ type: 'clipboard', text: '手机上选中的' }))
+        })
+        if (__last.pcClipboardSet !== '手机上选中的') throw new Error('手机上复制的字没进电脑剪贴板')
+        // 没认领的 Ctrl 组合键不发给手机,留给工具箱自己的快捷键
+        const beforeCtrlK = ws.sent.length
+        await keydown('k', { ctrlKey: true })
+        if (ws.sent.length !== beforeCtrlK) throw new Error('Ctrl+K 不该发给手机')
+        // 没全屏时 Esc 发给手机(手机上当返回用)
+        await keydown('Escape')
+        if (!sent().some((e) => e.t === 'key' && e.k === 111)) throw new Error('Esc 没发给手机')
+
+        // ---- 手机剪贴板:读一下,原来那份也在 ----
+        await clickTitled('手机剪贴板')
+        if (!sent().some((e) => e.t === 'getclip' && e.a === 0)) throw new Error('读剪贴板没发出去')
+        await act(async () => {
+          ws.emit(JSON.stringify({ type: 'clipboard', text: '剪贴板里的字' }))
+        })
+        const card = () => document.querySelector('[data-mirror-clipboard]')?.textContent || ''
+        if (!card().includes('剪贴板里的字') || !card().includes('原来复制着的')) throw new Error('剪贴板没显示全: ' + card())
+        await clickTitled('收起')
+        if (card()) throw new Error('剪贴板收不起来')
+
+        // ---- 通知栏、音量 ----
+        await clickTitled('下拉通知栏')
+        if (!sent().some((e) => e.t === 'panel' && e.a === 0)) throw new Error('通知栏没拉下来')
+        await clickTitled('音量 +')
+        await clickTitled('音量 -')
+        if (!sent().some((e) => e.t === 'key' && e.k === 24) || !sent().some((e) => e.t === 'key' && e.k === 25)) {
+          throw new Error('音量键没发出去')
+        }
+
+        // ---- Ctrl+滚轮 = 双指缩放 ----
+        const pinchMark = ws.sent.length
+        await act(async () => {
+          canvas.dispatchEvent(
+            new window.WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -100, ctrlKey: true, clientX: 135, clientY: 300 }),
+          )
+        })
+        const fingers = () =>
+          ws.sent
+            .slice(pinchMark)
+            .map((s) => JSON.parse(s) as Record<string, number | string>)
+            .filter((e) => e.t === 'touch' && e.p)
+        const downs = fingers().filter((e) => e.a === 0)
+        if (downs.length !== 2 || downs[0].p !== 1 || downs[1].p !== 2) throw new Error('两根手指没按下去: ' + JSON.stringify(fingers()))
+        const moves = fingers().filter((e) => e.a === 2)
+        const spread = (a: Record<string, number | string>, b: Record<string, number | string>) =>
+          Math.abs((a.x as number) - (b.x as number))
+        if (moves.length !== 6 || !(spread(moves[4], moves[5]) > spread(downs[0], downs[1]))) {
+          throw new Error('往前滚该把两指张开: ' + JSON.stringify(moves))
+        }
+        if (ws.sent.slice(pinchMark).some((s) => s.includes('"scroll"'))) throw new Error('Ctrl+滚轮不该再当成滑动')
+        await act(async () => {
+          await sleep(350)
+        })
+        if (fingers().filter((e) => e.a === 1).length !== 2) throw new Error('停下来之后两根手指没抬起来')
+
+        // ---- 截图:第一次问存哪儿,存好了能打开文件夹、能复制 ----
+        await clickTitled('截图：')
+        if ((__last.mirrorShot as { dir: string } | undefined)?.dir !== 'D:/导出') {
+          throw new Error('截图没存到选的文件夹: ' + JSON.stringify(__last.mirrorShot))
+        }
+        if (!txt().includes('截图已保存（1080×2400）')) throw new Error('截图存好了没说')
+        await mustClick('打开所在文件夹')
+        if (!String(__last.revealed).includes('截图')) throw new Error('打开所在文件夹没指到截图: ' + __last.revealed)
+        await mustClick('复制图片')
+        if (!String(__last.copiedImage).endsWith('.png')) throw new Error('复制图片没调到')
+        delete __calls.PickDirectory
+        await clickTitled('截图：')
+        if (__calls.PickDirectory) throw new Error('第二次截图又问了一遍存哪儿')
+
+        // ---- 录屏:录着的时候不能换画质;停下来说存了多长 ----
+        await clickTitled('录屏：')
+        if (!__last.mirrorRecStart) throw new Error('录屏没开起来')
+        if (!titled('画质：')?.hasAttribute('disabled')) throw new Error('录屏中画质按钮该锁住')
+        await clickTitled('停止录屏')
+        if (!__last.mirrorRecStop) throw new Error('录屏没停')
+        if (!txt().includes('录屏已保存（1 分 5 秒）')) throw new Error('录屏存好了没说: ' + txt())
+        // 录着屏手机拔了:后端先把录好的文件交代清楚
+        await clickTitled('录屏：')
+        await act(async () => {
+          ws.emit(JSON.stringify({ type: 'recorded', files: ['D:/导出/a.mp4', 'D:/导出/a_2.mp4'], ms: 3000 }))
+        })
+        if (!txt().includes('分成了 2 个文件')) throw new Error('转屏分段没说清楚')
+        if (titled('停止录屏')) throw new Error('录屏已经停了,按钮还是「停止」')
+
+        // ---- 拖文件进来:APK 安装,其它推到手机的 Download ----
+        const drop = __last.fileDrop as ((x: number, y: number, paths: string[]) => void) | null
+        if (!drop) throw new Error('投屏面板没接上原生拖放')
+        const savedFromPoint = document.elementFromPoint
+        document.elementFromPoint = () => canvas
+        try {
+          await act(async () => {
+            drop(10, 10, ['D:/数据/微信.apk', 'D:/数据/旧版old.apk', 'D:/数据/照片.jpg'])
+            await sleep(30)
+          })
+        } finally {
+          document.elementFromPoint = savedFromPoint
+        }
+        const dropReq = __last.mirrorDrop as { paths: string[] } | undefined
+        if (dropReq?.paths.length !== 3) throw new Error('拖进来的文件没交给后端: ' + JSON.stringify(dropReq))
+        if (!txt().includes('装好了 1 个应用，推了 1 个文件到手机的 Download 文件夹') || !txt().includes('旧版old.apk：手机上装着更新的版本')) {
+          throw new Error('拖放的结果没说清楚: ' + txt())
+        }
+        await act(async () => {
+          ws.emit(JSON.stringify({ type: 'transfer', text: '正在安装 微信.apk' }))
+        })
+        if (!txt().includes('正在安装 微信.apk')) throw new Error('处理进度没显示')
+        await act(async () => {
+          ws.emit(JSON.stringify({ type: 'transfer', text: '' }))
+        })
+
+        // ---- 横屏:停靠着看太小,给一个一键全屏 ----
+        await act(async () => {
+          ws.emit(mirrorSession(1200, 540))
+        })
+        if (!btn('横屏了，全屏看更大')) throw new Error('横屏时没给全屏的入口')
+        await act(async () => {
+          ws.emit(mirrorSession(540, 1200))
+        })
+        if (btn('横屏了，全屏看更大')) throw new Error('转回竖屏了还挂着横屏提示')
+
         // 全屏:画面盖住整个窗口,窗口也进系统全屏;Esc 退出,两样都要还原
         const panel = () => document.querySelector('[data-mirror-panel]') as HTMLElement
         delete __calls.WindowFullscreen
@@ -945,6 +1163,40 @@ async function main() {
           await sleep(30)
         })
         if ((__last.mirrorStarts as number) <= before) throw new Error('点了重新连接没有重开一路')
+
+        // 保持亮屏是开机参数:关掉要重开一路,带上新的设置
+        const beforeAwake = __last.mirrorStarts as number
+        await clickTitled('保持亮屏：开着')
+        await act(async () => {
+          await sleep(30)
+        })
+        const awakeReq = __last.mirrorStart as { options: { keepAwake: boolean } }
+        if ((__last.mirrorStarts as number) <= beforeAwake || awakeReq.options.keepAwake !== false) {
+          throw new Error('关掉保持亮屏没带着新设置重开: ' + JSON.stringify(awakeReq.options))
+        }
+        await clickTitled('保持亮屏：关着')
+        await act(async () => {
+          await sleep(30)
+        })
+
+        // 窗口藏起来(最小化)也要停;重新显示时自动接上
+        const hiddenRun = 'm' + String(__last.mirrorStarts)
+        Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+        try {
+          await act(async () => {
+            document.dispatchEvent(new window.Event('visibilitychange'))
+            await sleep(30)
+          })
+          if (!(__last.mirrorStops as string[] | undefined)?.includes(hiddenRun)) throw new Error('窗口藏起来之后投屏还在跑')
+        } finally {
+          delete (document as unknown as Record<string, unknown>).visibilityState
+        }
+        const beforeShown = __last.mirrorStarts as number
+        await act(async () => {
+          document.dispatchEvent(new window.Event('visibilitychange'))
+          await sleep(50)
+        })
+        if ((__last.mirrorStarts as number) <= beforeShown) throw new Error('窗口重新显示后没自动接上')
 
         // 切到别的工具:这一页只是藏起来,投屏得停,不然手机在后台一直编码;切回来自动接上
         const running = 'm' + String(__last.mirrorStarts)

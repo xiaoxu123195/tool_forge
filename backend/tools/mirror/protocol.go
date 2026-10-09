@@ -7,10 +7,11 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"unicode/utf8"
 )
 
 // 和手机端程序之间的二进制协议。字节布局照着 5.0.1 服务端的
-// DesktopConnection、Streamer、ControlMessageReader;多字节整数一律大端。
+// DesktopConnection、Streamer、ControlMessageReader、DeviceMessageWriter;多字节整数一律大端。
 
 // ---- 视频流 ----
 
@@ -72,11 +73,35 @@ func readPacket(r io.Reader, hdr []byte) ([]byte, error) {
 // ---- 控制消息 ----
 
 const (
-	msgInjectKeycode  = 0
-	msgInjectTouch    = 2
-	msgInjectScroll   = 3
-	msgBackOrScreenOn = 4
-	msgResetVideo     = 17
+	msgInjectKeycode           = 0
+	msgInjectText              = 1
+	msgInjectTouch             = 2
+	msgInjectScroll            = 3
+	msgBackOrScreenOn          = 4
+	msgExpandNotificationPanel = 5
+	msgExpandSettingsPanel     = 6
+	msgCollapsePanels          = 7
+	msgGetClipboard            = 8
+	msgSetClipboard            = 9
+	msgResetVideo              = 17
+	msgScanFile                = 22
+)
+
+const (
+	// injectTextMaxLength 一条文字消息最多多少字节,多了手机端只收前面的。长的切成几条发
+	injectTextMaxLength = 300
+	// clipboardTextMaxLength 写剪贴板的文字最多多少字节:整条消息 256K,
+	// 减去类型、序号、粘贴标志、长度这 14 个字节
+	clipboardTextMaxLength = 1<<18 - 14
+	// scanFilePathMaxLength 让手机扫描的路径最长多少字节
+	scanFilePathMaxLength = 256
+)
+
+// 读剪贴板之前要不要先按一下复制、剪切
+const (
+	copyKeyNone = 0
+	copyKeyCopy = 1
+	copyKeyCut  = 2
 )
 
 const (
@@ -88,6 +113,13 @@ const (
 
 	// pointerMouse 鼠标指针。只按着左键时手机端把它当成一根手指,和真的触摸没有区别
 	pointerMouse = ^uint64(0)
+	// pointerFinger、pointerVirtualFinger 双指缩放模拟出来的两根手指,
+	// 和鼠标那根各算各的,缩放时鼠标的按下抬起不会把它们打断
+	pointerFinger        = ^uint64(1)
+	pointerVirtualFinger = ^uint64(2)
+
+	// metaMask 安卓 KeyEvent.META_* 里有意义的位:Shift、Alt、Sym、Fn、Ctrl、Meta 和三个锁定键
+	metaMask = 0x7770ff
 )
 
 // keycodeMessage 按键:动作、键码、重复次数、修饰键
@@ -130,6 +162,67 @@ func backOrScreenOnMessage(action uint8) []byte {
 	return []byte{msgBackOrScreenOn, action}
 }
 
+// textMessages 输入一段文字。手机端一条最多收 300 字节,长的切成几条,
+// 切口落在字符边界上 —— 从一个字中间断开,两半都会变成乱码
+func textMessages(text string) []byte {
+	var out []byte
+	for text != "" {
+		n := utf8Prefix(text, injectTextMaxLength)
+		b := make([]byte, 5+n)
+		b[0] = msgInjectText
+		binary.BigEndian.PutUint32(b[1:], uint32(n))
+		copy(b[5:], text[:n])
+		out = append(out, b...)
+		text = text[n:]
+	}
+	return out
+}
+
+// setClipboardMessage 写手机剪贴板;paste 为真时写完再按一下粘贴(安卓 7 起才有这个键)。
+// sequence 非 0 时手机端写完会回一条确认
+func setClipboardMessage(sequence uint64, text string, paste bool) []byte {
+	text = text[:utf8Prefix(text, clipboardTextMaxLength)]
+	b := make([]byte, 14+len(text))
+	b[0] = msgSetClipboard
+	binary.BigEndian.PutUint64(b[1:], sequence)
+	if paste {
+		b[9] = 1
+	}
+	binary.BigEndian.PutUint32(b[10:], uint32(len(text)))
+	copy(b[14:], text)
+	return b
+}
+
+// getClipboardMessage 读手机剪贴板,内容从控制通道回来。copyKey 是读之前先按复制还是剪切
+func getClipboardMessage(copyKey uint8) []byte {
+	return []byte{msgGetClipboard, copyKey}
+}
+
+// scanFileMessage 让手机把一个文件登记进媒体库:推上去的照片、视频要这样才会出现在相册里。
+// 路径太长手机端会截断,截断的路径扫了也白扫,所以干脆不发
+func scanFileMessage(path string) ([]byte, bool) {
+	if len(path) > scanFilePathMaxLength {
+		return nil, false
+	}
+	b := make([]byte, 5+len(path))
+	b[0] = msgScanFile
+	binary.BigEndian.PutUint32(b[1:], uint32(len(path)))
+	copy(b[5:], path)
+	return b, true
+}
+
+// utf8Prefix s 里不超过 max 字节、又不切断字符的最长前缀有多长
+func utf8Prefix(s string, max int) int {
+	if len(s) <= max {
+		return len(s)
+	}
+	n := max
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return n
+}
+
 // position 坐标连同它所在画面的尺寸一起发:手机一转屏尺寸就变了,
 // 对不上的手机端会直接丢掉,免得点到错的地方
 type position struct {
@@ -165,13 +258,76 @@ func i16FixedPoint(f float64) uint16 {
 	return uint16(int16(i))
 }
 
+// ---- 手机发回来的消息(控制通道的另一个方向) ----
+
+const (
+	deviceMsgClipboard    = 0
+	deviceMsgAckClipboard = 1
+	deviceMsgUhidOutput   = 2
+	// deviceClipboardMaxLength 手机发来的剪贴板最多这么多字节:整条 256K 减去类型和长度
+	deviceClipboardMaxLength = 1<<18 - 5
+)
+
+// deviceMessage 手机发回来的一条消息。这里只用得上剪贴板,别的读掉就行
+type deviceMessage struct {
+	kind byte
+	text string
+}
+
+// errUnknownDeviceMessage 认不出的消息类型:不知道它多长,后面的字节就再也对不齐了
+var errUnknownDeviceMessage = errors.New("手机发来了认不出的消息")
+
+// readDeviceMessage 读一条手机发回来的消息
+func readDeviceMessage(r io.Reader) (deviceMessage, error) {
+	var head [1]byte
+	if _, err := io.ReadFull(r, head[:]); err != nil {
+		return deviceMessage{}, err
+	}
+	m := deviceMessage{kind: head[0]}
+	switch m.kind {
+	case deviceMsgClipboard:
+		var n [4]byte
+		if _, err := io.ReadFull(r, n[:]); err != nil {
+			return m, err
+		}
+		size := binary.BigEndian.Uint32(n[:])
+		if size > deviceClipboardMaxLength {
+			return m, fmt.Errorf("剪贴板长度 %d 不对,消息已经错位了", size)
+		}
+		buf := make([]byte, size)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return m, err
+		}
+		m.text = string(buf)
+	case deviceMsgAckClipboard:
+		// 8 字节序号:我们写剪贴板时不要确认,收到了也不用管
+		if _, err := io.CopyN(io.Discard, r, 8); err != nil {
+			return m, err
+		}
+	case deviceMsgUhidOutput:
+		// 2 字节设备号、2 字节长度、数据。我们不模拟实体键盘,不会有这种消息,读掉以防万一
+		var h [4]byte
+		if _, err := io.ReadFull(r, h[:]); err != nil {
+			return m, err
+		}
+		if _, err := io.CopyN(io.Discard, r, int64(binary.BigEndian.Uint16(h[2:]))); err != nil {
+			return m, err
+		}
+	default:
+		return m, errUnknownDeviceMessage
+	}
+	return m, nil
+}
+
 // ---- 界面发来的操作 ----
 
 // event 界面上的一次操作,一条 WebSocket 文本消息
 type event struct {
-	// T 是哪种操作:touch(鼠标左键)、scroll(滚轮)、key(按键)、back(返回)、reset(要一个新的关键帧)
+	// T 是哪种操作:touch(鼠标左键、双指)、scroll(滚轮)、key(按键)、back(返回)、
+	// text(输入文字)、paste(经剪贴板粘贴)、getclip(读剪贴板)、panel(通知栏)、reset(要一个新的关键帧)
 	T string `json:"t"`
-	// A 动作:0 按下,1 抬起,2 移动(只有 touch 有)
+	// A 动作:0 按下,1 抬起,2 移动(只有 touch 有)。
+	// getclip 里是读之前先按复制(1)还是剪切(2);panel 里 0 拉通知栏、1 拉快捷设置、2 收起来
 	A int `json:"a"`
 	// X、Y 是相对 W×H 这个画面的坐标 —— 就是会话包里报的视频尺寸
 	X int `json:"x"`
@@ -183,17 +339,44 @@ type event struct {
 	VS float64 `json:"vs"`
 	// K 安卓键码
 	K int `json:"k"`
+	// M 按键时按着的修饰键(安卓的 META_* 位),Ctrl+A 全选要靠它
+	M int `json:"m"`
+	// P 哪根手指:0 是鼠标,1、2 是双指缩放模拟出来的那两根
+	P int `json:"p"`
+	// S 要输入或粘贴的文字
+	S string `json:"s"`
 }
 
 var errBadEvent = errors.New("看不懂的操作")
 
-// encodeEvent 把一次操作编成控制消息。界面是自己人,但这里照样把关:
-// 坐标钳在画面里,动作和键码只认合法的值
+// maxTypedText 一次「输入文字」最多多少字节。打字是一个字一个字来的,
+// 输入法一次上屏也就一句话;太长的要么是误操作,要么该走粘贴
+const maxTypedText = 16 << 10
+
+// encodeEvent 把一次操作编成控制消息(可能是好几条连在一起)。界面是自己人,但这里照样把关:
+// 坐标钳在画面里,动作、键码、修饰键只认合法的值
 func encodeEvent(e event) ([]byte, error) {
 	switch e.T {
 	case "touch":
 		p, ok := e.position()
 		if !ok {
+			return nil, errBadEvent
+		}
+		if e.P == 1 || e.P == 2 {
+			// 模拟出来的手指:当成真的触摸,不带鼠标按键
+			ptr := pointerFinger
+			if e.P == 2 {
+				ptr = pointerVirtualFinger
+			}
+			switch e.A {
+			case actionDown, actionMove:
+				return touchMessage(uint8(e.A), ptr, p, 1, 0, 0), nil
+			case actionUp:
+				return touchMessage(actionUp, ptr, p, 0, 0, 0), nil
+			}
+			return nil, errBadEvent
+		}
+		if e.P != 0 {
 			return nil, errBadEvent
 		}
 		// 和鼠标的语义一致:按下和抬起带上「触发的是左键」,
@@ -213,12 +396,33 @@ func encodeEvent(e event) ([]byte, error) {
 		}
 		return scrollMessage(p, e.HS, e.VS, 0), nil
 	case "key":
-		if (e.A == actionDown || e.A == actionUp) && e.K > 0 && e.K < 1000 {
-			return keycodeMessage(uint8(e.A), int32(e.K), 0, 0), nil
+		if (e.A == actionDown || e.A == actionUp) && e.K > 0 && e.K < 1000 && e.M >= 0 && e.M&^metaMask == 0 {
+			return keycodeMessage(uint8(e.A), int32(e.K), 0, uint32(e.M)), nil
 		}
 	case "back":
 		if e.A == actionDown || e.A == actionUp {
 			return backOrScreenOnMessage(uint8(e.A)), nil
+		}
+	case "text":
+		if e.S != "" && len(e.S) <= maxTypedText && utf8.ValidString(e.S) {
+			return textMessages(e.S), nil
+		}
+	case "paste":
+		if e.S != "" && utf8.ValidString(e.S) {
+			return setClipboardMessage(0, e.S, true), nil
+		}
+	case "getclip":
+		if e.A == copyKeyNone || e.A == copyKeyCopy || e.A == copyKeyCut {
+			return getClipboardMessage(uint8(e.A)), nil
+		}
+	case "panel":
+		switch e.A {
+		case 0:
+			return []byte{msgExpandNotificationPanel}, nil
+		case 1:
+			return []byte{msgExpandSettingsPanel}, nil
+		case 2:
+			return []byte{msgCollapsePanels}, nil
 		}
 	case "reset":
 		return []byte{msgResetVideo}, nil

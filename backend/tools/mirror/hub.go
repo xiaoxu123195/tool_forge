@@ -64,8 +64,8 @@ func (h *hub) serve(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	// 界面只发鼠标、按键这种小消息
-	ws.SetReadLimit(64 << 10)
+	// 界面发的多是鼠标、按键这种小消息;最大的是粘贴,手机剪贴板一次最多收 256K
+	ws.SetReadLimit(1 << 20)
 	sess.attach(ws)
 }
 

@@ -11,11 +11,11 @@ package mirror
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -25,8 +25,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-
-	"tool_forge/backend/tools/adbx"
 )
 
 // Service 管着所有正在投屏的会话
@@ -34,8 +32,8 @@ type Service struct {
 	mu       sync.Mutex
 	sessions map[string]*session
 	hub      *hub
-	// prepare 选中设备并推好手机端程序,返回实际的序列号。测试里换成假的
-	prepare func(adbPath, serial string) (string, error)
+	// prepare 选中设备、读几项属性、推好手机端程序。测试里换成假的
+	prepare func(adbPath, serial string) (deviceInfo, error)
 }
 
 func New() *Service {
@@ -58,6 +56,8 @@ type Session struct {
 	DeviceName string `json:"deviceName"`
 	// URL 视频和鼠标操作都走这条 WebSocket
 	URL string `json:"url"`
+	// SDK 安卓 API 级别,读不到时是 0。复制、粘贴键要 24(安卓 7)起才有
+	SDK int `json:"sdk"`
 }
 
 // Start 推送、启动手机端程序,连好视频和控制两条通道。
@@ -66,7 +66,7 @@ func (s *Service) Start(req StartRequest) (*Session, error) {
 	if err := req.Options.validate(); err != nil {
 		return nil, err
 	}
-	serial, err := s.prepare(req.AdbPath, req.Serial)
+	info, err := s.prepare(req.AdbPath, req.Serial)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +74,7 @@ func (s *Service) Start(req StartRequest) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	sess, err := launch(serial, req.Options, s.forget)
+	sess, err := launch(info, req.AdbPath, req.Options, s.forget)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +85,7 @@ func (s *Service) Start(req StartRequest) (*Session, error) {
 		return nil, fmt.Errorf("投屏刚开始就断了:%s", sess.endReason())
 	}
 	s.sessions[sess.id] = sess
-	return &Session{ID: sess.id, DeviceName: sess.deviceName, URL: h.url(sess)}, nil
+	return &Session{ID: sess.id, DeviceName: sess.deviceName, URL: h.url(sess), SDK: info.sdk}, nil
 }
 
 // Stop 结束一路投屏。手机端程序在通道关掉后自己退出
@@ -119,29 +119,21 @@ func (s *Service) get(id string) *session {
 	return s.sessions[id]
 }
 
+// live 取一路还开着的投屏。截图、录屏、拖文件都要它
+func (s *Service) live(id string) (*session, error) {
+	sess := s.get(id)
+	if sess == nil || sess.isClosed() {
+		return nil, errors.New("投屏已经断开了,重新连上再试")
+	}
+	return sess, nil
+}
+
 func (s *Service) forget(sess *session) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.sessions[sess.id] == sess {
 		delete(s.sessions, sess.id)
 	}
-}
-
-// prepareDevice 选中设备,把手机端程序推上去。
-// 设备没授权、不在线这类情况,adbx 已经会说人话
-func prepareDevice(adbPath, serial string) (string, error) {
-	client, err := adbx.Dial(adbPath)
-	if err != nil {
-		return "", err
-	}
-	dev, _, err := adbx.PickDevice(client, serial)
-	if err != nil {
-		return "", err
-	}
-	if err := dev.Push(bytes.NewReader(serverJar), devicePath, time.Now(), 0o644); err != nil {
-		return "", fmt.Errorf("往手机上推投屏程序失败: %w", err)
-	}
-	return dev.Serial(), nil
 }
 
 // ---- 一路投屏 ----
@@ -157,9 +149,14 @@ const (
 // 切到别的页面再切回来也是先断后连 —— 一断就收掉的话这两种情况都会白白重连一次
 var detachGrace = 3 * time.Second
 
+// clipboardWait 读手机剪贴板最多等多久。剪贴板是空的时候手机端不回话,只能等到超时
+var clipboardWait = time.Second
+
 type session struct {
 	id, token  string
 	serial     string
+	adbPath    string
+	info       deviceInfo
 	deviceName string
 
 	// shell 手机端程序的输出(日志)。这条连接一关,程序也就没人管了
@@ -170,6 +167,15 @@ type session struct {
 	logs logTail
 	// injectDenied 手机拒绝了模拟点击。小米一类机型要另开一个开关
 	injectDenied atomic.Bool
+
+	// clipKept 第一次粘贴之前已经把手机剪贴板原来的内容读出来交给界面了
+	clipKept atomic.Bool
+	clipMu   sync.Mutex
+	// clipWait 有人在等手机剪贴板的回信:下一条剪贴板消息给它,不转给界面
+	clipWait chan string
+
+	recMu sync.Mutex
+	rec   *recorder // 正在录屏,可能没有
 
 	mu      sync.Mutex
 	ws      *websocket.Conn // 当前接着的界面,可能没有
@@ -184,16 +190,18 @@ type session struct {
 }
 
 // launch 在手机上启动手机端程序并连好两条通道
-func launch(serial string, o Options, onClose func(*session)) (*session, error) {
+func launch(info deviceInfo, adbPath string, o Options, onClose func(*session)) (*session, error) {
 	scid := randomScid()
-	shell, err := openService(serial, "shell:"+serverCommand(scid, o))
+	shell, err := openService(info.serial, "shell:"+serverCommand(scid, o))
 	if err != nil {
 		return nil, fmt.Errorf("在手机上启动投屏程序失败: %w", err)
 	}
 	s := &session{
 		id:      randomHex(8),
 		token:   randomHex(16),
-		serial:  serial,
+		serial:  info.serial,
+		adbPath: adbPath,
+		info:    info,
 		shell:   shell,
 		closed:  make(chan struct{}),
 		onClose: onClose,
@@ -204,7 +212,7 @@ func launch(serial string, o Options, onClose func(*session)) (*session, error) 
 		return nil, err
 	}
 	go s.pumpVideo()
-	go s.drainControl()
+	go s.readDeviceMessages()
 	return s, nil
 }
 
@@ -306,13 +314,13 @@ func (s *session) readLogs() {
 		line := strings.TrimRight(sc.Text(), "\r")
 		s.logs.add(line)
 		if strings.Contains(line, "INJECT_EVENTS permission") && s.injectDenied.CompareAndSwap(false, true) {
-			s.notify(noticeInjectDenied)
+			s.notify(injectDeniedNotice(s.info.brand))
 		}
 	}
 	s.close(s.endReason())
 }
 
-// pumpVideo 把手机发来的包原样转给界面
+// pumpVideo 把手机发来的包原样转给界面;录着屏的话同时写进文件
 func (s *session) pumpVideo() {
 	hdr := make([]byte, headerSize)
 	for {
@@ -321,15 +329,97 @@ func (s *session) pumpVideo() {
 			s.close(s.endReason())
 			return
 		}
+		s.record(pkt)
 		s.forward(pkt)
 	}
 }
 
-// drainControl 手机经控制通道发回来的消息(剪贴板之类)这一轮用不上,
-// 但必须读掉,不然缓冲区一满手机端就卡住了
-func (s *session) drainControl() {
-	_, _ = io.Copy(io.Discard, s.control)
-	s.close(s.endReason())
+// readDeviceMessages 收手机经控制通道发回来的消息:剪贴板内容转给界面。
+// 别的消息用不上,但也得读掉 —— 不读的话缓冲区一满,手机端就卡住了
+func (s *session) readDeviceMessages() {
+	r := bufio.NewReader(s.control)
+	for {
+		m, err := readDeviceMessage(r)
+		if errors.Is(err, errUnknownDeviceMessage) {
+			// 对不齐了:剩下的只能全丢掉,好歹不让手机端卡住
+			_, _ = io.Copy(io.Discard, r)
+		}
+		if err != nil {
+			s.close(s.endReason())
+			return
+		}
+		if m.kind == deviceMsgClipboard {
+			s.gotClipboard(m.text)
+		}
+	}
+}
+
+// gotClipboard 手机剪贴板的内容到了:有人在等就给它,否则交给界面
+func (s *session) gotClipboard(text string) {
+	s.clipMu.Lock()
+	w := s.clipWait
+	s.clipWait = nil
+	s.clipMu.Unlock()
+	if w != nil {
+		w <- text
+		return
+	}
+	s.notify(notice{Type: "clipboard", Text: text})
+}
+
+// keepClipboard 第一次往手机剪贴板里写东西之前,先把原来的内容读出来交给界面。
+//
+// 中文是经剪贴板粘贴过去的,写进去就把原来的顶掉了 —— 而手机上复制着的那段话,
+// 可能正是要找的东西。一次投屏只读这一回:之后剪贴板里是我们自己粘的字
+func (s *session) keepClipboard() {
+	if !s.clipKept.CompareAndSwap(false, true) {
+		return
+	}
+	w := make(chan string, 1)
+	s.clipMu.Lock()
+	s.clipWait = w
+	s.clipMu.Unlock()
+	if s.sendControl(getClipboardMessage(copyKeyNone)) != nil {
+		return
+	}
+	select {
+	case text := <-w:
+		s.notify(notice{Type: "clipboard", Code: "replaced", Text: text})
+	case <-time.After(clipboardWait):
+		// 剪贴板原来是空的,手机端不回话
+		s.clipMu.Lock()
+		if s.clipWait == w {
+			s.clipWait = nil
+		}
+		s.clipMu.Unlock()
+		s.notify(notice{Type: "clipboard", Code: "replaced"})
+	}
+}
+
+// record 正在录屏的话,把这个包也写进文件。写盘出错只停录屏,投屏照常
+func (s *session) record(pkt []byte) {
+	s.recMu.Lock()
+	defer s.recMu.Unlock()
+	if s.rec == nil {
+		return
+	}
+	if err := s.rec.feed(pkt); err != nil {
+		res := s.rec.finish()
+		s.rec = nil
+		go s.notify(recordedNotice(res, "录屏写文件出错，已经停了："+err.Error()))
+	}
+}
+
+// takeRecording 停掉录屏、把文件收尾。没在录时第二个返回值是 false
+func (s *session) takeRecording() (Recording, bool) {
+	s.recMu.Lock()
+	defer s.recMu.Unlock()
+	if s.rec == nil {
+		return Recording{}, false
+	}
+	res := s.rec.finish()
+	s.rec = nil
+	return res, true
 }
 
 func (s *session) endReason() string {
@@ -385,7 +475,7 @@ func (s *session) attach(ws *websocket.Conn) {
 		return
 	}
 	if s.injectDenied.Load() {
-		s.notify(noticeInjectDenied)
+		s.notify(injectDeniedNotice(s.info.brand))
 	}
 	s.readEvents(ws)
 }
@@ -405,6 +495,9 @@ func (s *session) readEvents(ws *websocket.Conn) {
 		msg, err := encodeEvent(e)
 		if err != nil {
 			continue
+		}
+		if e.T == "paste" {
+			s.keepClipboard()
 		}
 		if err := s.sendControl(msg); err != nil {
 			s.close(s.endReason())
@@ -445,16 +538,16 @@ func (s *session) sendControl(msg []byte) error {
 
 // notice 发给界面的文字消息
 type notice struct {
-	// Type notice = 提醒一句,会话照常;ended = 会话结束了
+	// Type notice = 提醒一句,会话照常;ended = 会话结束了;clipboard = 手机剪贴板的内容;
+	// recorded = 录屏停了(Files、Ms 是结果);transfer = 拖进来的文件处理到哪了
 	Type string `json:"type"`
+	// Code 细分:inject-denied = 不让模拟点击;replaced = 第一次粘贴前剪贴板里原来的内容
 	Code string `json:"code,omitempty"`
 	Text string `json:"text"`
-}
-
-var noticeInjectDenied = notice{
-	Type: "notice",
-	Code: "inject-denied",
-	Text: "手机拒绝了模拟点击。小米、红米等机型要在「开发者选项」里再打开「USB 调试（安全设置）」，打开后重启手机再试",
+	// Files 录屏存成的文件,转过屏会有好几段
+	Files []string `json:"files,omitempty"`
+	// Ms 录了多久
+	Ms int64 `json:"ms,omitempty"`
 }
 
 func (s *session) notify(n notice) {
@@ -489,7 +582,12 @@ func (s *session) close(reason string) {
 		video, control := s.video, s.control
 		s.mu.Unlock()
 
+		// 录着屏就断了(拔线、关面板):把文件收尾,不然最后一段没有时长
+		res, recording := s.takeRecording()
 		if ws != nil {
+			if recording {
+				_ = s.write(ws, websocket.TextMessage, mustJSON(recordedNotice(res, "")))
+			}
 			if reason != "" {
 				_ = s.write(ws, websocket.TextMessage, mustJSON(notice{Type: "ended", Text: reason}))
 			}

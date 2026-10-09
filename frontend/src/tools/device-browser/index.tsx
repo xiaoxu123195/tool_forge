@@ -386,7 +386,7 @@ export default function DeviceBrowser() {
             disabled={platform !== 'android'}
             title={
               platform === 'android'
-                ? '在右边投屏这台手机，可以直接用鼠标操作'
+                ? '在右边投屏这台手机：鼠标键盘直接操作，能截图、录屏，往画面上拖安装包和文件'
                 : 'iOS 投不了屏：苹果不允许电脑模拟触摸'
             }
           >

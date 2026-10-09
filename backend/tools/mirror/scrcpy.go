@@ -29,6 +29,9 @@ type Options struct {
 	BitRate int `json:"bitRate"`
 	// MaxFps 最高帧率,0 = 不限
 	MaxFps int `json:"maxFps"`
+	// KeepAwake 投屏期间手机不自动息屏。手机端每隔几秒报一次「有人在用」,
+	// 和手指碰一下屏幕是一回事 —— 不改手机的息屏时间之类任何设置
+	KeepAwake bool `json:"keepAwake"`
 }
 
 func (o Options) validate() error {
@@ -48,7 +51,8 @@ func (o Options) validate() error {
 //
 // 参数只拼校验过的整数,不会有引号、分号之类混进 shell。
 // 刻意留着默认值的几项:
-//   - 不改手机设置:show_touches、stay_awake 都不开 —— 取证现场动了设置就得写进记录
+//   - 不改手机设置:show_touches、stay_awake 都不开 —— 取证现场动了设置就得写进记录。
+//     不让息屏用的是 keep_active,它只是定时报「有人在用」,不碰设置
 //   - cleanup 默认开:清理进程启动时删掉推上去的程序文件
 //   - power_on 默认开:黑着屏投过来是一块黑
 func serverCommand(scid uint32, o Options) string {
@@ -64,11 +68,15 @@ func serverCommand(scid uint32, o Options) string {
 		"video_codec=h264",
 		fmt.Sprintf("max_size=%d", o.MaxSize),
 		fmt.Sprintf("video_bit_rate=%d", o.BitRate),
-		// 手机剪贴板一变就推过来 —— 这一轮用不上,开着还得有人去读
+		// 手机剪贴板一变就推过来:不要。手机上复制了什么是人家的事,
+		// 只在用户点「读剪贴板」、按 Ctrl+C 时才去读
 		"clipboard_autosync=false",
 	}
 	if o.MaxFps > 0 {
 		args = append(args, fmt.Sprintf("max_fps=%d", o.MaxFps))
+	}
+	if o.KeepAwake {
+		args = append(args, "keep_active=true")
 	}
 	return strings.Join(args, " ")
 }

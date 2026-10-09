@@ -112,7 +112,7 @@ export default function PlistTool() {
 
   // 原生拖放给的是绝对路径(HTML5 拖放给不了),后端直接读文件,
   // 几十 MB 的 plist 不用先在 JS 里读一遍再 base64 过桥
-  useNativeFileDrop((paths) => {
+  const dropRef = useNativeFileDrop((paths) => {
     if (paths.length > 0) openPath(paths[0])
   })
 
@@ -198,6 +198,7 @@ export default function PlistTool() {
       }
     >
       <div
+        ref={dropRef}
         style={{ ['--wails-drop-target' as never]: 'drop' }}
         className="relative flex h-full flex-col gap-3 rounded-lg"
       >

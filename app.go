@@ -667,6 +667,38 @@ func (a *App) StopMirror(id string) {
 	a.mirror.Stop(id)
 }
 
+// MirrorScreenshot 让手机截一张原图,存进 dir(文件名带机型和时间)
+func (a *App) MirrorScreenshot(id, dir string) (*mirror.Shot, error) {
+	return a.mirror.Screenshot(id, dir)
+}
+
+// MirrorStartRecording 开始录屏,存进 dir。返回第一段文件的路径
+func (a *App) MirrorStartRecording(id, dir string) (string, error) {
+	return a.mirror.StartRecording(id, dir)
+}
+
+// MirrorStopRecording 停止录屏
+func (a *App) MirrorStopRecording(id string) (*mirror.Recording, error) {
+	return a.mirror.StopRecording(id)
+}
+
+// MirrorDrop 拖进投屏画面的文件:安装包装到手机上,别的推到手机的 Download 文件夹
+func (a *App) MirrorDrop(id string, paths []string) ([]mirror.DropItem, error) {
+	return a.mirror.Drop(id, paths)
+}
+
+// CopyImageFile 把一张 PNG 图片放进剪贴板,能直接粘到文档和聊天里
+func (a *App) CopyImageFile(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("读图片失败: %w", err)
+	}
+	if err := system.CopyImage(data); err != nil {
+		return fmt.Errorf("写剪贴板失败: %w", err)
+	}
+	return nil
+}
+
 // ================ MMKV / plist 解析 ================
 //
 // 这两个工具页原来在浏览器里各有一份 TypeScript 解析器,和后端这份是两套实现。

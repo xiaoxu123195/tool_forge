@@ -8,6 +8,15 @@ export interface MirrorCallbacks {
   onLive: () => void
   /** 手机端的提醒,会话照常 */
   onNotice: (text: string) => void
+  /**
+   * 手机剪贴板的内容到了。code 是 replaced 时,这是第一次粘贴前剪贴板里原来的东西
+   * (原来是空的话 text 也是空的)
+   */
+  onClipboard: (text: string, code: string) => void
+  /** 录屏停了(手机拔了、写盘出错):存成了哪几个文件,录了多久 */
+  onRecorded: (files: string[], ms: number, error: string) => void
+  /** 拖进来的文件处理到哪了;空字符串 = 处理完了 */
+  onTransfer: (text: string) => void
   /** 会话结束了,不会再有画面 */
   onEnded: (reason: string) => void
 }
@@ -78,14 +87,28 @@ export class MirrorLink {
 
   private onMessage(ev: MessageEvent) {
     if (typeof ev.data === 'string') {
-      let n: { type?: string; text?: string }
+      let n: { type?: string; code?: string; text?: string; files?: string[]; ms?: number }
       try {
         n = JSON.parse(ev.data)
       } catch {
         return
       }
-      if (n.type === 'ended') this.end(n.text || '投屏断开了')
-      else if (n.type === 'notice' && n.text) this.cb.onNotice(n.text)
+      switch (n.type) {
+        case 'ended':
+          this.end(n.text || '投屏断开了')
+          break
+        case 'notice':
+          if (n.text) this.cb.onNotice(n.text)
+          break
+        case 'clipboard':
+          this.cb.onClipboard(n.text ?? '', n.code ?? '')
+          break
+        case 'recorded':
+          this.cb.onRecorded(n.files ?? [], n.ms ?? 0, n.text ?? '')
+          break
+        case 'transfer':
+          this.cb.onTransfer(n.text ?? '')
+      }
       return
     }
     const p = parsePacket(new Uint8Array(ev.data as ArrayBuffer))

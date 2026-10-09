@@ -17,9 +17,10 @@ export function DropZone({
   hint?: string
   className?: string
 }) {
-  useNativeFileDrop(onPaths)
+  const dropRef = useNativeFileDrop(onPaths)
   return (
     <div
+      ref={dropRef}
       style={{ ['--wails-drop-target' as never]: 'drop' }}
       onClick={onPick}
       className={cn(

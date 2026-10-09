@@ -75,12 +75,22 @@ export function fitSize(maxWidth: number, maxHeight: number, aspect: number) {
 }
 
 /** 用到的安卓键码 */
-export const KEY = { HOME: 3, POWER: 26, APP_SWITCH: 187 } as const
+export const KEY = { HOME: 3, POWER: 26, APP_SWITCH: 187, VOLUME_UP: 24, VOLUME_DOWN: 25, WAKEUP: 224 } as const
 
 /** 界面发给后端的操作,和后端 protocol.go 里的 event 一一对应 */
 export type ControlEvent =
-  | { t: 'touch'; a: 0 | 1 | 2; x: number; y: number; w: number; h: number }
+  /** p:0 是鼠标;1、2 是双指缩放模拟出来的两根手指 */
+  | { t: 'touch'; a: 0 | 1 | 2; x: number; y: number; w: number; h: number; p?: 1 | 2 }
   | { t: 'scroll'; x: number; y: number; w: number; h: number; hs: number; vs: number }
-  | { t: 'key'; a: 0 | 1; k: number }
+  /** m:按着的修饰键(安卓 META_* 位) */
+  | { t: 'key'; a: 0 | 1; k: number; m?: number }
   | { t: 'back'; a: 0 | 1 }
+  /** 能直接按键打出来的文字(英文、数字、符号) */
+  | { t: 'text'; s: string }
+  /** 打不出来的(中文、表情)经手机剪贴板粘贴 */
+  | { t: 'paste'; s: string }
+  /** 读手机剪贴板;a:读之前先按复制(1)、剪切(2) */
+  | { t: 'getclip'; a: 0 | 1 | 2 }
+  /** a:0 拉下通知栏,1 拉下快捷设置,2 收起来 */
+  | { t: 'panel'; a: 0 | 1 | 2 }
   | { t: 'reset' }

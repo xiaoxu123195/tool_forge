@@ -76,7 +76,7 @@ export default function MmkvTool() {
 
   // 原生拖放给的是绝对路径(HTML5 拖放给不了),后端直接读文件,
   // 50MB 的 MMKV 不用先在 JS 里读一遍再传过桥
-  useNativeFileDrop((paths) => {
+  const dropRef = useNativeFileDrop((paths) => {
     if (paths.length > 0) openPath(paths[0])
   })
 
@@ -168,6 +168,7 @@ export default function MmkvTool() {
       }
     >
       <div
+        ref={dropRef}
         style={{ ['--wails-drop-target' as never]: 'drop' }}
         className="relative flex h-full flex-col gap-3 rounded-lg"
       >

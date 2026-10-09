@@ -431,6 +431,50 @@ const special = {
     const id = 'm' + last.mirrorStarts
     return Promise.resolve({ id, deviceName: '22041216C', url: 'ws://127.0.0.1:1/mirror/' + id + '?t=x' })
   },
+  // 投屏的截图、录屏、拖文件:记下调用,回一个像样的结果。文件名照后端的规矩:机型_截图_时间
+  MirrorScreenshot: (id, dir) => {
+    last.mirrorShot = { id, dir }
+    return Promise.resolve({ path: dir + '/22041216C_截图_20261009_153012.png', width: 1080, height: 2400, bytes: 345678 })
+  },
+  MirrorStartRecording: (id, dir) => {
+    last.mirrorRecStart = { id, dir }
+    return Promise.resolve(dir + '/22041216C_录屏_20261009_153012.mp4')
+  },
+  MirrorStopRecording: (id) => {
+    last.mirrorRecStop = id
+    return Promise.resolve({ files: ['D:/导出/22041216C_录屏_20261009_153012.mp4'], durationMs: 65000, bytes: 9000000 })
+  },
+  // 路径里带 old 的安装包装不上(手机上已经有更新的版本),其余都成
+  MirrorDrop: (id, paths) => {
+    last.mirrorDrop = { id, paths }
+    return Promise.resolve(
+      paths.map((p) => {
+        const name = p.split(/[\\/]/).pop()
+        if (!p.endsWith('.apk')) return { name, kind: 'push', ok: true, remote: '/sdcard/Download/' + name }
+        return p.includes('old')
+          ? { name, kind: 'install', ok: false, error: '手机上装着更新的版本。要装这个旧版，得先卸载手机上的（会清掉它的数据）' }
+          : { name, kind: 'install', ok: true }
+      }),
+    )
+  },
+  CopyImageFile: (p) => {
+    last.copiedImage = p
+    return Promise.resolve()
+  },
+  // 电脑剪贴板:probe 往 last.pcClipboard 里放字,写进去的记在 last.pcClipboardSet
+  ClipboardGetText: () => Promise.resolve(last.pcClipboard || ''),
+  ClipboardSetText: (t) => {
+    last.pcClipboardSet = t
+    return Promise.resolve(true)
+  },
+  WindowIsMinimised: () => Promise.resolve(!!last.minimised),
+  // 原生拖放:留住回调,probe 拿它模拟「文件拖进来松手」
+  OnFileDrop: (cb) => {
+    last.fileDrop = cb
+  },
+  OnFileDropOff: () => {
+    last.fileDrop = null
+  },
   StopMirror: (id) => {
     last.mirrorStops = [...(last.mirrorStops || []), id]
     return Promise.resolve()
