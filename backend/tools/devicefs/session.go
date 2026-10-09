@@ -16,6 +16,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"golang.org/x/crypto/ssh"
 )
 
 // transport 一台设备上的文件访问方式。
@@ -135,6 +137,20 @@ func (m *Manager) get(id string) (*Session, error) {
 		return nil, fmt.Errorf("会话 %q 已经不在了(可能已断开),重新连接一次", id)
 	}
 	return s, nil
+}
+
+// IOSClient iOS 会话下面那条 SSH 连接和设备的 UDID。
+// 投屏要经它在手机上开关 TrollVNC —— 用同一条连接,不用再问一遍密码
+func (m *Manager) IOSClient(id string) (*ssh.Client, string, error) {
+	s, err := m.get(id)
+	if err != nil {
+		return nil, "", err
+	}
+	t, ok := s.t.(*iosTransport)
+	if !ok {
+		return nil, "", errors.New("这条连接不是 iOS 设备")
+	}
+	return t.ssh, s.DeviceID, nil
 }
 
 // Disconnect 断开并清理

@@ -41,6 +41,8 @@ esbuild
         name: 'smoke-stub',
         setup(b) {
           b.onResolve({ filter: /wailsjs/ }, () => ({ path: path.join(__dirname, 'stub.cjs') }))
+          // noVNC 要真的 VNC 服务端,而且模块顶层有 await(打不进 Node 的单文件):换成假的
+          b.onResolve({ filter: /^@novnc\/novnc$/ }, () => ({ path: path.join(__dirname, 'novnc-stub.cjs') }))
           b.onResolve({ filter: /^@\// }, (a) => {
             const p = path.join(SRC, a.path.slice(2))
             return { path: p + guessExt(p) }

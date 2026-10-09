@@ -36,6 +36,7 @@ import { ConnectPanel } from './ConnectPanel'
 import { Breadcrumbs } from './Breadcrumbs'
 import { PreviewPane, fmtSize } from './PreviewPane'
 import { MirrorPanel } from './MirrorPanel'
+import { IosMirrorPanel } from './IosMirrorPanel'
 import { presetsFor } from './presets'
 import { jumpTo } from '@/lib/jump'
 import {
@@ -89,7 +90,7 @@ export default function DeviceBrowser() {
 
   // 从 store 里取:原来是组件自己的状态,切到别的工具再切回来就没了
   const deviceLabel = [model, serial].filter(Boolean).join(' · ')
-  // 投屏面板开着没有。只有安卓能投:iOS 不让电脑模拟触摸
+  // 投屏面板开着没有。安卓走 scrcpy;iOS 要越狱,手机上跑 TrollVNC
   const [mirrorOpen, setMirrorOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<devicefs.SearchResult | null>(null)
@@ -383,11 +384,10 @@ export default function DeviceBrowser() {
             variant={mirrorOpen ? 'secondary' : 'ghost'}
             size="sm"
             onClick={() => setMirrorOpen((v) => !v)}
-            disabled={platform !== 'android'}
             title={
               platform === 'android'
                 ? '在右边投屏这台手机：鼠标键盘直接操作，能截图、录屏，往画面上拖安装包和文件'
-                : 'iOS 投不了屏：苹果不允许电脑模拟触摸'
+                : '在右边投屏这台 iPhone：鼠标键盘直接操作，能截图、录屏（手机上要装 TrollVNC，没装的话面板里教你装）'
             }
           >
             <ScreenShare className="h-3.5 w-3.5" />
@@ -594,6 +594,9 @@ export default function DeviceBrowser() {
             active={visible}
             onClose={() => setMirrorOpen(false)}
           />
+        )}
+        {mirrorOpen && platform !== 'android' && (
+          <IosMirrorPanel deviceSession={sessionId} active={visible} onClose={() => setMirrorOpen(false)} />
         )}
       </div>
     </ToolShell>

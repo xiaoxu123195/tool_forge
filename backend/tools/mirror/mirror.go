@@ -27,17 +27,29 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Service 管着所有正在投屏的会话
+// Service 管着所有正在投屏的会话:安卓的(scrcpy)和 iOS 的(TrollVNC,见 ios.go)
 type Service struct {
 	mu       sync.Mutex
 	sessions map[string]*session
-	hub      *hub
+	ios      map[string]*iosSession
+	phones   map[string]*iosPhone
+	// up 界面录着的屏(iOS 投屏的录像在界面那头编码,一段段传过来)
+	up  uploads
+	hub *hub
 	// prepare 选中设备、读几项属性、推好手机端程序。测试里换成假的
 	prepare func(adbPath, serial string) (deviceInfo, error)
+	// iosDial 经 usbmuxd 连 iPhone 上的端口。测试里换成假的
+	iosDial func(udid string, port int) (net.Conn, error)
 }
 
 func New() *Service {
-	return &Service{sessions: map[string]*session{}, prepare: prepareDevice}
+	return &Service{
+		sessions: map[string]*session{},
+		ios:      map[string]*iosSession{},
+		phones:   map[string]*iosPhone{},
+		prepare:  prepareDevice,
+		iosDial:  dialPhone,
+	}
 }
 
 // StartRequest 界面发起一路投屏
@@ -95,8 +107,13 @@ func (s *Service) Stop(id string) {
 	}
 }
 
-// CloseAll 应用退出时调用。不收的话手机端程序会一直跑到手机拔线
+// CloseAll 应用退出时调用。不收的话手机端程序会一直跑到手机拔线;
+// iPhone 上的服务也在这里停掉 —— 得赶在真机浏览断开 SSH 之前
 func (s *Service) CloseAll() {
+	for _, sess := range s.iosSessions() {
+		s.closeIOS(sess)
+	}
+	s.closeUploads()
 	s.mu.Lock()
 	all := make([]*session, 0, len(s.sessions))
 	for _, sess := range s.sessions {

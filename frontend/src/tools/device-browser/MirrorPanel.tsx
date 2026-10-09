@@ -1,12 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type HTMLAttributes, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   Camera,
   ChevronLeft,
   Circle,
   CircleHelp,
   ClipboardList,
-  Copy,
-  FolderOpen,
   Loader2,
   Maximize2,
   Minimize2,
@@ -26,27 +24,39 @@ import { cn } from '@/lib/utils'
 import { useNativeFileDrop } from '@/lib/useNativeFileDrop'
 import { useDeviceBrowserStore } from '@/stores/device-browser'
 import {
-  CopyImageFile,
   MirrorDrop,
   MirrorScreenshot,
   MirrorStartRecording,
   MirrorStopRecording,
-  PickDirectory,
-  RevealInExplorer,
   StartMirror,
   StopMirror,
 } from '../../../wailsjs/go/main/App'
 import type { mirror } from '../../../wailsjs/go/models'
-import {
-  ClipboardGetText,
-  ClipboardSetText,
-  WindowFullscreen,
-  WindowIsMinimised,
-  WindowUnfullscreen,
-} from '../../../wailsjs/runtime/runtime'
+import { ClipboardGetText, ClipboardSetText } from '../../../wailsjs/runtime/runtime'
 import { MirrorLink, supportsDecoding } from './mirror-link'
-import { KEY, fitSize, toVideoPoint, wheelNotches, type ControlEvent } from './mirror-video'
+import { KEY, toVideoPoint, wheelNotches, type ControlEvent } from './mirror-video'
 import { keyAction, pinchFactor, pinchFingers, typeable } from './mirror-input'
+import {
+  ClipboardCard,
+  DEFAULT_ASPECT,
+  HintBar,
+  KeyboardCatcher,
+  RAIL,
+  RailButton,
+  RecordIcon,
+  ToastBar,
+  WarningBar,
+  displaySize,
+  fmtDuration,
+  preview,
+  useCaptureDir,
+  useDevicePixelRatio,
+  useElementSize,
+  useFullscreen,
+  useTicker,
+  useWindowShown,
+  type Toast,
+} from './mirror-ui'
 
 /**
  * 画质档位。要看清字,宁可传大一点、在电脑这边高质量缩小,也不要让手机先缩一遍 ——
@@ -61,23 +71,10 @@ type QualityId = (typeof QUALITIES)[number]['id']
 
 type Phase = 'starting' | 'live' | 'ended' | 'error' | 'unsupported'
 
-/** 还不知道手机多宽时先按常见的 9:19.5 占位,画面一到就换成真的 */
-const DEFAULT_ASPECT = 9 / 19.5
-/** 右侧按钮栏的宽度 */
-const RAIL = 36
-/** 停靠时横屏画面最多占窗口宽度的多少。横屏是扁的,宽度给少了就只剩一条缝 */
-const LANDSCAPE_SHARE = 0.62
 /** 读手机剪贴板最多等多久:剪贴板是空的时候手机不回话 */
 const CLIP_WAIT = 2000
 /** 安卓 7(API 24)起才有复制、粘贴键 */
 const SDK_PASTE = 24
-
-/**
- * 提示条多久后自己消失(毫秒):顺口一提的提醒、成功、失败。失败的留久一点,要看清是哪个文件、为什么。
- * 「手机拒绝了模拟点击」这种不处理就用不了的不在这里,一直留着等人关。
- * 导出是给冒烟测试调短用的,省得真等几秒
- */
-export const DISMISS_MS = { hint: 6000, ok: 5000, error: 15000 }
 
 const HELP = [
   '左键：点按、拖动，和手指一样',
@@ -88,19 +85,6 @@ const HELP = [
   'Ctrl+V：电脑剪贴板里的字粘到手机上',
   '把文件拖到画面上：APK 直接安装，其它文件推到手机的 Download 文件夹',
 ].join('\n')
-
-/** 面板底部的提示条 */
-interface Toast {
-  text: string
-  /** 失败的标红,留得久一点 */
-  error?: boolean
-  /** 存下来的文件:给「打开所在文件夹」 */
-  path?: string
-  /** 存的是图片:多给一个「复制图片」 */
-  image?: boolean
-  /** 保存的文件夹出了问题:给一个「换文件夹」 */
-  pickDir?: boolean
-}
 
 interface Clip {
   open: boolean
@@ -133,8 +117,6 @@ interface Props {
 export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
   const keepAwake = useDeviceBrowserStore((s) => s.mirrorKeepAwake)
   const setKeepAwake = useDeviceBrowserStore((s) => s.setMirrorKeepAwake)
-  const captureDir = useDeviceBrowserStore((s) => s.captureDir)
-  const setCaptureDir = useDeviceBrowserStore((s) => s.setCaptureDir)
 
   const [quality, setQuality] = useState<QualityId>('normal')
   // 重连就是让这个数变一下,重新开一路
@@ -146,13 +128,10 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
   // 顺口一提的提醒(中文经剪贴板粘贴、操作说明):几秒后自己消失
   const [hint, setHint] = useState('')
   const [video, setVideo] = useState<{ w: number; h: number } | null>(null)
-  const [area, setArea] = useState({ w: 0, h: 0 })
-  const [fullscreen, setFullscreen] = useState(false)
   // 手机的安卓 API 级别,读不到时是 0
   const [sdk, setSdk] = useState(0)
   const [toast, setToast] = useState<Toast | null>(null)
   const [recording, setRecording] = useState<{ since: number } | null>(null)
-  const [, setTick] = useState(0)
   const [shooting, setShooting] = useState(false)
   const [dropping, setDropping] = useState(false)
   const [transfer, setTransfer] = useState('')
@@ -168,7 +147,6 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
   const sessionRef = useRef('')
   const videoRef = useRef(video)
   videoRef.current = video
-  const composing = useRef(false)
   // 按了 Ctrl+C 的时间:这之后回来的剪贴板内容要放进电脑剪贴板
   const pendingCopy = useRef(0)
   const pastedOnce = useRef(false)
@@ -176,6 +154,10 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
 
   const windowShown = useWindowShown(active)
   const dpr = useDevicePixelRatio()
+  const area = useElementSize(areaRef)
+  const { fullscreen, enter: enterFullscreen, exit: exitFullscreen, fullscreenRef } = useFullscreen(active)
+  const { captureDir, pickDir, failed, ensureDir } = useCaptureDir(setToast)
+  useTicker(recording !== null)
   // 录着屏就不停:切到别的工具、最小化窗口,录像都得接着录
   const running = (active && windowShown) || recording !== null
 
@@ -276,63 +258,9 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
     }
   }, [serial, adbPath, quality, keepAwake, attempt, running])
 
-  // 画面区有多大决定了画面多大。停靠时只看高度(面板宽度反过来由画面定),全屏时宽高都看
-  useLayoutEffect(() => {
-    const el = areaRef.current
-    if (!el) return
-    const measure = () => setArea({ w: el.clientWidth, h: el.clientHeight })
-    measure()
-    window.addEventListener('resize', measure)
-    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
-    ro?.observe(el)
-    return () => {
-      window.removeEventListener('resize', measure)
-      ro?.disconnect()
-    }
-  }, [])
-
-  // ---- 全屏 ----
-  // 画面盖住整个窗口,窗口也进系统全屏:竖屏手机能用上整块屏幕的高度
-  const enterFullscreen = () => {
-    setFullscreen(true)
-    void WindowFullscreen()
-  }
-  const exitFullscreen = useCallback(() => {
-    setFullscreen(false)
-    void WindowUnfullscreen()
-  }, [])
-  useEffect(() => {
-    if (!fullscreen) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') exitFullscreen()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [fullscreen, exitFullscreen])
-  // 切到别的工具(比如按了全局热键)、或者面板被关掉:不能把窗口留在全屏里
-  useEffect(() => {
-    if (fullscreen && !active) exitFullscreen()
-  }, [fullscreen, active, exitFullscreen])
-  const fullscreenRef = useRef(fullscreen)
-  fullscreenRef.current = fullscreen
-  useEffect(
-    () => () => {
-      if (fullscreenRef.current) void WindowUnfullscreen()
-    },
-    [],
-  )
-
   // ---- 尺寸 ----
   const aspect = video ? video.w / video.h : DEFAULT_ASPECT
-  const landscape = aspect > 1
-  // 停靠时竖屏不超过 720、不超过窗口的 45%,别把左边的文件列表挤没了;
-  // 横屏是扁的,按这个上限只剩巴掌大,放宽到窗口的六成
-  const maxWidth = fullscreen
-    ? area.w
-    : landscape
-      ? window.innerWidth * LANDSCAPE_SHARE
-      : Math.min(720, window.innerWidth * 0.45)
-  const display = fitSize(maxWidth, area.h, aspect)
+  const display = displaySize(aspect, fullscreen, area)
 
   // 画布按屏幕实际像素建(CSS 尺寸 × 缩放比),缩小交给高质量插值去做。
   // 要是画布就用视频尺寸、让浏览器按 CSS 去缩,走的是最粗的那种缩放,字会发虚。
@@ -403,16 +331,7 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
   }
   useEffect(() => () => window.clearTimeout(clipTimer.current), [])
 
-  const flushTyped = () => {
-    const ta = kbdRef.current
-    if (!ta || !ta.value) return
-    const s = ta.value
-    ta.value = ''
-    sendText(s)
-  }
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // 输入法正在拼字:按键归输入法,等它上屏再发
-    if (e.nativeEvent.isComposing || e.keyCode === 229) return
     // 全屏时 Esc 是退出全屏(窗口上那个监听管),不发给手机
     if (e.key === 'Escape' && fullscreenRef.current) return
     const act = keyAction(e)
@@ -612,21 +531,10 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
   useEffect(() => endPinch, [video?.w, video?.h, endPinch])
 
   // ---- 截图、录屏 ----
-  const pickDir = async () => {
-    const dir = await PickDirectory('截图、录屏存到哪个文件夹', captureDir).catch(() => '')
-    if (dir) setCaptureDir(dir)
-    return dir
-  }
-  const failed = (e: unknown) => {
-    const text = e instanceof Error ? e.message : String(e)
-    // 文件夹被删了、U 盘拔了:忘掉它,下次重新问
-    if (text.includes('保存的文件夹不在了')) setCaptureDir('')
-    setToast({ text, error: true, pickDir: text.includes('保存的文件夹') })
-  }
   const screenshot = async () => {
     const id = sessionRef.current
     if (!id || shooting) return
-    const dir = captureDir || (await pickDir())
+    const dir = await ensureDir()
     if (!dir) return
     setShooting(true)
     try {
@@ -652,7 +560,7 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
       }
       return
     }
-    const dir = captureDir || (await pickDir())
+    const dir = await ensureDir()
     if (!dir) return
     try {
       await MirrorStartRecording(id, dir)
@@ -661,12 +569,6 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
       failed(e)
     }
   }
-  // 录着的时候每秒刷一下,按钮上的时长才会走
-  useEffect(() => {
-    if (!recording) return
-    const t = window.setInterval(() => setTick((n) => n + 1), 1000)
-    return () => window.clearInterval(t)
-  }, [recording])
 
   // ---- 拖文件进来 ----
   const dropRef = useNativeFileDrop<HTMLDivElement>((paths) => {
@@ -692,14 +594,6 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
       setDropping(false)
       setTransfer('')
     }
-  }
-
-  // 每来一条新提示(哪怕字一样,比如连着复制两次)都重新计时:给它一个新的 key
-  const toastSeq = useRef(0)
-  const lastToast = useRef<Toast | null>(null)
-  if (toast !== lastToast.current) {
-    lastToast.current = toast
-    toastSeq.current++
   }
 
   const q = QUALITIES.find((x) => x.id === quality) ?? QUALITIES[1]
@@ -739,32 +633,7 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
           onLostPointerCapture={() => releaseAll()}
           onContextMenu={(e) => e.preventDefault()}
         />
-        {/* 键盘输入:看不见的输入框,点画面时拿到焦点。输入法的拼字、上屏都在它身上发生 */}
-        <textarea
-          ref={kbdRef}
-          data-mirror-keyboard=""
-          aria-label="键盘输入到手机"
-          tabIndex={-1}
-          autoComplete="off"
-          autoCorrect="off"
-          autoCapitalize="off"
-          spellCheck={false}
-          className="pointer-events-none absolute h-4 w-px resize-none overflow-hidden border-0 p-0 opacity-0"
-          style={{ left: kbdAt.x, top: kbdAt.y }}
-          onKeyDown={onKeyDown}
-          onInput={() => {
-            if (!composing.current) flushTyped()
-          }}
-          onCompositionStart={() => {
-            composing.current = true
-          }}
-          onCompositionEnd={() => {
-            composing.current = false
-            flushTyped()
-          }}
-          onFocus={() => setKbdFocus(true)}
-          onBlur={() => setKbdFocus(false)}
-        />
+        <KeyboardCatcher ref={kbdRef} at={kbdAt} onKeyDown={onKeyDown} onText={sendText} onFocusChange={setKbdFocus} />
 
         {!live && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-4 text-center text-xs text-white/80">
@@ -795,34 +664,10 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
         )}
 
         <div className="pointer-events-none absolute inset-x-2 top-2 flex flex-col items-end gap-1.5">
-          {warning && (
-            <div
-              data-mirror-warning=""
-              className="pointer-events-auto flex w-full items-start gap-1.5 rounded-md bg-amber-100 px-2 py-1.5 text-[11px] text-amber-900 shadow dark:bg-amber-900/90 dark:text-amber-100"
-            >
-              <span className="flex-1 whitespace-pre-line">{warning}</span>
-              <button onClick={() => setWarning('')} title="知道了" className="shrink-0 opacity-70 hover:opacity-100">
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          )}
-          {hint && (
-            // 换一条提醒就换一个计时:key 跟着内容走
-            <AutoDismiss
-              key={hint}
-              ms={DISMISS_MS.hint}
-              onDismiss={() => setHint('')}
-              data-mirror-hint=""
-              className="pointer-events-auto flex w-full items-start gap-1.5 rounded-md bg-sky-100 px-2 py-1.5 text-[11px] text-sky-900 shadow dark:bg-sky-900/90 dark:text-sky-100"
-            >
-              <span className="flex-1 whitespace-pre-line">{hint}</span>
-              <button onClick={() => setHint('')} title="知道了" className="shrink-0 opacity-70 hover:opacity-100">
-                <X className="h-3 w-3" />
-              </button>
-            </AutoDismiss>
-          )}
+          <WarningBar warning={warning} onClose={() => setWarning('')} />
+          <HintBar hint={hint} onClose={() => setHint('')} />
           {/* 横过来的画面停靠着看还是小:给一个一键全屏 */}
-          {live && landscape && !fullscreen && (
+          {live && display.landscape && !fullscreen && (
             <button
               onClick={enterFullscreen}
               className="pointer-events-auto flex items-center gap-1 rounded-md bg-black/60 px-2 py-1 text-[11px] text-white/90 hover:bg-black/80"
@@ -833,7 +678,11 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
           )}
           {clip.open && (
             <ClipboardCard
-              clip={clip}
+              text={clip.text}
+              loading={clip.loading}
+              before={clip.before}
+              emptyText="剪贴板是空的，或者这台手机不让读"
+              footer="在画面上按 Ctrl+C 也能把手机上选中的字直接复制到电脑"
               onCopy={(text) => {
                 void ClipboardSetText(text)
                 setToast({ text: `已复制到电脑：${preview(text)}` })
@@ -851,50 +700,7 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
               <span className="min-w-0 flex-1 break-words">{transfer}</span>
             </div>
           )}
-          {toast && (
-            <AutoDismiss
-              key={toastSeq.current}
-              ms={toast.error ? DISMISS_MS.error : DISMISS_MS.ok}
-              onDismiss={() => setToast(null)}
-              data-mirror-toast=""
-              className={cn(
-                'pointer-events-auto rounded-md px-2 py-1.5 text-[11px] shadow',
-                toast.error
-                  ? 'bg-destructive/90 text-destructive-foreground'
-                  : 'bg-emerald-100 text-emerald-900 dark:bg-emerald-900/90 dark:text-emerald-100',
-              )}
-            >
-              <div className="flex items-start gap-1.5">
-                <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{toast.text}</span>
-                <button onClick={() => setToast(null)} title="知道了" className="shrink-0 opacity-70 hover:opacity-100">
-                  <X className="h-3 w-3" />
-                </button>
-              </div>
-              {(toast.path || toast.pickDir) && (
-                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
-                  {toast.path && (
-                    <ToastAction onClick={() => void RevealInExplorer(toast.path!)}>
-                      <FolderOpen className="h-3 w-3" />
-                      打开所在文件夹
-                    </ToastAction>
-                  )}
-                  {toast.path && toast.image && (
-                    <ToastAction
-                      onClick={() =>
-                        void CopyImageFile(toast.path!)
-                          .then(() => setToast({ text: '截图已复制，可以直接粘到文档、聊天里' }))
-                          .catch(failed)
-                      }
-                    >
-                      <Copy className="h-3 w-3" />
-                      复制图片
-                    </ToastAction>
-                  )}
-                  <ToastAction onClick={() => void pickDir()}>换保存的文件夹</ToastAction>
-                </div>
-              )}
-            </AutoDismiss>
-          )}
+          <ToastBar toast={toast} onChange={setToast} onFailed={failed} onPickDir={() => void pickDir()} />
         </div>
 
         {/* 拖着文件经过时 Wails 会给拖放区加上 wails-drop-target-active 这个类 */}
@@ -975,14 +781,7 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
           disabled={!live && !recording}
           on={recording !== null}
         >
-          {recording ? (
-            <span className="flex flex-col items-center leading-none text-red-500">
-              <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" />
-              <span className="mt-0.5 text-[8px] tabular-nums">{fmtClock(Date.now() - recording.since)}</span>
-            </span>
-          ) : (
-            <Video className="h-3.5 w-3.5" />
-          )}
+          {recording ? <RecordIcon since={recording.since} /> : <Video className="h-3.5 w-3.5" />}
         </RailButton>
         <RailButton
           title="手机剪贴板：看看手机上复制着什么"
@@ -1024,207 +823,7 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
   )
 }
 
-function RailButton({
-  title,
-  onClick,
-  disabled,
-  on,
-  children,
-}: {
-  title: string
-  onClick: () => void
-  disabled?: boolean
-  /** 开关类按钮:开着的时候高亮 */
-  on?: boolean
-  children: ReactNode
-}) {
-  return (
-    <button
-      title={title}
-      aria-label={title}
-      aria-pressed={on}
-      onClick={onClick}
-      disabled={disabled}
-      className={cn(
-        'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-40',
-        on && 'bg-secondary text-foreground',
-      )}
-    >
-      {children}
-    </button>
-  )
-}
-
-/**
- * 到点自己消失的提示条。鼠标停在上面时不计时,挪开后重新数 ——
- * 正要点上面的「打开所在文件夹」,它不能先没了
- */
-function AutoDismiss({
-  ms,
-  onDismiss,
-  children,
-  ...rest
-}: { ms: number; onDismiss: () => void; children: ReactNode } & Omit<HTMLAttributes<HTMLDivElement>, 'children'>) {
-  const [hover, setHover] = useState(false)
-  const done = useRef(onDismiss)
-  done.current = onDismiss
-  useEffect(() => {
-    if (hover) return
-    const t = window.setTimeout(() => done.current(), ms)
-    return () => window.clearTimeout(t)
-  }, [hover, ms])
-  return (
-    <div {...rest} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
-      {children}
-    </div>
-  )
-}
-
-function ToastAction({ onClick, children }: { onClick: () => void; children: ReactNode }) {
-  return (
-    <button onClick={onClick} className="flex items-center gap-1 underline-offset-2 hover:underline">
-      {children}
-    </button>
-  )
-}
-
-/** 手机剪贴板:最近一次读到的,加上第一次粘贴前原来的那份 */
-function ClipboardCard({
-  clip,
-  onCopy,
-  onReload,
-  onClose,
-}: {
-  clip: Clip
-  onCopy: (text: string) => void
-  onReload: () => void
-  onClose: () => void
-}) {
-  return (
-    <div
-      data-mirror-clipboard=""
-      className="pointer-events-auto w-full rounded-md border border-border bg-card p-2 text-[11px] text-foreground shadow-lg"
-    >
-      <div className="mb-1 flex items-center gap-1.5">
-        <span className="font-medium">手机剪贴板</span>
-        <button onClick={onReload} title="再读一次" className="ml-auto opacity-70 hover:opacity-100">
-          <RotateCcw className="h-3 w-3" />
-        </button>
-        <button onClick={onClose} title="收起" className="opacity-70 hover:opacity-100">
-          <X className="h-3 w-3" />
-        </button>
-      </div>
-      {clip.loading ? (
-        <div className="flex items-center gap-1.5 text-muted-foreground">
-          <Loader2 className="h-3 w-3 animate-spin" />
-          正在读…
-        </div>
-      ) : clip.text ? (
-        <ClipText text={clip.text} onCopy={onCopy} />
-      ) : (
-        <div className="text-muted-foreground">剪贴板是空的，或者这台手机不让读</div>
-      )}
-      {clip.before !== null && (
-        <div className="mt-2 border-t border-border pt-1.5">
-          <div className="mb-1 text-muted-foreground">第一次粘贴中文之前，手机剪贴板里原来是：</div>
-          {clip.before ? (
-            <ClipText text={clip.before} onCopy={onCopy} />
-          ) : (
-            <div className="text-muted-foreground">（空的）</div>
-          )}
-        </div>
-      )}
-      <div className="mt-1.5 text-[10px] text-muted-foreground">
-        在画面上按 Ctrl+C 也能把手机上选中的字直接复制到电脑
-      </div>
-    </div>
-  )
-}
-
-function ClipText({ text, onCopy }: { text: string; onCopy: (text: string) => void }) {
-  return (
-    <div className="flex items-start gap-1.5">
-      <div className="max-h-28 min-w-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/60 px-1.5 py-1 font-mono">
-        {text}
-      </div>
-      <button onClick={() => onCopy(text)} title="复制到电脑" className="shrink-0 opacity-70 hover:opacity-100">
-        <Copy className="h-3.5 w-3.5" />
-      </button>
-    </div>
-  )
-}
-
-/**
- * 窗口有没有被最小化。Wails 最小化窗口时网页收不到任何通知(页面照样以为自己在显示),
- * 只能隔一会儿问一次;页面自己变成不可见也算。连着两次问到最小化才算数 ——
- * 顺手点了最小化又马上点回来,不至于断一次再连
- */
-function useWindowShown(enabled: boolean) {
-  const [shown, setShown] = useState(true)
-  useEffect(() => {
-    if (!enabled) {
-      setShown(true)
-      return
-    }
-    let alive = true
-    let misses = 0
-    const check = async () => {
-      let minimised = false
-      try {
-        minimised = !!(await WindowIsMinimised())
-      } catch {
-        // 不在 Wails 里(纯浏览器预览)
-      }
-      if (!alive) return
-      misses = minimised ? misses + 1 : 0
-      setShown(document.visibilityState !== 'hidden' && misses < 2)
-    }
-    const onVisibility = () => {
-      if (document.visibilityState === 'hidden') setShown(false)
-      else void check()
-    }
-    const timer = window.setInterval(() => void check(), 1500)
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => {
-      alive = false
-      window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVisibility)
-    }
-  }, [enabled])
-  return shown
-}
-
-/** 当前屏幕的缩放比。窗口拖到缩放比例不同的另一块显示器上会变 */
-function useDevicePixelRatio() {
-  const [dpr, setDpr] = useState(() => window.devicePixelRatio || 1)
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return
-    // 这条查询只在「离开现在这个缩放比」时触发一次,所以每变一次就换一条新的
-    const mq = window.matchMedia(`(resolution: ${dpr}dppx)`)
-    const onChange = () => setDpr(window.devicePixelRatio || 1)
-    mq.addEventListener?.('change', onChange)
-    return () => mq.removeEventListener?.('change', onChange)
-  }, [dpr])
-  return dpr
-}
-
 const sizeOf = (s: { w: number; h: number }) => ({ w: s.w, h: s.h })
-
-/** 提示里只放开头一段 */
-function preview(text: string) {
-  const one = text.replace(/\s+/g, ' ').trim()
-  return one.length > 40 ? one.slice(0, 40) + '…' : one
-}
-
-function fmtDuration(ms: number) {
-  const s = Math.max(0, Math.round(ms / 1000))
-  return s < 60 ? `${s} 秒` : `${Math.floor(s / 60)} 分 ${s % 60} 秒`
-}
-
-function fmtClock(ms: number) {
-  const s = Math.max(0, Math.floor(ms / 1000))
-  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
-}
 
 function summarizeDrop(items: mirror.DropItem[]): Toast {
   const ok = items.filter((i) => i.ok)

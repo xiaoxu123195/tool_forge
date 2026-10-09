@@ -25,7 +25,7 @@ import { Profile } from '../src/profile'
 import MmkvTool from '../src/tools/mmkv/index'
 import PlistTool from '../src/tools/plist/index'
 import DeviceBrowser from '../src/tools/device-browser/index'
-import { DISMISS_MS } from '../src/tools/device-browser/MirrorPanel'
+import { DISMISS_MS } from '../src/tools/device-browser/mirror-ui'
 import MobileForensic from '../src/tools/mobile-forensic/index'
 import AppSearch from '../src/tools/app-search/index'
 import SQLiteSearch from '../src/tools/sqlite-search/index'
@@ -41,6 +41,8 @@ import { conversations } from './fixtures.cjs'
 // 相对路径原样解析 —— CJS 缓存保证跟组件用的是同一个模块实例
 import { __emit, __calls, __last } from './stub.cjs'
 import * as wailsStub from './stub.cjs'
+// 假的 noVNC:组件里的 '@novnc/novnc' 被 build.cjs 指到同一个文件,这里直接拿它造出来的实例
+import { instances as vncInstances } from './novnc-stub.cjs'
 import { modelGroup } from '../src/profile/sections/aichat/modelGroup'
 import { sm2GenerateKeyPair, sm2Encrypt, sm2Decrypt, sm2Sign, sm2Verify } from '../src/tools/crypto-lab/lib/sm'
 
@@ -303,6 +305,7 @@ function installMirrorFakes() {
     sent: string[] = []
     onmessage: ((ev: { data: unknown }) => void) | null = null
     onclose: (() => void) | null = null
+    listeners: ((ev: { data: unknown }) => void)[] = []
     constructor(public url: string) {
       state.sockets.push(this)
     }
@@ -312,8 +315,12 @@ function installMirrorFakes() {
     close() {
       this.readyState = 3
     }
+    addEventListener(type: string, fn: (ev: { data: unknown }) => void) {
+      if (type === 'message') this.listeners.push(fn)
+    }
     emit(data: unknown) {
       this.onmessage?.({ data })
+      for (const fn of this.listeners) fn({ data })
     }
   }
   g.VideoDecoder = class {
@@ -766,6 +773,254 @@ async function main() {
       throw new Error('返回目录后没有回到列表')
     }
   })
+
+  // 真机浏览 · iOS 投屏(接着上面留下的 iOS 会话)。noVNC、WebSocket、画布、录屏都换成假的:
+  // 没装 TrollVNC 时教人装、装好接着投;连上以后键盘(含中文经剪贴板)、按钮、截图、录屏、断线重连都走一遍
+  await mount(
+    '真机浏览 · iOS 投屏',
+    <MemoryRouter initialEntries={['/tools/device-browser']}>
+      <DeviceBrowser />
+    </MemoryRouter>,
+    async () => {
+      const txt = () => document.body.textContent || ''
+      const fake = installMirrorFakes()
+      const g = globalThis as unknown as Record<string, unknown>
+      const saved = { MediaRecorder: g.MediaRecorder, FileReader: g.FileReader, HTMLCanvasElement: g.HTMLCanvasElement }
+      const canvasProto = window.HTMLCanvasElement.prototype as unknown as Record<string, unknown>
+      const savedCapture = canvasProto.captureStream
+      // 假的录屏:开始后交一段,停的时候再交一段,然后报停
+      g.FileReader = window.FileReader
+      g.HTMLCanvasElement = window.HTMLCanvasElement
+      g.MediaRecorder = class {
+        static isTypeSupported(t: string) {
+          return t.startsWith('video/mp4')
+        }
+        state = 'inactive'
+        ondataavailable: ((e: { data: Blob }) => void) | null = null
+        private stopFns: (() => void)[] = []
+        start() {
+          this.state = 'recording'
+          setTimeout(() => this.ondataavailable?.({ data: new window.Blob([new Uint8Array([1, 2, 3])]) }), 5)
+        }
+        addEventListener(type: string, fn: () => void) {
+          if (type === 'stop') this.stopFns.push(fn)
+        }
+        stop() {
+          this.state = 'inactive'
+          this.ondataavailable?.({ data: new window.Blob([new Uint8Array([4])]) })
+          for (const fn of this.stopFns) fn()
+        }
+      }
+      canvasProto.captureStream = () => ({})
+      const wait = async (ms = 30) => {
+        await act(async () => {
+          await sleep(ms)
+        })
+      }
+      const titled = (prefix: string) =>
+        (Array.from(document.querySelectorAll('button')) as HTMLElement[]).find((b) =>
+          (b.getAttribute('title') || '').startsWith(prefix),
+        )
+      const clickTitled = async (prefix: string) => {
+        const b = titled(prefix)
+        if (!b) throw new Error('找不到按钮「' + prefix + '…」')
+        await act(async () => {
+          b.click()
+        })
+        await wait(50)
+      }
+      try {
+        // ---- 没装 TrollVNC:说清楚下哪个包,选了就经 SSH 装上,装好接着投 ----
+        __last.trollMissing = true
+        const startsBefore = (__last.iosStarts as number | undefined) ?? 0
+        await mustClick('投屏')
+        await wait()
+        if (!txt().includes('还没装 TrollVNC') || !txt().includes('packages-rootless')) {
+          throw new Error('没装时没说清楚要下哪个包: ' + txt())
+        }
+        if (((__last.iosStarts as number | undefined) ?? 0) !== startsBefore) throw new Error('没装就去启动了')
+        await mustClick('选择安装包并安装')
+        await wait(80)
+        const inst = __last.trollInstall as { id: string; pkg: string } | undefined
+        if (inst?.pkg !== 'D:/下载/packages-rootless.zip') throw new Error('选的安装包没交给后端: ' + JSON.stringify(inst))
+        const start = __last.iosStart as { id: string; opt: { keepAwake: boolean } } | undefined
+        if (!start || (__last.iosStarts as number) <= startsBefore) throw new Error('装好以后没接着投屏')
+        // 投的是真机浏览连着的那一条会话;默认保持亮屏
+        if (start.id !== inst.id || start.opt.keepAwake !== true) throw new Error('开投屏的参数不对: ' + JSON.stringify(start))
+
+        const rfb = vncInstances[vncInstances.length - 1]
+        const ws = fake.sockets[fake.sockets.length - 1]
+        if (!rfb || !ws?.url.includes('/vnc/')) {
+          throw new Error(
+            `没去连 VNC(noVNC 实例 ${vncInstances.length} 个,连接 ${fake.sockets.map((s) => s.url).join()}):` +
+              (document.querySelector('[data-mirror-panel]')?.textContent || '').slice(0, 300),
+          )
+        }
+        if (rfb.channel !== ws) throw new Error('noVNC 该用面板自己建的 WebSocket')
+        if (rfb.options.credentials?.password !== 'Ab3dEf7h') throw new Error('这次的密码没交给 VNC 客户端')
+        // 键盘归面板自己的输入框(要接输入法),画面按面板大小缩放
+        if (rfb.focusOnClick !== false || rfb.scaleViewport !== true || rfb.qualityLevel !== 7) {
+          throw new Error('noVNC 的设置不对: ' + JSON.stringify([rfb.focusOnClick, rfb.scaleViewport, rfb.qualityLevel]))
+        }
+        await act(async () => {
+          rfb.connect(1244, 2212)
+          await sleep(30)
+        })
+        // 带省略号的是启动中的那一屏;装好时的提示条里也有「正在启动投屏」几个字
+        if (txt().includes('正在启动投屏…')) throw new Error('连上了还挂着「启动中」')
+        if (fake.draws === 0) throw new Error('画面没画到显示用的画布上')
+
+        // ---- 键盘:点过画面,键盘就归手机 ----
+        const host = document.querySelector('[data-vnc-host]') as HTMLElement
+        await act(async () => {
+          host.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }))
+        })
+        const kbd = document.querySelector('[data-mirror-keyboard]') as HTMLTextAreaElement
+        if (document.activeElement !== kbd) throw new Error('点了画面键盘没归手机')
+        const keydown = async (key: string, init: Record<string, unknown> = {}) => {
+          await act(async () => {
+            kbd.dispatchEvent(new window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }))
+            await sleep(10)
+          })
+        }
+        const typeIn = async (value: string) => {
+          await act(async () => {
+            kbd.value = value
+            kbd.dispatchEvent(new window.Event('input', { bubbles: true }))
+            await sleep(10)
+          })
+        }
+        const keys = () => rfb.keys.map(([k, d]: [number, boolean]) => (d ? '+' : '-') + k.toString(16)).join(' ')
+        // 大写字母要自己按住 Shift:手机那头不替我们补
+        rfb.keys.length = 0
+        await typeIn('a')
+        await typeIn('B')
+        if (keys() !== '+61 -61 +ffe1 +42 -42 -ffe1') throw new Error('英文按键不对: ' + keys())
+        rfb.keys.length = 0
+        await keydown('Enter')
+        if (keys() !== '+ff0d -ff0d') throw new Error('回车不对: ' + keys())
+        // 中文:上屏了才发,先放进手机剪贴板,等一下再按 Command+V
+        rfb.keys.length = 0
+        await act(async () => {
+          kbd.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true }))
+        })
+        await typeIn('ni')
+        if (rfb.clipboard.length) throw new Error('拼音还没上屏就发出去了')
+        await act(async () => {
+          kbd.value = '你好'
+          kbd.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true, data: '你好' }))
+        })
+        if (rfb.clipboard.join() !== '你好') throw new Error('中文没放进手机剪贴板: ' + rfb.clipboard.join())
+        if (keys()) throw new Error('剪贴板还没写好就按了粘贴')
+        // 中文后面紧跟着打的英文,得排在粘贴后面
+        await typeIn('x')
+        await wait(300)
+        if (keys() !== '+ffeb +76 -76 -ffeb +78 -78') throw new Error('粘贴或者排队的顺序不对: ' + keys())
+        if (!txt().includes('手机剪贴板里原来的内容会被替换')) throw new Error('没提醒剪贴板会被替换')
+        // Ctrl+V:电脑剪贴板粘到手机
+        __last.pcClipboard = '电脑上复制的'
+        await keydown('v', { ctrlKey: true })
+        await wait(300)
+        if (rfb.clipboard[rfb.clipboard.length - 1] !== '电脑上复制的') throw new Error('Ctrl+V 没把电脑剪贴板粘过去')
+        // Ctrl+C:手机上按 Command+C,手机推回来的内容进电脑剪贴板
+        rfb.keys.length = 0
+        await keydown('c', { ctrlKey: true })
+        await wait(20)
+        if (keys() !== '+ffeb +63 -63 -ffeb') throw new Error('Ctrl+C 没变成 Command+C: ' + keys())
+        await act(async () => {
+          rfb.pushClipboard('手机上选中的')
+        })
+        if (__last.pcClipboardSet !== '手机上选中的' || !txt().includes('已复制到电脑')) {
+          throw new Error('手机上复制的字没进电脑剪贴板')
+        }
+        // Alt 当 Command
+        rfb.keys.length = 0
+        await keydown('h', { altKey: true })
+        await wait(20)
+        if (keys() !== '+ffeb +68 -68 -ffeb') throw new Error('Alt+H 该变成 Command+H: ' + keys())
+        // 没认领的 Ctrl 组合键不发给手机,留给工具箱自己的快捷键
+        rfb.keys.length = 0
+        await keydown('k', { ctrlKey: true })
+        await wait(20)
+        if (keys()) throw new Error('Ctrl+K 不该发给手机')
+
+        // ---- 手机剪贴板:连上以后复制过的 ----
+        await clickTitled('手机剪贴板')
+        if (!(document.querySelector('[data-mirror-clipboard]')?.textContent || '').includes('手机上选中的')) {
+          throw new Error('剪贴板卡片没显示手机上复制的')
+        }
+        await clickTitled('收起')
+
+        // ---- 按钮:Home、锁屏是 VNC 的鼠标消息,音量是媒体键 ----
+        const pointerMsgs = () =>
+          (ws.sent as unknown as unknown[])
+            .filter((m): m is Uint8Array => m instanceof Uint8Array)
+            .map((m) => Array.from(m).slice(0, 2).join(','))
+            .join(' ')
+        await clickTitled('主页')
+        if (pointerMsgs() !== '5,4 5,0') throw new Error('Home 没按出去: ' + pointerMsgs())
+        await clickTitled('锁屏')
+        if (!pointerMsgs().endsWith('5,2 5,0')) throw new Error('锁屏没按出去: ' + pointerMsgs())
+        rfb.keys.length = 0
+        await clickTitled('音量 +')
+        if (keys() !== '+1008ff13 -1008ff13') throw new Error('音量键不对: ' + keys())
+
+        // ---- 画质:不用重连,直接改 ----
+        const startsNow = __last.iosStarts as number
+        await clickTitled('画质：')
+        if (rfb.qualityLevel !== 9 || (__last.iosStarts as number) !== startsNow) throw new Error('换画质该直接改,不该重连')
+
+        // ---- 截图:原尺寸 PNG 交给后端存 ----
+        await clickTitled('截图：')
+        await wait(50)
+        const shot = __last.iosShot as { dir: string; label: string; b64: string } | undefined
+        if (shot?.dir !== 'D:/导出' || shot.label !== 'iPhone 8 Plus' || shot.b64 !== 'iVBORw==') {
+          throw new Error('截图没交给后端: ' + JSON.stringify(shot))
+        }
+        if (!txt().includes('截图已保存（1244×2212）')) throw new Error('截图存好了没说')
+
+        // ---- 录屏:能录 MP4 就录 MP4,一段段交给后端,停了说存了多长 ----
+        await clickTitled('录屏：')
+        await wait(50)
+        const rec = __last.iosRec as { ext: string; chunks: number } | undefined
+        if (rec?.ext !== '.mp4' || rec.chunks < 1) throw new Error('录屏没开起来,或者没交数据: ' + JSON.stringify(rec))
+        if (!titled('保持亮屏：录屏中不能改')) throw new Error('录屏中保持亮屏该锁住')
+        await clickTitled('停止录屏')
+        await wait(50)
+        if (!__last.iosRecEnd || rec.chunks < 2) throw new Error('录屏没停干净: ' + JSON.stringify(rec))
+        if (!txt().includes('录屏已保存（12 秒）')) throw new Error('录屏存好了没说: ' + txt())
+
+        // ---- 断了:说原因,能重新连接 ----
+        await act(async () => {
+          rfb.drop()
+        })
+        if (!txt().includes('投屏断开了')) throw new Error('断开了没说')
+        const beforeRe = __last.iosStarts as number
+        await mustClick('重新连接')
+        await wait(80)
+        if ((__last.iosStarts as number) <= beforeRe) throw new Error('重新连接没重开一路')
+
+        // ---- 换安装包(更新自己编的版本):断开、装、重新开 ----
+        __last.trollInstall = undefined
+        const beforeSwap = __last.iosStarts as number
+        await clickTitled('TrollVNC 3.2-272：换一个安装包')
+        await wait(80)
+        if (!__last.trollInstall || (__last.iosStarts as number) <= beforeSwap) throw new Error('换安装包没装、或者装完没重新投屏')
+        if (!txt().includes('TrollVNC 换成了 3.2-272')) throw new Error('换完没说')
+
+        // ---- 关面板:后端停掉这一路,手机上的服务跟着停 ----
+        await clickTitled('关闭投屏')
+        const current = 'i' + String(__last.iosStarts)
+        if (!(__last.iosStops as string[] | undefined)?.includes(current)) {
+          throw new Error('关面板没停掉正在投的那一路: ' + JSON.stringify(__last.iosStops))
+        }
+      } finally {
+        fake.restore()
+        Object.assign(g, saved)
+        canvasProto.captureStream = savedCapture
+      }
+    },
+  )
 
   // 18) Android:换平台后连接面板要变(不要 SSH 密码、要 adb 路径),
   // 连上之后 root 状态必须一眼看得到 —— 没 root 就看不到 /data,这是最关键的状态

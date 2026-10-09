@@ -479,6 +479,48 @@ const special = {
     last.mirrorStops = [...(last.mirrorStops || []), id]
     return Promise.resolve()
   },
+  // iOS 投屏:手机上装没装 TrollVNC 看 last.trollMissing;装过一次就算装上了
+  TrollVNCStatus: () =>
+    Promise.resolve({
+      installed: !last.trollMissing,
+      version: last.trollMissing ? '' : '3.2-272',
+      arch: 'iphoneos-arm64',
+      artifact: 'packages-rootless',
+      loader: true,
+      model: 'iPhone 8 Plus',
+    }),
+  PickTrollVNCPackage: () => Promise.resolve('D:/下载/packages-rootless.zip'),
+  InstallTrollVNC: (id, pkg) => {
+    last.trollInstall = { id, pkg }
+    last.trollMissing = false
+    return Promise.resolve({ version: '3.2-272', package: 'com.82flex.trollvnc_3.2-272_iphoneos-arm64.deb' })
+  },
+  StartIOSMirror: (id, opt) => {
+    last.iosStart = { id, opt }
+    last.iosStarts = (last.iosStarts || 0) + 1
+    const sid = 'i' + last.iosStarts
+    return Promise.resolve({ id: sid, url: 'ws://127.0.0.1:1/vnc/' + sid + '?t=x', password: 'Ab3dEf7h', deviceName: 'iPhone 8 Plus' })
+  },
+  StopIOSMirror: (id) => {
+    last.iosStops = [...(last.iosStops || []), id]
+    return Promise.resolve()
+  },
+  SaveMirrorShot: (dir, label, b64) => {
+    last.iosShot = { dir, label, b64 }
+    return Promise.resolve({ path: dir + '/' + label + '_截图_20261009_153012.png', width: 1244, height: 2212, bytes: 4 })
+  },
+  BeginMirrorRecording: (dir, label, ext) => {
+    last.iosRec = { dir, label, ext, chunks: 0 }
+    return Promise.resolve(['rec-1', dir + '/' + label + '_录屏_20261009_153012' + ext])
+  },
+  AppendMirrorRecording: () => {
+    if (last.iosRec) last.iosRec.chunks++
+    return Promise.resolve()
+  },
+  EndMirrorRecording: (id, ms) => {
+    last.iosRecEnd = { id, ms }
+    return Promise.resolve({ files: ['D:/导出/iPhone 8 Plus_录屏_20261009_153012.mp4'], durationMs: 12000, bytes: 100 })
+  },
   PickDirectory: () => Promise.resolve('D:/导出'),
 
   // ---- SQLite ----

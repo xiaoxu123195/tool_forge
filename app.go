@@ -295,14 +295,15 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.mcpWB != nil {
 		a.mcpWB.Shutdown()
 	}
+	// 投屏的手机端程序要等通道关掉才退出,不收的话它会一直跑到手机拔线。
+	// 排在真机会话前面:iPhone 上的投屏服务要经真机浏览那条 SSH 停掉
+	if a.mirror != nil {
+		a.mirror.CloseAll()
+	}
 	// 真机会话下面挂着 go-forensic 的 USB 转发进程。不收的话它会活过 app,
 	// 一直占着设备的通道,下次连接直接失败
 	if a.devicefs != nil {
 		a.devicefs.CloseAll()
-	}
-	// 投屏的手机端程序要等通道关掉才退出,不收的话它会一直跑到手机拔线
-	if a.mirror != nil {
-		a.mirror.CloseAll()
 	}
 }
 
@@ -599,8 +600,10 @@ func (a *App) ConnectDevice(opt devicefs.ConnectOptions) (*devicefs.Session, err
 	return a.devicefs.Connect(opt)
 }
 
-// DisconnectDevice 断开一个会话并回收转发进程
+// DisconnectDevice 断开一个会话并回收转发进程。
+// 这台 iPhone 还在投屏的话先收掉投屏:停手机上的服务还要用这条连接
 func (a *App) DisconnectDevice(sessionID string) error {
+	a.mirror.StopIOSOwnedBy(sessionID)
 	return a.devicefs.Disconnect(sessionID)
 }
 
@@ -685,6 +688,89 @@ func (a *App) MirrorStopRecording(id string) (*mirror.Recording, error) {
 // MirrorDrop 拖进投屏画面的文件:安装包装到手机上,别的推到手机的 Download 文件夹
 func (a *App) MirrorDrop(id string, paths []string) ([]mirror.DropItem, error) {
 	return a.mirror.Drop(id, paths)
+}
+
+// iosTarget 真机浏览里连着的那台 iPhone:投屏经它那条 SSH 开关手机上的 TrollVNC
+func (a *App) iosTarget(deviceSession string) (mirror.IOSTarget, error) {
+	client, udid, err := a.devicefs.IOSClient(deviceSession)
+	if err != nil {
+		return mirror.IOSTarget{}, err
+	}
+	return mirror.IOSTarget{SSH: client, UDID: udid, Owner: deviceSession}, nil
+}
+
+// TrollVNCStatus 越狱 iPhone 上 TrollVNC 装没装、该装哪个包
+func (a *App) TrollVNCStatus(deviceSession string) (*mirror.TrollStatus, error) {
+	t, err := a.iosTarget(deviceSession)
+	if err != nil {
+		return nil, err
+	}
+	return a.mirror.TrollStatus(t)
+}
+
+// PickTrollVNCPackage 选 TrollVNC 的安装包:.deb,或者 GitHub Actions 下载下来的 zip
+func (a *App) PickTrollVNCPackage() (string, error) {
+	return system.PickFile(a.ctx, system.PickFileOptions{
+		Title:       "选 TrollVNC 的安装包",
+		Extensions:  []string{".zip", ".deb"},
+		DisplayName: "安装包",
+	})
+}
+
+// InstallTrollVNC 经 SSH 把 TrollVNC 装到 iPhone 上。装之前先写好只走 USB、关着的设置
+func (a *App) InstallTrollVNC(deviceSession, pkgPath string) (*mirror.TrollInstall, error) {
+	t, err := a.iosTarget(deviceSession)
+	if err != nil {
+		return nil, err
+	}
+	return a.mirror.InstallTroll(t, pkgPath)
+}
+
+// StartIOSMirror 投屏真机浏览里连着的那台越狱 iPhone。
+// 按这一次的设置(新密码)启动手机上的 TrollVNC;画面和操作走返回的本机 WebSocket
+func (a *App) StartIOSMirror(deviceSession string, opt mirror.IOSOptions) (*mirror.IOSSession, error) {
+	t, err := a.iosTarget(deviceSession)
+	if err != nil {
+		return nil, err
+	}
+	return a.mirror.StartIOS(t, opt)
+}
+
+// StopIOSMirror 结束 iOS 投屏,停掉手机上的服务
+func (a *App) StopIOSMirror(id string) {
+	a.mirror.StopIOS(id)
+}
+
+// SaveMirrorShot 存一张投屏截图(iOS 的截图在界面那头从画面上取),pngBase64 是 PNG 的内容
+func (a *App) SaveMirrorShot(dir, label, pngBase64 string) (*mirror.Shot, error) {
+	data, err := base64.StdEncoding.DecodeString(pngBase64)
+	if err != nil {
+		return nil, fmt.Errorf("截图数据不对: %w", err)
+	}
+	return a.mirror.SaveShot(dir, label, data)
+}
+
+// BeginMirrorRecording 开一个录屏文件(iOS 的录屏在界面那头编码),返回录屏 id 和文件路径
+func (a *App) BeginMirrorRecording(dir, label, ext string) ([]string, error) {
+	id, path, err := a.mirror.BeginUpload(dir, label, ext)
+	if err != nil {
+		return nil, err
+	}
+	return []string{id, path}, nil
+}
+
+// AppendMirrorRecording 往录屏文件后面接一段
+func (a *App) AppendMirrorRecording(id, chunkBase64 string) error {
+	data, err := base64.StdEncoding.DecodeString(chunkBase64)
+	if err != nil {
+		return fmt.Errorf("录像数据不对: %w", err)
+	}
+	return a.mirror.AppendUpload(id, data)
+}
+
+// EndMirrorRecording 录完了:关文件、补好时长。ms 是录了多久
+func (a *App) EndMirrorRecording(id string, ms int64) (*mirror.Recording, error) {
+	return a.mirror.EndUpload(id, ms)
 }
 
 // CopyImageFile 把一张 PNG 图片放进剪贴板,能直接粘到文档和聊天里

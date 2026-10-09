@@ -44,6 +44,7 @@ func (s *Service) ensureHub() (*hub, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mirror/", h.serve)
+	mux.HandleFunc("/vnc/", h.serveVNC)
 	h.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = h.srv.Serve(ln) }()
 	s.hub = h
@@ -66,6 +67,26 @@ func (h *hub) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	// 界面发的多是鼠标、按键这种小消息;最大的是粘贴,手机剪贴板一次最多收 256K
 	ws.SetReadLimit(1 << 20)
+	sess.attach(ws)
+}
+
+func (h *hub) vncURL(sess *iosSession) string {
+	return fmt.Sprintf("ws://%s/vnc/%s?t=%s", h.ln.Addr(), sess.id, sess.token)
+}
+
+// serveVNC iOS 投屏:界面的 VNC 客户端从这里接到手机上的 TrollVNC
+func (h *hub) serveVNC(w http.ResponseWriter, r *http.Request) {
+	sess := h.svc.getIOS(strings.TrimPrefix(r.URL.Path, "/vnc/"))
+	if sess == nil || subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("t")), []byte(sess.token)) != 1 {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	ws, err := h.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	// 最大的一条是往手机剪贴板里粘的字
+	ws.SetReadLimit(4 << 20)
 	sess.attach(ws)
 }
 
