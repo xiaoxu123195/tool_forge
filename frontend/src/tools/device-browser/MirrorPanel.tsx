@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { ChevronLeft, Circle, Loader2, Power, RotateCcw, Square, X } from 'lucide-react'
+import { ChevronLeft, Circle, Loader2, Maximize2, Minimize2, Power, RotateCcw, Square, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { StartMirror, StopMirror } from '../../../wailsjs/go/main/App'
 import type { mirror } from '../../../wailsjs/go/models'
+import { WindowFullscreen, WindowUnfullscreen } from '../../../wailsjs/runtime/runtime'
 import { MirrorLink, supportsDecoding } from './mirror-link'
 import { KEY, fitSize, toVideoPoint, wheelNotches, type ControlEvent } from './mirror-video'
 
-/** 画质档位。面板里的画面也就六七百像素高,「标准」已经够看清字 */
+/**
+ * 画质档位。要看清字,宁可传大一点、在电脑这边高质量缩小,也不要让手机先缩一遍 ——
+ * 手机缩、电脑再缩,细字就被插值插糊了
+ */
 const QUALITIES = [
-  { id: 'smooth', label: '流畅', maxSize: 800, bitRate: 2_000_000, maxFps: 30 },
-  { id: 'normal', label: '标准', maxSize: 1280, bitRate: 6_000_000, maxFps: 60 },
-  { id: 'hd', label: '高清', maxSize: 0, bitRate: 12_000_000, maxFps: 60 },
+  { id: 'smooth', label: '流畅', maxSize: 1280, bitRate: 4_000_000, maxFps: 30, note: '长边 1280、30 帧，老电脑或者线不好时用' },
+  { id: 'normal', label: '标准', maxSize: 1920, bitRate: 8_000_000, maxFps: 60, note: '长边 1920、60 帧' },
+  { id: 'full', label: '原画', maxSize: 0, bitRate: 16_000_000, maxFps: 60, note: '手机原始分辨率，字最清楚，最吃 USB 和电脑' },
 ] as const
 type QualityId = (typeof QUALITIES)[number]['id']
 
@@ -19,6 +23,8 @@ type Phase = 'starting' | 'live' | 'ended' | 'error' | 'unsupported'
 
 /** 还不知道手机多宽时先按常见的 9:19.5 占位,画面一到就换成真的 */
 const DEFAULT_ASPECT = 9 / 19.5
+/** 右侧按钮栏的宽度 */
+const RAIL = 36
 
 interface Props {
   /** 真机浏览里实际连上的那台 */
@@ -33,8 +39,11 @@ interface Props {
 }
 
 /**
- * 投屏面板,停靠在真机浏览的右边:一边在画面上操作手机,一边看左边的文件和监视记录 ——
+ * 投屏面板,停靠在真机浏览的最右边:一边在画面上操作手机,一边看左边的文件和监视记录 ——
  * 「拍基线 → 去手机上操作 → 回来看变了什么」这一套不用再在手机和电脑之间来回切。
+ *
+ * 手机是竖长条,面板多宽由多高决定:所以面板从上到下占满,按钮都挪到右侧一条竖栏里,
+ * 高度全留给画面。还嫌小就全屏。
  *
  * 鼠标:左键点按、拖动 = 手指;右键 = 返回;中键 = 主页;滚轮 = 滑动
  */
@@ -45,9 +54,9 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
   const [phase, setPhase] = useState<Phase>('starting')
   const [message, setMessage] = useState('')
   const [notice, setNotice] = useState('')
-  const [deviceName, setDeviceName] = useState('')
   const [video, setVideo] = useState<{ w: number; h: number } | null>(null)
-  const [areaHeight, setAreaHeight] = useState(0)
+  const [area, setArea] = useState({ w: 0, h: 0 })
+  const [fullscreen, setFullscreen] = useState(false)
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const areaRef = useRef<HTMLDivElement>(null)
@@ -80,7 +89,6 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
           void StopMirror(s.id).catch(() => {})
           return
         }
-        setDeviceName(s.deviceName)
         link = new MirrorLink(s.id, s.url, canvas, {
           onSize: (w, h) => setVideo({ w, h }),
           onLive: () => setPhase('live'),
@@ -104,21 +112,74 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
     }
   }, [serial, adbPath, quality, attempt, active])
 
-  // 画面区有多高决定了画面多大,面板宽度也就跟着定下来
+  // 画面区有多大决定了画面多大。停靠时只看高度(面板宽度反过来由画面定),全屏时宽高都看
   useLayoutEffect(() => {
     const el = areaRef.current
     if (!el) return
-    const measure = () => setAreaHeight(el.clientHeight)
+    const measure = () => setArea({ w: el.clientWidth, h: el.clientHeight })
     measure()
-    if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', measure)
-      return () => window.removeEventListener('resize', measure)
+    window.addEventListener('resize', measure)
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+    ro?.observe(el)
+    return () => {
+      window.removeEventListener('resize', measure)
+      ro?.disconnect()
     }
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    return () => ro.disconnect()
   }, [])
 
+  // ---- 全屏 ----
+  // 画面盖住整个窗口,窗口也进系统全屏:竖屏手机能用上整块屏幕的高度
+  const enterFullscreen = () => {
+    setFullscreen(true)
+    void WindowFullscreen()
+  }
+  const exitFullscreen = useCallback(() => {
+    setFullscreen(false)
+    void WindowUnfullscreen()
+  }, [])
+  useEffect(() => {
+    if (!fullscreen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') exitFullscreen()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [fullscreen, exitFullscreen])
+  // 切到别的工具(比如按了全局热键)、或者面板被关掉:不能把窗口留在全屏里
+  useEffect(() => {
+    if (fullscreen && !active) exitFullscreen()
+  }, [fullscreen, active, exitFullscreen])
+  const fullscreenRef = useRef(fullscreen)
+  fullscreenRef.current = fullscreen
+  useEffect(
+    () => () => {
+      if (fullscreenRef.current) void WindowUnfullscreen()
+    },
+    [],
+  )
+
+  // ---- 尺寸 ----
+  const aspect = video ? video.w / video.h : DEFAULT_ASPECT
+  // 停靠时横屏别把左边的文件列表挤没了
+  const maxWidth = fullscreen ? area.w : Math.min(720, window.innerWidth * 0.45)
+  const display = fitSize(maxWidth, area.h, aspect)
+
+  // 画布按屏幕实际像素建(CSS 尺寸 × 缩放比),缩小交给高质量插值去做。
+  // 要是画布就用视频尺寸、让浏览器按 CSS 去缩,走的是最粗的那种缩放,字会发虚
+  useLayoutEffect(() => {
+    const c = canvasRef.current
+    if (!c) return
+    const dpr = window.devicePixelRatio || 1
+    const w = Math.max(1, Math.round(display.width * dpr))
+    const h = Math.max(1, Math.round(display.height * dpr))
+    if (c.width !== w || c.height !== h) {
+      c.width = w
+      c.height = h
+      linkRef.current?.redraw()
+    }
+  }, [display.width, display.height])
+
+  // ---- 按键 ----
   const send = useCallback((e: ControlEvent) => linkRef.current?.send(e), [])
   const pressKey = (k: number) => {
     send({ t: 'key', a: 0, k })
@@ -224,48 +285,26 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schedule])
 
-  const aspect = video ? video.w / video.h : DEFAULT_ASPECT
-  // 横屏时别把左边的文件列表挤没了
-  const display = fitSize(areaHeight, aspect, Math.min(720, window.innerWidth * 0.45))
-  const panelWidth = Math.max(240, display.width)
-  const busy = phase === 'starting'
+  const q = QUALITIES.find((x) => x.id === quality) ?? QUALITIES[1]
+  const nextQuality = QUALITIES[(QUALITIES.indexOf(q) + 1) % QUALITIES.length]
+  const live = phase === 'live'
 
   return (
     <div
-      className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card"
-      style={{ width: panelWidth }}
+      data-mirror-panel=""
+      className={cn(
+        'flex min-h-0 overflow-hidden',
+        fullscreen ? 'fixed inset-0 z-[300] bg-black' : 'shrink-0 rounded-lg border border-border bg-black',
+      )}
+      // 停靠时的宽度 = 画面宽 + 按钮栏 + 两条边框
+      style={fullscreen ? undefined : { width: Math.max(240, display.width) + RAIL + 2 }}
     >
-      <div className="flex items-center gap-1.5 border-b border-border px-2 py-1.5">
-        <span className="min-w-0 flex-1 truncate text-xs font-medium" title={serial}>
-          {deviceName || serial || '投屏'}
-        </span>
-        <select
-          value={quality}
-          onChange={(e) => setQuality(e.target.value as QualityId)}
-          title="画质:越清楚越吃 USB 带宽和电脑的解码"
-          className="h-6 rounded-sm border border-input bg-background px-1 text-[11px] outline-none"
-        >
-          {QUALITIES.map((q) => (
-            <option key={q.id} value={q.id}>
-              {q.label}
-            </option>
-          ))}
-        </select>
-        <button
-          onClick={onClose}
-          title="关闭投屏"
-          className="rounded p-1 text-muted-foreground hover:bg-secondary hover:text-foreground"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
-      </div>
-
-      <div ref={areaRef} className="relative flex min-h-0 flex-1 items-center justify-center bg-black">
+      <div ref={areaRef} className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center">
         <canvas
           ref={canvasRef}
           data-mirror-canvas=""
           style={{ width: display.width, height: display.height }}
-          className={cn('touch-none select-none', phase !== 'live' && 'invisible')}
+          className={cn('touch-none select-none', !live && 'invisible')}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={release}
@@ -273,12 +312,16 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
           onContextMenu={(e) => e.preventDefault()}
         />
 
-        {phase !== 'live' && (
+        {!live && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-4 text-center text-xs text-white/80">
-            {busy && (
+            {phase === 'starting' && (
               <>
                 <Loader2 className="h-5 w-5 animate-spin" />
                 <span>正在启动投屏…</span>
+                {/* 取证现场要知道这一步对手机做了什么 */}
+                <span className="text-[11px] leading-5 text-white/50">
+                  会往手机推一个临时程序，启动后它自己删掉；在画面上点击会真的操作手机
+                </span>
               </>
             )}
             {phase === 'unsupported' && (
@@ -306,29 +349,53 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
         )}
       </div>
 
-      <div className="flex items-center justify-around border-t border-border py-1">
-        <NavButton title="返回（也可以在画面上点右键）" onClick={pressBack} disabled={phase !== 'live'}>
+      <div
+        className="flex shrink-0 flex-col items-center gap-1 border-l border-white/10 bg-card py-1.5"
+        style={{ width: RAIL }}
+      >
+        <RailButton
+          title={fullscreen ? '退出全屏（Esc）' : '全屏：画面铺满整个屏幕'}
+          onClick={fullscreen ? exitFullscreen : enterFullscreen}
+        >
+          {fullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+        </RailButton>
+        {/* 点一下换下一档。档位很少换,一个按钮比下拉框省地方 */}
+        <RailButton
+          title={`画质：${q.label}（${q.note}）· 点一下换成「${nextQuality.label}」`}
+          onClick={() => setQuality(nextQuality.id)}
+        >
+          <span className="text-[10px] font-medium leading-none">{q.label}</span>
+        </RailButton>
+        <RailButton
+          title="关闭投屏"
+          onClick={() => {
+            if (fullscreen) exitFullscreen()
+            onClose()
+          }}
+        >
+          <X className="h-3.5 w-3.5" />
+        </RailButton>
+
+        <div className="flex-1" />
+
+        <RailButton title="返回（也可以在画面上点右键）" onClick={pressBack} disabled={!live}>
           <ChevronLeft className="h-4 w-4" />
-        </NavButton>
-        <NavButton title="主页（也可以在画面上点中键）" onClick={() => pressKey(KEY.HOME)} disabled={phase !== 'live'}>
+        </RailButton>
+        <RailButton title="主页（也可以在画面上点中键）" onClick={() => pressKey(KEY.HOME)} disabled={!live}>
           <Circle className="h-3.5 w-3.5" />
-        </NavButton>
-        <NavButton title="最近任务" onClick={() => pressKey(KEY.APP_SWITCH)} disabled={phase !== 'live'}>
+        </RailButton>
+        <RailButton title="最近任务" onClick={() => pressKey(KEY.APP_SWITCH)} disabled={!live}>
           <Square className="h-3.5 w-3.5" />
-        </NavButton>
-        <NavButton title="电源键：亮屏 / 锁屏" onClick={() => pressKey(KEY.POWER)} disabled={phase !== 'live'}>
+        </RailButton>
+        <RailButton title="电源键：亮屏 / 锁屏" onClick={() => pressKey(KEY.POWER)} disabled={!live}>
           <Power className="h-3.5 w-3.5" />
-        </NavButton>
-      </div>
-      {/* 取证现场要知道这一步对手机做了什么 */}
-      <div className="border-t border-border px-2 py-1 text-[10px] leading-4 text-muted-foreground">
-        在画面上点击会真的操作手机；投屏会往手机推一个临时程序，启动后它自己删掉
+        </RailButton>
       </div>
     </div>
   )
 }
 
-function NavButton({
+function RailButton({
   title,
   onClick,
   disabled,
@@ -336,7 +403,7 @@ function NavButton({
 }: {
   title: string
   onClick: () => void
-  disabled: boolean
+  disabled?: boolean
   children: ReactNode
 }) {
   return (
@@ -345,7 +412,7 @@ function NavButton({
       aria-label={title}
       onClick={onClick}
       disabled={disabled}
-      className="rounded-md px-3 py-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-40"
+      className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-40"
     >
       {children}
     </button>

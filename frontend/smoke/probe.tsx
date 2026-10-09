@@ -863,9 +863,11 @@ async function main() {
         await act(async () => {
           await sleep(30)
         })
-        const req = __last.mirrorStart as { serial: string } | undefined
+        const req = __last.mirrorStart as { serial: string; options: { maxSize: number } } | undefined
         // 投的必须是连着的那一台:连接时序列号留空(= 第一台)也一样,不能再按「第一台」猜一次
         if (req?.serial !== 'Y9U469XKRK6XNFGY') throw new Error('没投连着的那一台: ' + JSON.stringify(req))
+        // 默认档要传得够大:手机先缩一遍、电脑再缩一遍,细字就糊了
+        if (req.options.maxSize !== 1920) throw new Error('默认画质不对: ' + JSON.stringify(req.options))
         const ws = fake.sockets[fake.sockets.length - 1]
         if (!ws?.url.includes('/mirror/')) throw new Error('没去连视频通道')
 
@@ -912,6 +914,19 @@ async function main() {
         })
         const scroll = sent().find((e) => e.t === 'scroll')
         if (scroll?.vs !== -1) throw new Error('滚轮没变成滑动: ' + JSON.stringify(scroll))
+
+        // 全屏:画面盖住整个窗口,窗口也进系统全屏;Esc 退出,两样都要还原
+        const panel = () => document.querySelector('[data-mirror-panel]') as HTMLElement
+        delete __calls.WindowFullscreen
+        delete __calls.WindowUnfullscreen
+        await mustClick('全屏：画面铺满整个屏幕')
+        if (!panel().className.includes('fixed') || !__calls.WindowFullscreen) {
+          throw new Error('全屏没铺满窗口,或者没进系统全屏')
+        }
+        await act(async () => {
+          window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape' }))
+        })
+        if (panel().className.includes('fixed') || !__calls.WindowUnfullscreen) throw new Error('Esc 没退出全屏')
 
         // 小米一类不让模拟点击:手机端的提醒要摆出来
         await act(async () => {

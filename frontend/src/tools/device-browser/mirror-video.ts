@@ -66,16 +66,12 @@ export function wheelNotches(e: { deltaX: number; deltaY: number; deltaMode: num
 }
 
 /**
- * 画面在面板里显示多大:高度撑满,宽度按比例;太宽(横屏)时按最大宽度缩,高度跟着变
+ * 画面显示多大:在 maxWidth × maxHeight 里按比例放到最大。
+ * 竖屏一般是高度先顶到头,横屏是宽度先顶到头
  */
-export function fitSize(areaHeight: number, aspect: number, maxWidth: number) {
-  let height = Math.max(0, areaHeight)
-  let width = height * aspect
-  if (width > maxWidth) {
-    width = maxWidth
-    height = width / aspect
-  }
-  return { width: Math.round(width), height: Math.round(height) }
+export function fitSize(maxWidth: number, maxHeight: number, aspect: number) {
+  const width = Math.max(0, Math.min(maxWidth, maxHeight * aspect))
+  return { width: Math.round(width), height: Math.round(width / aspect) }
 }
 
 /** 用到的安卓键码 */

@@ -404,202 +404,197 @@ export default function DeviceBrowser() {
         </div>
       }
     >
-      <div className="flex h-full min-h-0 flex-col gap-2">
-        {/* 路径 + 搜索 */}
-        <div className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-2 py-1.5">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 shrink-0 px-2"
-            onClick={() => listing?.parent && load(listing.parent)}
-            disabled={!listing?.parent}
-            title="上一级"
-          >
-            <CornerLeftUp className="h-3.5 w-3.5" />
-          </Button>
-          <Breadcrumbs path={cwd} startPath={startPath} onGo={load} />
-          {/* 当前目录也能整个导出 —— 以前只有选中单个文件才导得了 */}
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 shrink-0 px-2"
-            onClick={() => exportDir(cwd)}
-            disabled={!!dirExporting || cwd === '/'}
-            title={`把 ${cwd} 整个导出到本地`}
-          >
-            <FolderDown className={cn('h-3.5 w-3.5', dirExporting === cwd && 'animate-pulse')} />
-            <span className="text-[11px]">导出此目录</span>
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 shrink-0 px-2"
-            onClick={() => forensicExport(cwd)}
-            disabled={cwd === '/'}
-            title={`把 ${cwd} 填进移动取证的「指定路径」，走取证流程整个取下来`}
-          >
-            <HardDriveDownload className="h-3.5 w-3.5" />
-            <span className="text-[11px]">用移动取证导出</span>
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className={cn('h-7 shrink-0 px-2', watch?.dir === cwd && 'text-info')}
-            onClick={() => (watch?.dir === cwd ? stopWatch() : startWatch(cwd))}
-            title={
-              watch?.dir === cwd
-                ? '停止监视这个目录'
-                : `监视 ${cwd}：每隔几秒对比一次整棵子树，列出新增、修改、删除的文件`
-            }
-          >
-            <Eye className={cn('h-3.5 w-3.5', watch?.dir === cwd && !watch.paused && 'animate-pulse')} />
-            <span className="text-[11px]">{watch?.dir === cwd ? '监视中' : '监视此目录'}</span>
-          </Button>
-          <div className="relative shrink-0">
-            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void runSearch()
-                if (e.key === 'Escape') {
-                  setQuery('')
-                  setHits(null)
-                }
-              }}
-              // 它是递归的:从这里往下翻整棵子树。写"在当前目录下"会让人
-              // 以为只看这一层,然后对着一堆别处的结果发懵
-              placeholder="从这里往下找（回车搜索）"
-              spellCheck={false}
-              className="h-7 w-52 rounded-md border border-input bg-background pl-7 pr-7 text-xs outline-none focus:ring-1 focus:ring-ring"
-            />
-            {query && (
-              <button
-                onClick={() => {
-                  setQuery('')
-                  setHits(null)
+      <div className="flex h-full min-h-0 gap-2">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+          {/* 路径 + 搜索 */}
+          <div className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-2 py-1.5">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 shrink-0 px-2"
+              onClick={() => listing?.parent && load(listing.parent)}
+              disabled={!listing?.parent}
+              title="上一级"
+            >
+              <CornerLeftUp className="h-3.5 w-3.5" />
+            </Button>
+            <Breadcrumbs path={cwd} startPath={startPath} onGo={load} />
+            {/* 当前目录也能整个导出 —— 以前只有选中单个文件才导得了 */}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 shrink-0 px-2"
+              onClick={() => exportDir(cwd)}
+              disabled={!!dirExporting || cwd === '/'}
+              title={`把 ${cwd} 整个导出到本地`}
+            >
+              <FolderDown className={cn('h-3.5 w-3.5', dirExporting === cwd && 'animate-pulse')} />
+              <span className="text-[11px]">导出此目录</span>
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 shrink-0 px-2"
+              onClick={() => forensicExport(cwd)}
+              disabled={cwd === '/'}
+              title={`把 ${cwd} 填进移动取证的「指定路径」，走取证流程整个取下来`}
+            >
+              <HardDriveDownload className="h-3.5 w-3.5" />
+              <span className="text-[11px]">用移动取证导出</span>
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className={cn('h-7 shrink-0 px-2', watch?.dir === cwd && 'text-info')}
+              onClick={() => (watch?.dir === cwd ? stopWatch() : startWatch(cwd))}
+              title={
+                watch?.dir === cwd
+                  ? '停止监视这个目录'
+                  : `监视 ${cwd}：每隔几秒对比一次整棵子树，列出新增、修改、删除的文件`
+              }
+            >
+              <Eye className={cn('h-3.5 w-3.5', watch?.dir === cwd && !watch.paused && 'animate-pulse')} />
+              <span className="text-[11px]">{watch?.dir === cwd ? '监视中' : '监视此目录'}</span>
+            </Button>
+            <div className="relative shrink-0">
+              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void runSearch()
+                  if (e.key === 'Escape') {
+                    setQuery('')
+                    setHits(null)
+                  }
                 }}
-                title="清空（Esc）"
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-secondary hover:text-foreground"
+                // 它是递归的:从这里往下翻整棵子树。写"在当前目录下"会让人
+                // 以为只看这一层,然后对着一堆别处的结果发懵
+                placeholder="从这里往下找（回车搜索）"
+                spellCheck={false}
+                className="h-7 w-52 rounded-md border border-input bg-background pl-7 pr-7 text-xs outline-none focus:ring-1 focus:ring-ring"
+              />
+              {query && (
+                <button
+                  onClick={() => {
+                    setQuery('')
+                    setHits(null)
+                  }}
+                  title="清空（Esc）"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-secondary hover:text-foreground"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* 常用位置:iOS 的路径又长又容易打错,让人每次手敲是这个功能没人用的主因 */}
+          <div className="flex flex-wrap gap-1">
+            {presetsFor(platform, rooted).map((p) => (
+              <button
+                key={p.path}
+                onClick={() => load(p.path)}
+                title={p.note ?? p.path}
+                className="rounded-sm bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
-                <X className="h-3 w-3" />
+                {p.label}
               </button>
-            )}
+            ))}
+          </div>
+
+          {watch && (
+            <WatchPanel
+              watch={watch}
+              onPause={() => setWatch((s) => s && { ...s, paused: !s.paused })}
+              onCheckNow={() => void pollWatch(false)}
+              onRebase={() => void pollWatch(true)}
+              onMode={setMode}
+              onClear={() => setWatch((s) => s && { ...s, events: [] })}
+              onStop={stopWatch}
+              onInterval={(sec) => setWatch((s) => s && { ...s, interval: sec })}
+              onGo={goToChange}
+            />
+          )}
+
+          {dirError && (
+            <div className="whitespace-pre-wrap break-words rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              {dirError}
+            </div>
+          )}
+          {dirResult && (
+            <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[11px] text-emerald-700 dark:text-emerald-400">
+              已导出 {dirResult.files} 个文件 / {fmtSize(dirResult.bytes)}，用时{' '}
+              {(dirResult.elapsedMs / 1000).toFixed(1)} 秒 —— {dirResult.rootPath}
+              {/* 改过名必须让人看见:取证里文件名本身就是证据 */}
+              {dirResult.renamed > 0 && (
+                <div className="mt-1 text-amber-700 dark:text-amber-400">
+                  有 {dirResult.renamed} 个名字在本地文件系统上非法，已替换其中的字符
+                  {dirResult.renameSamples.length > 0 && (
+                    <span className="opacity-80">（例如 {dirResult.renameSamples[0]}）</span>
+                  )}
+                </div>
+              )}
+              {dirResult.skipped > 0 && (
+                <div className="mt-0.5 opacity-80">跳过 {dirResult.skipped} 个成员（软链、设备节点之类）</div>
+              )}
+            </div>
+          )}
+          {listError && (
+            <div className="whitespace-pre-wrap break-words rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              {listError}
+            </div>
+          )}
+
+          <div className="grid min-h-0 flex-1 grid-cols-[minmax(280px,2fr)_3fr] gap-2">
+            <div className="min-h-0 overflow-auto rounded-lg border border-border bg-card">
+              {hits ? (
+                <SearchResults
+                  res={hits}
+                  root={searchRoot}
+                  query={query}
+                  searching={searching}
+                  selected={selected}
+                  onPick={open}
+                  onBack={() => {
+                    setHits(null)
+                    setQuery('')
+                  }}
+                />
+              ) : (
+                <EntryList
+                  listing={listing}
+                  loading={listLoading}
+                  selected={selected}
+                  onOpen={open}
+                  onExportDir={exportDir}
+                  onForensic={forensicExport}
+                  exportingDir={dirExporting}
+                  marks={marks}
+                />
+              )}
+            </div>
+            <div className="min-h-0 overflow-hidden rounded-lg border border-border bg-card">
+              <PreviewPane
+                preview={preview}
+                loading={previewLoading}
+                error={previewError}
+                onExport={exportSelected}
+                exporting={exporting}
+                exportedTo={exportedTo}
+              />
+            </div>
           </div>
         </div>
-
-        {/* 常用位置:iOS 的路径又长又容易打错,让人每次手敲是这个功能没人用的主因 */}
-        <div className="flex flex-wrap gap-1">
-          {presetsFor(platform, rooted).map((p) => (
-            <button
-              key={p.path}
-              onClick={() => load(p.path)}
-              title={p.note ?? p.path}
-              className="rounded-sm bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-
-        {watch && (
-          <WatchPanel
-            watch={watch}
-            onPause={() => setWatch((s) => s && { ...s, paused: !s.paused })}
-            onCheckNow={() => void pollWatch(false)}
-            onRebase={() => void pollWatch(true)}
-            onMode={setMode}
-            onClear={() => setWatch((s) => s && { ...s, events: [] })}
-            onStop={stopWatch}
-            onInterval={(sec) => setWatch((s) => s && { ...s, interval: sec })}
-            onGo={goToChange}
+        {/* 投屏面板从上到下占满:手机是竖长条,面板能有多宽全看能有多高 */}
+        {mirrorOpen && platform === 'android' && (
+          <MirrorPanel
+            serial={serial}
+            adbPath={adbPath}
+            active={visible}
+            onClose={() => setMirrorOpen(false)}
           />
         )}
-
-        {dirError && (
-          <div className="whitespace-pre-wrap break-words rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            {dirError}
-          </div>
-        )}
-        {dirResult && (
-          <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[11px] text-emerald-700 dark:text-emerald-400">
-            已导出 {dirResult.files} 个文件 / {fmtSize(dirResult.bytes)}，用时{' '}
-            {(dirResult.elapsedMs / 1000).toFixed(1)} 秒 —— {dirResult.rootPath}
-            {/* 改过名必须让人看见:取证里文件名本身就是证据 */}
-            {dirResult.renamed > 0 && (
-              <div className="mt-1 text-amber-700 dark:text-amber-400">
-                有 {dirResult.renamed} 个名字在本地文件系统上非法，已替换其中的字符
-                {dirResult.renameSamples.length > 0 && (
-                  <span className="opacity-80">（例如 {dirResult.renameSamples[0]}）</span>
-                )}
-              </div>
-            )}
-            {dirResult.skipped > 0 && (
-              <div className="mt-0.5 opacity-80">跳过 {dirResult.skipped} 个成员（软链、设备节点之类）</div>
-            )}
-          </div>
-        )}
-        {listError && (
-          <div className="whitespace-pre-wrap break-words rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            {listError}
-          </div>
-        )}
-
-        <div
-          className={cn(
-            'grid min-h-0 flex-1 gap-2',
-            // 投屏面板的宽度由画面比例决定,预览区让出地方
-            mirrorOpen && platform === 'android'
-              ? 'grid-cols-[minmax(240px,2fr)_minmax(0,3fr)_auto]'
-              : 'grid-cols-[minmax(280px,2fr)_3fr]'
-          )}
-        >
-          <div className="min-h-0 overflow-auto rounded-lg border border-border bg-card">
-            {hits ? (
-              <SearchResults
-                res={hits}
-                root={searchRoot}
-                query={query}
-                searching={searching}
-                selected={selected}
-                onPick={open}
-                onBack={() => {
-                  setHits(null)
-                  setQuery('')
-                }}
-              />
-            ) : (
-              <EntryList
-                listing={listing}
-                loading={listLoading}
-                selected={selected}
-                onOpen={open}
-                onExportDir={exportDir}
-                onForensic={forensicExport}
-                exportingDir={dirExporting}
-                marks={marks}
-              />
-            )}
-          </div>
-          <div className="min-h-0 overflow-hidden rounded-lg border border-border bg-card">
-            <PreviewPane
-              preview={preview}
-              loading={previewLoading}
-              error={previewError}
-              onExport={exportSelected}
-              exporting={exporting}
-              exportedTo={exportedTo}
-            />
-          </div>
-          {mirrorOpen && platform === 'android' && (
-            <MirrorPanel
-              serial={serial}
-              adbPath={adbPath}
-              active={visible}
-              onClose={() => setMirrorOpen(false)}
-            />
-          )}
-        </div>
       </div>
     </ToolShell>
   )

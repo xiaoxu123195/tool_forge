@@ -27,14 +27,17 @@ export class MirrorLink {
   private ws: WebSocket
   private decoder: VideoDecoder | null = null
   private ctx: CanvasRenderingContext2D | null = null
+  /**
+   * 最近一帧。留着它,画布换尺寸(拖窗口、进出全屏)时能马上重画,
+   * 不用对着一块空白等下一帧。只留一帧,解码器的帧池不会被占满
+   */
+  private last: VideoFrame | null = null
   /** 最近一个配置包:每个关键帧前面都垫上它,解码器才不挑 */
   private config: Uint8Array | null = null
   /** 新一段编码开始了,下一个配置包到了要重建解码器 */
   private fresh = true
   /** 解码器要从关键帧开始,在那之前的帧都得丢掉 */
   private waitKey = true
-  private width = 0
-  private height = 0
   private live = false
   private ended = false
   private failures = 0
@@ -63,7 +66,14 @@ export class MirrorLink {
       this.ws.close()
       this.closeDecoder()
     }
+    this.last?.close()
+    this.last = null
     void StopMirror(this.sessionId).catch(() => {})
+  }
+
+  /** 画布换了尺寸:用最近一帧马上重画一次 */
+  redraw() {
+    this.paint()
   }
 
   private onMessage(ev: MessageEvent) {
@@ -82,10 +92,7 @@ export class MirrorLink {
     if (!p) return
     switch (p.kind) {
       case 'session':
-        this.width = p.width
-        this.height = p.height
-        this.canvas.width = p.width
-        this.canvas.height = p.height
+        // 画布多大由面板按显示尺寸定,这里只报视频尺寸(坐标换算和长宽比要用)
         this.fresh = true
         this.cb.onSize(p.width, p.height)
         return
@@ -135,14 +142,31 @@ export class MirrorLink {
   }
 
   private draw(frame: VideoFrame) {
-    this.ctx ??= this.canvas.getContext('2d')
-    this.ctx?.drawImage(frame, 0, 0, this.width || frame.displayWidth, this.height || frame.displayHeight)
-    frame.close()
+    this.last?.close()
+    this.last = frame
+    this.paint()
     if (!this.live) {
       this.live = true
       this.failures = 0
       this.cb.onLive()
     }
+  }
+
+  /**
+   * 画布是按屏幕实际像素建的(见 MirrorPanel),这里把视频缩进去。
+   * 缩小一定要用高质量插值:浏览器默认的缩放只是双线性,
+   * 缩到一半以下时细字的笔画会被跳过,看上去就是发虚
+   */
+  private paint() {
+    const f = this.last
+    if (!f) return
+    this.ctx ??= this.canvas.getContext('2d')
+    const ctx = this.ctx
+    if (!ctx) return
+    // 画布一改尺寸,这两项就会被重置,所以每次都设
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
+    ctx.drawImage(f, 0, 0, this.canvas.width, this.canvas.height)
   }
 
   // 解码器出错后就关掉了:换一个新的,让手机端从关键帧重来。连着错几次就别硬撑了
