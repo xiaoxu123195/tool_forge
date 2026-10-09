@@ -25,6 +25,7 @@ import { Profile } from '../src/profile'
 import MmkvTool from '../src/tools/mmkv/index'
 import PlistTool from '../src/tools/plist/index'
 import DeviceBrowser from '../src/tools/device-browser/index'
+import { DISMISS_MS } from '../src/tools/device-browser/MirrorPanel'
 import MobileForensic from '../src/tools/mobile-forensic/index'
 import AppSearch from '../src/tools/app-search/index'
 import SQLiteSearch from '../src/tools/sqlite-search/index'
@@ -1151,6 +1152,64 @@ async function main() {
           ws.emit(JSON.stringify({ type: 'notice', code: 'inject-denied', text: '手机拒绝了模拟点击……「USB 调试（安全设置）」' }))
         })
         if (!txt().includes('USB 调试（安全设置）')) throw new Error('提醒没显示出来')
+
+        // 提示条到点自己消失:提醒、成功、失败各有各的时长,鼠标停在上面时不走;
+        // 「点不动」这种不处理就用不了的一直留着。把时长调短,不用真等几秒
+        const savedDismiss = { ...DISMISS_MS }
+        Object.assign(DISMISS_MS, { hint: 150, ok: 100, error: 400 })
+        try {
+          const hintBar = () => document.querySelector('[data-mirror-hint]') as HTMLElement | null
+          const toastBar = () => document.querySelector('[data-mirror-toast]') as HTMLElement | null
+          const wait = async (ms: number) => {
+            await act(async () => {
+              await sleep(ms)
+            })
+          }
+          await clickTitled('怎么操作')
+          if (!hintBar()?.textContent?.includes('Ctrl+滚轮')) throw new Error('操作说明没显示')
+          // 成功的提示:Ctrl+C 复制到电脑
+          await keydown('c', { ctrlKey: true })
+          await act(async () => {
+            ws.emit(JSON.stringify({ type: 'clipboard', text: '再复制一次' }))
+          })
+          if (!toastBar()?.textContent?.includes('已复制到电脑')) throw new Error('复制成功没提示')
+          await wait(250)
+          if (hintBar()) throw new Error('操作说明到点没消失')
+          if (toastBar()) throw new Error('成功的提示到点没消失')
+          if (!txt().includes('USB 调试（安全设置）')) throw new Error('「点不动」的提醒不该自己消失')
+
+          // 失败的留得久一点
+          const dropAgain = __last.fileDrop as (x: number, y: number, paths: string[]) => void
+          const keepFromPoint = document.elementFromPoint
+          document.elementFromPoint = () => canvas
+          try {
+            await act(async () => {
+              dropAgain(10, 10, ['D:/数据/旧版old.apk'])
+              await sleep(30)
+            })
+          } finally {
+            document.elementFromPoint = keepFromPoint
+          }
+          await wait(200)
+          if (!toastBar()?.textContent?.includes('旧版old.apk')) throw new Error('失败的提示消失得太早')
+          await wait(350)
+          if (toastBar()) throw new Error('失败的提示到点没消失')
+
+          // 鼠标停在上面:不计时;挪开再重新数
+          await clickTitled('怎么操作')
+          await act(async () => {
+            hintBar()?.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true }))
+          })
+          await wait(250)
+          if (!hintBar()) throw new Error('鼠标停在提示上,它不该消失')
+          await act(async () => {
+            hintBar()?.dispatchEvent(new window.MouseEvent('mouseout', { bubbles: true }))
+          })
+          await wait(250)
+          if (hintBar()) throw new Error('鼠标挪开后提示没接着消失')
+        } finally {
+          Object.assign(DISMISS_MS, savedDismiss)
+        }
 
         // 手机拔了:说清楚为什么,给一个重新连接
         await act(async () => {

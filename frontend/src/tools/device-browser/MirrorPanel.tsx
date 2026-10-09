@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type HTMLAttributes, type ReactNode } from 'react'
 import {
   Camera,
   ChevronLeft,
@@ -72,6 +72,13 @@ const CLIP_WAIT = 2000
 /** 安卓 7(API 24)起才有复制、粘贴键 */
 const SDK_PASTE = 24
 
+/**
+ * 提示条多久后自己消失(毫秒):顺口一提的提醒、成功、失败。失败的留久一点,要看清是哪个文件、为什么。
+ * 「手机拒绝了模拟点击」这种不处理就用不了的不在这里,一直留着等人关。
+ * 导出是给冒烟测试调短用的,省得真等几秒
+ */
+export const DISMISS_MS = { hint: 6000, ok: 5000, error: 15000 }
+
 const HELP = [
   '左键：点按、拖动，和手指一样',
   '右键：返回　　中键：主页',
@@ -85,7 +92,7 @@ const HELP = [
 /** 面板底部的提示条 */
 interface Toast {
   text: string
-  /** 失败的标红,而且不自动消失 */
+  /** 失败的标红,留得久一点 */
   error?: boolean
   /** 存下来的文件:给「打开所在文件夹」 */
   path?: string
@@ -134,7 +141,10 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
   const [attempt, setAttempt] = useState(0)
   const [phase, setPhase] = useState<Phase>('starting')
   const [message, setMessage] = useState('')
-  const [notice, setNotice] = useState('')
+  // 手机端发来的、不处理就用不了的提醒(比如不让模拟点击):一直留着,等人关
+  const [warning, setWarning] = useState('')
+  // 顺口一提的提醒(中文经剪贴板粘贴、操作说明):几秒后自己消失
+  const [hint, setHint] = useState('')
   const [video, setVideo] = useState<{ w: number; h: number } | null>(null)
   const [area, setArea] = useState({ w: 0, h: 0 })
   const [fullscreen, setFullscreen] = useState(false)
@@ -174,7 +184,7 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
     if (code === 'replaced') {
       // 第一次粘贴前剪贴板里原来的东西:留着,在「手机剪贴板」里看得到
       setClip((c) => ({ ...c, before: text }))
-      setNotice(
+      setHint(
         text
           ? '中文是经手机剪贴板粘贴的：手机剪贴板里原来的内容已被替换，原内容在右边「手机剪贴板」里能看到'
           : '中文是经手机剪贴板粘贴的：手机上的应用都读得到剪贴板里的字',
@@ -219,7 +229,8 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
     let link: MirrorLink | null = null
     setPhase('starting')
     setMessage('')
-    setNotice('')
+    setWarning('')
+    setHint('')
     setVideo(null)
     setTransfer('')
     const q = QUALITIES.find((x) => x.id === quality) ?? QUALITIES[1]
@@ -241,7 +252,7 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
         link = new MirrorLink(s.id, s.url, canvas, {
           onSize: (w, h) => setVideo({ w, h }),
           onLive: () => setPhase('live'),
-          onNotice: setNotice,
+          onNotice: setWarning,
           onClipboard: (text, code) => onClipboardRef.current(text, code),
           onRecorded: (files, ms, error) => onRecordedRef.current(files, ms, error),
           onTransfer: setTransfer,
@@ -354,7 +365,7 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
     if (!pastedOnce.current) {
       pastedOnce.current = true
       if (sdk > 0 && sdk < SDK_PASTE) {
-        setNotice('这台手机是安卓 7 以下，没有粘贴键：字已经放进手机剪贴板，在输入框上长按选「粘贴」')
+        setHint('这台手机是安卓 7 以下，没有粘贴键：字已经放进手机剪贴板，在输入框上长按选「粘贴」')
       }
     }
     send({ t: 'paste', s })
@@ -657,13 +668,6 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
     return () => window.clearInterval(t)
   }, [recording])
 
-  // 提示条:成功的过一会儿自己消失,失败的留着等人看
-  useEffect(() => {
-    if (!toast || toast.error) return
-    const t = window.setTimeout(() => setToast(null), 8000)
-    return () => window.clearTimeout(t)
-  }, [toast])
-
   // ---- 拖文件进来 ----
   const dropRef = useNativeFileDrop<HTMLDivElement>((paths) => {
     void dropFiles(paths)
@@ -688,6 +692,14 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
       setDropping(false)
       setTransfer('')
     }
+  }
+
+  // 每来一条新提示(哪怕字一样,比如连着复制两次)都重新计时:给它一个新的 key
+  const toastSeq = useRef(0)
+  const lastToast = useRef<Toast | null>(null)
+  if (toast !== lastToast.current) {
+    lastToast.current = toast
+    toastSeq.current++
   }
 
   const q = QUALITIES.find((x) => x.id === quality) ?? QUALITIES[1]
@@ -783,13 +795,31 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
         )}
 
         <div className="pointer-events-none absolute inset-x-2 top-2 flex flex-col items-end gap-1.5">
-          {notice && (
-            <div className="pointer-events-auto flex w-full items-start gap-1.5 rounded-md bg-amber-100 px-2 py-1.5 text-[11px] text-amber-900 shadow dark:bg-amber-900/90 dark:text-amber-100">
-              <span className="flex-1 whitespace-pre-line">{notice}</span>
-              <button onClick={() => setNotice('')} title="知道了" className="shrink-0 opacity-70 hover:opacity-100">
+          {warning && (
+            <div
+              data-mirror-warning=""
+              className="pointer-events-auto flex w-full items-start gap-1.5 rounded-md bg-amber-100 px-2 py-1.5 text-[11px] text-amber-900 shadow dark:bg-amber-900/90 dark:text-amber-100"
+            >
+              <span className="flex-1 whitespace-pre-line">{warning}</span>
+              <button onClick={() => setWarning('')} title="知道了" className="shrink-0 opacity-70 hover:opacity-100">
                 <X className="h-3 w-3" />
               </button>
             </div>
+          )}
+          {hint && (
+            // 换一条提醒就换一个计时:key 跟着内容走
+            <AutoDismiss
+              key={hint}
+              ms={DISMISS_MS.hint}
+              onDismiss={() => setHint('')}
+              data-mirror-hint=""
+              className="pointer-events-auto flex w-full items-start gap-1.5 rounded-md bg-sky-100 px-2 py-1.5 text-[11px] text-sky-900 shadow dark:bg-sky-900/90 dark:text-sky-100"
+            >
+              <span className="flex-1 whitespace-pre-line">{hint}</span>
+              <button onClick={() => setHint('')} title="知道了" className="shrink-0 opacity-70 hover:opacity-100">
+                <X className="h-3 w-3" />
+              </button>
+            </AutoDismiss>
           )}
           {/* 横过来的画面停靠着看还是小:给一个一键全屏 */}
           {live && landscape && !fullscreen && (
@@ -822,7 +852,11 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
             </div>
           )}
           {toast && (
-            <div
+            <AutoDismiss
+              key={toastSeq.current}
+              ms={toast.error ? DISMISS_MS.error : DISMISS_MS.ok}
+              onDismiss={() => setToast(null)}
+              data-mirror-toast=""
               className={cn(
                 'pointer-events-auto rounded-md px-2 py-1.5 text-[11px] shadow',
                 toast.error
@@ -859,7 +893,7 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
                   <ToastAction onClick={() => void pickDir()}>换保存的文件夹</ToastAction>
                 </div>
               )}
-            </div>
+            </AutoDismiss>
           )}
         </div>
 
@@ -982,7 +1016,7 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
         <RailButton title="电源键：亮屏 / 锁屏" onClick={() => pressKey(KEY.POWER)} disabled={!live}>
           <Power className="h-3.5 w-3.5" />
         </RailButton>
-        <RailButton title={'怎么操作：\n' + HELP} onClick={() => setNotice(HELP)}>
+        <RailButton title={'怎么操作：\n' + HELP} onClick={() => setHint(hint === HELP ? '' : HELP)}>
           <CircleHelp className="h-3.5 w-3.5" />
         </RailButton>
       </div>
@@ -1018,6 +1052,31 @@ function RailButton({
     >
       {children}
     </button>
+  )
+}
+
+/**
+ * 到点自己消失的提示条。鼠标停在上面时不计时,挪开后重新数 ——
+ * 正要点上面的「打开所在文件夹」,它不能先没了
+ */
+function AutoDismiss({
+  ms,
+  onDismiss,
+  children,
+  ...rest
+}: { ms: number; onDismiss: () => void; children: ReactNode } & Omit<HTMLAttributes<HTMLDivElement>, 'children'>) {
+  const [hover, setHover] = useState(false)
+  const done = useRef(onDismiss)
+  done.current = onDismiss
+  useEffect(() => {
+    if (hover) return
+    const t = window.setTimeout(() => done.current(), ms)
+    return () => window.clearTimeout(t)
+  }, [hover, ms])
+  return (
+    <div {...rest} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
+      {children}
+    </div>
   )
 }
 
