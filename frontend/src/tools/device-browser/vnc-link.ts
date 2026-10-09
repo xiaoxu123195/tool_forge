@@ -1,9 +1,10 @@
 import type RFB from '@novnc/novnc'
-import { StopIOSMirror } from '../../../wailsjs/go/main/App'
 
 export interface VncCallbacks {
   /** 画面尺寸变了(连上、手机转屏) */
   onSize: (w: number, h: number) => void
+  /** 画了一帧:录屏从这里拿画面。给的是 noVNC 那块原尺寸的画布 */
+  onFrame?: (src: HTMLCanvasElement) => void
   /** 连上了,开始出画面 */
   onLive: () => void
   /** 手机上复制了东西:TrollVNC 会把手机剪贴板的变化推过来 */
@@ -16,7 +17,8 @@ export interface VncCallbacks {
 export const BUTTON = { HOME: 4, POWER: 2 } as const
 
 /**
- * 一路 iOS 投屏在界面这一侧的全部:noVNC 的 VNC 客户端,外加一块显示用的画布。
+ * 一路 iOS 投屏在界面这一侧的画面:noVNC 的 VNC 客户端,外加一块显示用的画布。
+ * 只管画面和输入;手机上的服务什么时候开、什么时候停,归面板管
  *
  * noVNC 的画布是手机原尺寸(1242×2208 这样),交给浏览器按 CSS 缩进面板,走的是最粗的那种缩放,
  * 细字会发虚。所以它那块画布留在上面接鼠标、但是透明,画面按屏幕实际像素高质量缩小,另画到下面这块上。
@@ -37,14 +39,12 @@ export class VncLink {
   private ended = false
 
   private constructor(
-    private readonly sessionId: string,
     private readonly view: HTMLCanvasElement,
     private readonly cb: VncCallbacks,
   ) {}
 
   /** 连上手机。noVNC 用到时才加载,不拖慢别的页面 */
   static async open(
-    sessionId: string,
     url: string,
     password: string,
     host: HTMLElement,
@@ -53,7 +53,7 @@ export class VncLink {
     cb: VncCallbacks,
   ): Promise<VncLink> {
     const { default: Rfb } = await import('@novnc/novnc')
-    const link = new VncLink(sessionId, view, cb)
+    const link = new VncLink(view, cb)
     link.connect(Rfb, url, password, host, quality)
     return link
   }
@@ -140,7 +140,7 @@ export class VncLink {
     })
   }
 
-  /** noVNC 那块原尺寸的画布:录屏从它上面录 */
+  /** noVNC 那块原尺寸的画布:录屏从它上面取画面 */
   source(): HTMLCanvasElement | null {
     return this.src
   }
@@ -150,14 +150,12 @@ export class VncLink {
     this.paint()
   }
 
-  /** 主动收掉(关面板、换设置、组件卸载):不回调,顺带让后端停掉手机上的服务 */
+  /** 断开画面(关面板、窗口藏起来、组件卸载)。不回调 */
   close() {
-    if (!this.ended) {
-      this.ended = true
-      cancelAnimationFrame(this.raf)
-      this.rfb?.disconnect()
-    }
-    void StopIOSMirror(this.sessionId).catch(() => {})
+    if (this.ended) return
+    this.ended = true
+    cancelAnimationFrame(this.raf)
+    this.rfb?.disconnect()
   }
 
   private touch() {
@@ -187,6 +185,7 @@ export class VncLink {
     ctx.imageSmoothingEnabled = true
     ctx.imageSmoothingQuality = 'high'
     ctx.drawImage(src, 0, 0, this.view.width, this.view.height)
+    this.cb.onFrame?.(src)
   }
 
   private end(reason: string) {
@@ -196,6 +195,8 @@ export class VncLink {
     this.cb.onEnded(reason)
   }
 }
+
+// ---- 录屏 ----
 
 /** 浏览器能不能录屏:要能从画布取视频流,还要有 MediaRecorder */
 export function supportsRecording(): boolean {
@@ -207,7 +208,7 @@ export function supportsRecording(): boolean {
 }
 
 /** 录屏格式:能录 MP4 就录 MP4(Windows 自带的播放器就能放),不行再退到 WebM */
-function recordingType(): { mime: string; ext: '.mp4' | '.webm' } {
+export function recordingType(): { mime: string; ext: '.mp4' | '.webm' } {
   for (const mime of ['video/mp4;codecs=avc1', 'video/mp4']) {
     if (MediaRecorder.isTypeSupported(mime)) return { mime, ext: '.mp4' }
   }
@@ -217,26 +218,125 @@ function recordingType(): { mime: string; ext: '.mp4' | '.webm' } {
   return { mime: '', ext: '.webm' }
 }
 
+/** 画面不动时多久补一帧:不补的话,不动的那一段在录像里没有帧,时长就短了 */
+const HEARTBEAT_MS = 1000
+
+/** 录屏要往后端交的东西 */
+export interface RecordingSink {
+  /** 接一段数据(base64),按顺序 */
+  append: (b64: string) => Promise<void>
+  /** 手机转了屏:后端把这个文件收尾,接着往下一个文件里录 */
+  nextPart: () => Promise<void>
+}
+
 /**
- * 把一块画布录成视频,每秒交出一段(按顺序,base64)。
- * 先建好、问清楚是什么格式,后端开好文件再 start
+ * 录 iOS 投屏。
+ *
+ * 不直接录 noVNC 那块画布:手机一转屏它就换尺寸,而一个 MP4 只能有一种画面尺寸,接着录下去文件就坏了。
+ * 所以每一帧拷到录像自己的画布上再录,那块的尺寸不变;尺寸一变(转屏)就收掉这一段、另起一个文件 ——
+ * 和安卓录屏一样分成几个文件
  */
-export class CanvasRecorder {
-  readonly ext: '.mp4' | '.webm'
-  private readonly mime: string
+export class SplitRecorder {
+  private part: PartRecorder | null = null
+  private last: HTMLCanvasElement | null = null
+  /** 换段排着队做:前一段收完尾、后端开好下一个文件,下一段才开始录 */
+  private queue: Promise<void> = Promise.resolve()
+  private switching = false
+  private stopped = false
+  private failed: unknown = null
+  private readonly timer: number
+
+  constructor(
+    private readonly mime: string,
+    private readonly sink: RecordingSink,
+  ) {
+    this.timer = window.setInterval(() => {
+      if (this.last) this.frame(this.last)
+    }, HEARTBEAT_MS)
+  }
+
+  /** noVNC 画了一帧(或者画面不动、到点补一帧) */
+  frame(src: HTMLCanvasElement) {
+    if (this.stopped || this.failed) return
+    this.last = src
+    const { width: w, height: h } = src
+    if (!w || !h) return
+    const cur = this.part
+    if (cur && cur.width === w && cur.height === h) {
+      cur.draw(src)
+      return
+    }
+    if (this.switching) return
+    this.switching = true
+    this.queue = this.queue
+      .then(async () => {
+        if (cur) {
+          await cur.stop()
+          await this.sink.nextPart()
+        }
+        if (this.stopped) return
+        const next = new PartRecorder(w, h, this.mime)
+        next.start(this.sink.append)
+        // 新的一段先录上眼下这一帧:转完屏画面可能就不动了
+        next.draw(src)
+        this.part = next
+      })
+      .catch((e) => {
+        this.failed ??= e
+      })
+      .finally(() => {
+        this.switching = false
+      })
+  }
+
+  /** 停下来,等最后一段交完。中途哪一段没交成功就抛出来 */
+  async stop(): Promise<void> {
+    this.stopped = true
+    window.clearInterval(this.timer)
+    await this.queue
+    const part = this.part
+    this.part = null
+    if (part) {
+      try {
+        await part.stop()
+      } catch (e) {
+        this.failed ??= e
+      }
+    }
+    if (this.failed) throw this.failed
+  }
+}
+
+/** 录一段:自己的一块画布,尺寸固定,每秒交出一段数据(按顺序,base64) */
+class PartRecorder {
+  private readonly canvas: HTMLCanvasElement
+  private readonly ctx: CanvasRenderingContext2D | null
   private rec: MediaRecorder | null = null
   private queue: Promise<void> = Promise.resolve()
   private failed: unknown = null
 
-  constructor(private readonly canvas: HTMLCanvasElement) {
-    const t = recordingType()
-    this.ext = t.ext
-    this.mime = t.mime
+  constructor(
+    readonly width: number,
+    readonly height: number,
+    private readonly mime: string,
+  ) {
+    const c = document.createElement('canvas')
+    c.width = width
+    c.height = height
+    // 挂进页面、挪到看不见的地方:脱离页面的画布能不能出帧,各家浏览器不一样
+    c.style.cssText = 'position:fixed;left:-100000px;top:0;pointer-events:none'
+    c.setAttribute('aria-hidden', 'true')
+    document.body.appendChild(c)
+    this.canvas = c
+    this.ctx = c.getContext('2d')
+  }
+
+  draw(src: CanvasImageSource) {
+    this.ctx?.drawImage(src, 0, 0)
   }
 
   start(onChunk: (b64: string) => Promise<void>) {
-    const stream = this.canvas.captureStream(30)
-    const rec = new MediaRecorder(stream, {
+    const rec = new MediaRecorder(this.canvas.captureStream(30), {
       ...(this.mime ? { mimeType: this.mime } : {}),
       videoBitsPerSecond: 8_000_000,
     })
@@ -254,7 +354,7 @@ export class CanvasRecorder {
     this.rec = rec
   }
 
-  /** 停下来,等最后一段也交出去。中途哪一段没交成功就抛出来 */
+  /** 停下来,等最后一段也交出去 */
   async stop(): Promise<void> {
     const rec = this.rec
     if (rec && rec.state !== 'inactive') {
@@ -264,6 +364,7 @@ export class CanvasRecorder {
       })
     }
     await this.queue
+    this.canvas.remove()
     if (this.failed) throw this.failed
   }
 }

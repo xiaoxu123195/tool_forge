@@ -129,13 +129,13 @@ func (p *fakePhone) count() int {
 
 func newIOSTestService(t *testing.T, p *fakePhone) *Service {
 	t.Helper()
-	oldAttach, oldGrace := iosAttachWait, iosDetachGrace
-	iosAttachWait, iosDetachGrace = 2*time.Second, 300*time.Millisecond
+	oldAttach, oldGrace, oldKeep, oldCool := iosAttachWait, iosDetachGrace, iosPauseKeep, prefsCooldown
+	iosAttachWait, iosDetachGrace, iosPauseKeep, prefsCooldown = 2*time.Second, 300*time.Millisecond, 2*time.Second, 0
 	svc := New()
 	svc.iosDial = p.dial
 	t.Cleanup(func() {
 		svc.CloseAll()
-		iosAttachWait, iosDetachGrace = oldAttach, oldGrace
+		iosAttachWait, iosDetachGrace, iosPauseKeep, prefsCooldown = oldAttach, oldGrace, oldKeep, oldCool
 	})
 	return svc
 }
@@ -300,6 +300,77 @@ func TestIOSStopsAfterDetachGrace(t *testing.T) {
 	readBinary(t, ws)
 	ws.Close()
 	waitFor(t, func() bool { return svc.getIOS(info.ID) == nil && !phone.isRunning() }, "界面断开不回来,服务应该停")
+}
+
+func TestIOSPauseKeepsService(t *testing.T) {
+	phone := newFakePhone(rootlessProbe)
+	svc := newIOSTestService(t, phone)
+	info, err := svc.startIOS(phone, "udid-1", "dev-1", IOSOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := dial(t, info.URL)
+	readBinary(t, ws)
+	starts := phone.count()
+
+	// 窗口藏起来:说一声暂停,再断开画面。过了平时的断开宽限,服务也还在
+	svc.PauseIOS(info.ID)
+	ws.Close()
+	time.Sleep(3 * iosDetachGrace)
+	if !svc.ResumeIOS(info.ID) || !phone.isRunning() {
+		t.Fatal("暂停期间服务不该停")
+	}
+	// 回来:用原来的地址和密码直接接上,不重启服务
+	ws = dial(t, info.URL)
+	if got := readBinary(t, ws); string(got) != "RFB 003.008\n" {
+		t.Fatalf("接回来没收到版本号: %q", got)
+	}
+	if phone.count() != starts {
+		t.Fatal("接回来不该再往手机上跑脚本")
+	}
+	// 接回来之后就不算暂停了:再断开走平时的宽限
+	ws.Close()
+	waitFor(t, func() bool { return !svc.ResumeIOS(info.ID) && !phone.isRunning() }, "没说暂停的断开,过了宽限就该停")
+}
+
+func TestIOSPauseTooLongStops(t *testing.T) {
+	phone := newFakePhone(rootlessProbe)
+	svc := newIOSTestService(t, phone)
+	iosPauseKeep = 300 * time.Millisecond
+	info, err := svc.startIOS(phone, "udid-1", "dev-1", IOSOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := dial(t, info.URL)
+	readBinary(t, ws)
+	ws.Close()
+	svc.PauseIOS(info.ID)
+	waitFor(t, func() bool { return !svc.ResumeIOS(info.ID) && !phone.isRunning() }, "暂停太久没回来,服务该停")
+}
+
+func TestIOSStopLeavesPrefsDaemonAlone(t *testing.T) {
+	phone := newFakePhone(rootlessProbe)
+	svc := newIOSTestService(t, phone)
+	prefsCooldown = 400 * time.Millisecond
+	info, err := svc.startIOS(phone, "udid-1", "dev-1", IOSOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if script, _ := phone.last(); !strings.Contains(script, "killall -9 cfprefsd") {
+		t.Fatalf("开服务要让 cfprefsd 重读:\n%s", script)
+	}
+	svc.StopIOS(info.ID)
+	if script, _ := phone.last(); strings.Contains(script, "cfprefsd") {
+		t.Fatalf("停服务不该再杀 cfprefsd:\n%s", script)
+	}
+	// 刚让它重读过:紧接着再开,得等够了再杀,不然手机上读设置要卡十秒
+	begin := time.Now()
+	if _, err := svc.startIOS(phone, "udid-1", "dev-1", IOSOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if waited := time.Since(begin); waited < 300*time.Millisecond {
+		t.Fatalf("紧接着重开没等 cfprefsd:只隔了 %v", waited)
+	}
 }
 
 func TestIOSReinstallWhileMirroring(t *testing.T) {

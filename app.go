@@ -741,6 +741,16 @@ func (a *App) StopIOSMirror(id string) {
 	a.mirror.StopIOS(id)
 }
 
+// PauseIOSMirror 窗口藏起来、切到别的工具:界面断开画面,手机上的服务留着,回来直接接上
+func (a *App) PauseIOSMirror(id string) {
+	a.mirror.PauseIOS(id)
+}
+
+// ResumeIOSMirror 界面回来了:这一路还在就照旧接上;返回 false 表示已经收掉了,得重开
+func (a *App) ResumeIOSMirror(id string) bool {
+	return a.mirror.ResumeIOS(id)
+}
+
 // SaveMirrorShot 存一张投屏截图(iOS 的截图在界面那头从画面上取),pngBase64 是 PNG 的内容
 func (a *App) SaveMirrorShot(dir, label, pngBase64 string) (*mirror.Shot, error) {
 	data, err := base64.StdEncoding.DecodeString(pngBase64)
@@ -768,9 +778,27 @@ func (a *App) AppendMirrorRecording(id, chunkBase64 string) error {
 	return a.mirror.AppendUpload(id, data)
 }
 
+// NextMirrorRecordingPart 手机转了屏:录屏另起一个文件接着录(一个 MP4 只能有一种画面尺寸)。
+// 返回新文件的路径
+func (a *App) NextMirrorRecordingPart(id string) (string, error) {
+	return a.mirror.NextUpload(id)
+}
+
 // EndMirrorRecording 录完了:关文件、补好时长。ms 是录了多久
 func (a *App) EndMirrorRecording(id string, ms int64) (*mirror.Recording, error) {
 	return a.mirror.EndUpload(id, ms)
+}
+
+// IOSMirrorDrop 拖进 iOS 投屏画面的文件:推到手机「文件」App 的「我的 iPhone › Downloads」里。
+// 进度经 mirror.EventIOSTransfer 事件报给界面
+func (a *App) IOSMirrorDrop(deviceSession string, paths []string) ([]mirror.DropItem, error) {
+	t, err := a.iosTarget(deviceSession)
+	if err != nil {
+		return nil, err
+	}
+	return a.mirror.DropIOS(t, paths, func(text string) {
+		wailsruntime.EventsEmit(a.ctx, mirror.EventIOSTransfer, text)
+	})
 }
 
 // CopyImageFile 把一张 PNG 图片放进剪贴板,能直接粘到文档和聊天里

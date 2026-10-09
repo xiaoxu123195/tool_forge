@@ -13,6 +13,7 @@ import { Copy, FolderOpen, Loader2, RotateCcw, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useDeviceBrowserStore } from '@/stores/device-browser'
 import { CopyImageFile, PickDirectory, RevealInExplorer } from '../../../wailsjs/go/main/App'
+import type { mirror } from '../../../wailsjs/go/models'
 import { WindowFullscreen, WindowIsMinimised, WindowUnfullscreen } from '../../../wailsjs/runtime/runtime'
 import { fitSize } from './mirror-video'
 
@@ -508,6 +509,55 @@ export function fmtDuration(ms: number) {
 export function fmtClock(ms: number) {
   const s = Math.max(0, Math.floor(ms / 1000))
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+}
+
+/**
+ * 录屏停了之后的提示。手机中间转过屏的话说一声分成了几个文件:一个 MP4 只能有一种画面尺寸。
+ * emptyText:一个文件都没录到时怎么说
+ */
+export function recordedToast(files: string[], ms: number, error: string, emptyText: string): Toast {
+  if (files.length === 0) return { text: error || emptyText, error: true }
+  const parts = files.length > 1 ? `，中间转过屏，分成了 ${files.length} 个文件` : ''
+  return {
+    text: `录屏已保存（${fmtDuration(ms)}${parts}）${error ? '。中途出错：' + error : ''}`,
+    path: files[0],
+    error: !!error,
+  }
+}
+
+/** 拖进来的文件处理完的提示。where:推到了手机上的哪儿 */
+export function summarizeDrop(items: mirror.DropItem[], where: string): Toast {
+  const ok = items.filter((i) => i.ok)
+  const bad = items.filter((i) => !i.ok)
+  const installed = ok.filter((i) => i.kind === 'install').length
+  const pushed = ok.filter((i) => i.kind !== 'install').reduce((n, i) => n + (i.kind === 'folder' ? (i.files ?? 0) : 1), 0)
+  const done: string[] = []
+  if (installed) done.push(`装好了 ${installed} 个应用`)
+  if (pushed) done.push(`推了 ${pushed} 个文件到${where}`)
+  const lines = [done.join('，') || '一个都没成功']
+  for (const i of bad.slice(0, 3)) lines.push(`${i.name}：${i.error ?? '失败了'}`)
+  if (bad.length > 3) lines.push(`还有 ${bad.length - 3} 项没成功`)
+  return { text: lines.join('\n'), error: bad.length > 0 }
+}
+
+/** 拖着文件经过画面时的说明。拖放区要带 group/drop 类,Wails 拖进来时会给它加上 wails-drop-target-active */
+export function DropOverlay({ children }: { children: ReactNode }) {
+  return (
+    <div className="pointer-events-none absolute inset-0 hidden items-center justify-center bg-black/60 p-6 text-center text-xs leading-6 text-white group-[.wails-drop-target-active]/drop:flex">
+      <div>{children}</div>
+    </div>
+  )
+}
+
+/** 拖进来的文件正在处理:转圈加一句进度 */
+export function TransferBar({ text }: { text: string }) {
+  if (!text) return null
+  return (
+    <div className="flex items-center gap-1.5 rounded-md bg-black/70 px-2 py-1.5 text-[11px] text-white/90">
+      <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+      <span className="min-w-0 flex-1 break-words">{text}</span>
+    </div>
+  )
 }
 
 /** 录屏按钮:没在录时是摄像机,录着时是红点加时长 */

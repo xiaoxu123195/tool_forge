@@ -63,10 +63,13 @@ func (s *Service) Drop(id string, paths []string) ([]DropItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := &transfer{sess: sess, dev: dev, total: len(paths)}
+	t := &transfer{sess: sess, dev: dev}
+	t.say = progressLine{total: len(paths), send: func(text string) {
+		sess.notify(notice{Type: "transfer", Text: text})
+	}}
 	items := make([]DropItem, 0, len(paths))
 	for i, p := range paths {
-		t.index = i + 1
+		t.say.index = i + 1
 		items = append(items, t.one(p))
 	}
 	// 进度条收起来
@@ -76,11 +79,34 @@ func (s *Service) Drop(id string, paths []string) ([]DropItem, error) {
 
 // transfer 一次拖放
 type transfer struct {
-	sess         *session
-	dev          gadb.Device
+	sess *session
+	dev  gadb.Device
+	say  progressLine
+}
+
+// progressLine 往界面报进度:一秒最多十次,拖了好几项时带上「第几项」。
+// 一个文件夹几千个小文件,每个都报一遍界面会被刷爆
+type progressLine struct {
 	index, total int
-	// said 上一次报进度的时间。一个文件夹几千个小文件,每个都报一遍界面会被刷爆
-	said time.Time
+	said         time.Time
+	send         func(string)
+}
+
+func (p *progressLine) progress(text string) {
+	if p.send == nil || time.Since(p.said) < 100*time.Millisecond {
+		return
+	}
+	p.said = time.Now()
+	if p.total > 1 {
+		text += fmt.Sprintf("（共 %d 项，第 %d 项）", p.total, p.index)
+	}
+	p.send(text)
+}
+
+// urgent 这一句不能被限流吞掉
+func (p *progressLine) urgent(text string) {
+	p.said = time.Time{}
+	p.progress(text)
 }
 
 func (t *transfer) one(local string) DropItem {
@@ -122,9 +148,9 @@ func (t *transfer) one(local string) DropItem {
 	}
 }
 
-// pushFolder 整个文件夹推到 Download 底下,保留里面的目录结构
-func (t *transfer) pushFolder(local, name string) (string, int, error) {
-	// 先数一遍再动手:拖错了整个盘的话,在往手机写任何东西之前就拦下
+// folderFiles 拖进来的文件夹里有哪些文件。
+// 先数一遍再动手:拖错了整个盘的话,在往手机写任何东西之前就拦下
+func folderFiles(local string) ([]string, error) {
 	var files []string
 	errTooMany := errors.New("too many")
 	err := filepath.WalkDir(local, func(p string, d fs.DirEntry, err error) error {
@@ -140,13 +166,22 @@ func (t *transfer) pushFolder(local, name string) (string, int, error) {
 		return nil
 	})
 	if errors.Is(err, errTooMany) {
-		return "", 0, fmt.Errorf("文件夹里超过 %d 个文件，太多了，挑一部分再拖", maxFolderFiles)
+		return nil, fmt.Errorf("文件夹里超过 %d 个文件，太多了，挑一部分再拖", maxFolderFiles)
 	}
 	if err != nil {
-		return "", 0, fmt.Errorf("读文件夹失败：%w", err)
+		return nil, fmt.Errorf("读文件夹失败：%w", err)
 	}
 	if len(files) == 0 {
-		return "", 0, errors.New("文件夹是空的")
+		return nil, errors.New("文件夹是空的")
+	}
+	return files, nil
+}
+
+// pushFolder 整个文件夹推到 Download 底下,保留里面的目录结构
+func (t *transfer) pushFolder(local, name string) (string, int, error) {
+	files, err := folderFiles(local)
+	if err != nil {
+		return "", 0, err
 	}
 	root, err := t.freeRemoteName(pushDir, name)
 	if err != nil {
@@ -175,9 +210,8 @@ func (t *transfer) install(local string, st os.FileInfo) error {
 		return err
 	}
 	defer func() { _, _ = adbx.Text(t.dev, "rm -f "+adbx.Quote(tmp), false, 15*time.Second) }()
-	// 这句不能被限流吞掉:手机上弹确认框时,人得知道要去点
-	t.said = time.Time{}
-	t.progress("正在安装 " + name + "，手机上要是弹出确认，在画面上点允许")
+	// 手机上弹确认框时,人得知道要去点
+	t.say.urgent("正在安装 " + name + "，手机上要是弹出确认，在画面上点允许")
 	out, err := adbx.Text(t.dev, "pm install -r -t "+adbx.Quote(tmp), false, installTimeout)
 	if code, _ := installFailure(out); code == "INSTALL_FAILED_DEPRECATED_SDK_VERSION" {
 		// 安卓 14 起默认不让装目标版本太老的应用,做数据又常常就是要装老版本
@@ -193,9 +227,9 @@ func (t *transfer) push(local, remote string, st os.FileInfo, label string) erro
 		return fmt.Errorf("读不了：%w", err)
 	}
 	defer f.Close()
-	t.progress(label)
+	t.say.progress(label)
 	r := &progressReader{r: f, total: st.Size(), report: func(pct int) {
-		t.progress(fmt.Sprintf("%s %d%%", label, pct))
+		t.say.progress(fmt.Sprintf("%s %d%%", label, pct))
 	}}
 	if err := t.dev.Push(r, remote, st.ModTime(), 0o644); err != nil {
 		return fmt.Errorf("推送失败：%w", err)
@@ -211,18 +245,6 @@ func (t *transfer) scan(remote string) {
 	if msg, ok := scanFileMessage(remote); ok {
 		_ = t.sess.sendControl(msg)
 	}
-}
-
-// progress 报进度,一秒最多十次
-func (t *transfer) progress(text string) {
-	if time.Since(t.said) < 100*time.Millisecond {
-		return
-	}
-	t.said = time.Now()
-	if t.total > 1 {
-		text += fmt.Sprintf("（共 %d 项，第 %d 项）", t.total, t.index)
-	}
-	t.sess.notify(notice{Type: "transfer", Text: text})
 }
 
 // freeRemoteName 手机上已经有同名的就换成「名字 (1).扩展名」,不覆盖原有的文件

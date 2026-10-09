@@ -40,8 +40,8 @@ const (
 	trollShellTimeout = 30 * time.Second
 	// trollInstallTimeout 推包加 dpkg 安装,老手机上要十几秒
 	trollInstallTimeout = 3 * time.Minute
-	// trollReadyTimeout 服务重启后多久该开始听端口。一般一两秒
-	trollReadyTimeout = 12 * time.Second
+	// trollReadyTimeout 服务重启后多久该开始听端口。一般半秒;cfprefsd 正被 launchd 推迟重启时要十秒出头
+	trollReadyTimeout = 20 * time.Second
 	// maxPackage 安装包最大多少字节。TrollVNC 的包也就几 MB
 	maxPackage = 64 << 20
 )
@@ -253,8 +253,12 @@ func trollPrefs(enabled bool, password, name string, keepAwake bool) ([]byte, er
 	return plist.Marshal(p, plist.XMLFormat)
 }
 
-// applyScript 设置文件从标准输入来:写到位、让 cfprefsd 重读,然后停掉服务;start 为真再按新设置起来
-func applyScript(l trollLayout, start bool) string {
+// applyScript 设置文件从标准输入来:写到位,然后停掉服务;start 为真再按新设置起来。
+//
+// refresh 为真时让 cfprefsd 重读:服务端经它读设置,它手里有缓存,不重读的话服务拿到的还是上一次的。
+// 只在服务要按新设置起来时才这么做 —— cfprefsd 起来不到十秒又被杀,launchd 要推迟十秒才让它重启,
+// 这期间读设置的程序(包括 TrollVNC)全卡着。见 iosPhone.waitPrefs
+func applyScript(l trollLayout, refresh, start bool) string {
 	var b strings.Builder
 	b.WriteString("set -e\numask 077\nt=/tmp/tf-trollvnc.$$\ncat > \"$t\"\nfor f in")
 	for _, p := range l.prefsPaths() {
@@ -266,9 +270,10 @@ func applyScript(l trollLayout, start bool) string {
 		"  chown mobile:mobile \"$f.new\"\n" +
 		"  mv -f \"$f.new\" \"$f\"\n" +
 		"done\n" +
-		"rm -f \"$t\"\n" +
-		// 服务端经 cfprefsd 读设置,它手里有缓存:不让它重读,服务拿到的还是上一次的
-		"killall -9 cfprefsd 2>/dev/null || true\n")
+		"rm -f \"$t\"\n")
+	if refresh {
+		b.WriteString("killall -9 cfprefsd 2>/dev/null || true\n")
+	}
 	if l.daemon != "" {
 		d := adbx.Quote(l.daemon)
 		b.WriteString("launchctl unload " + d + " 2>/dev/null || true\n")
@@ -285,26 +290,26 @@ func startTroll(sh shell, l trollLayout, password string, keepAwake bool) error 
 	if err != nil {
 		return err
 	}
-	if _, err := sh.run(applyScript(l, true), bytes.NewReader(prefs), trollShellTimeout); err != nil {
+	if _, err := sh.run(applyScript(l, true, true), bytes.NewReader(prefs), trollShellTimeout); err != nil {
 		return fmt.Errorf("启动手机上的 TrollVNC 失败: %w", err)
 	}
 	return nil
 }
 
-// stopTroll 停掉服务,设置里也改成关着、去掉密码。
-// 手机重启再越狱后 launchd 会按设置把它拉起来,那时它也只是空转
-func stopTroll(sh shell, l trollLayout) error {
+// stopTroll 停掉服务,设置文件里也改成关着、去掉密码:手机重启再越狱后 launchd 会按设置把它拉起来,
+// 那时它也只是空转。refresh 为假时 cfprefsd 不重读 —— 服务已经停了,用不着它
+func stopTroll(sh shell, l trollLayout, refresh bool) error {
 	prefs, err := trollPrefs(false, "", l.name(), false)
 	if err != nil {
 		return err
 	}
-	_, err = sh.run(applyScript(l, false), bytes.NewReader(prefs), trollShellTimeout)
+	_, err = sh.run(applyScript(l, refresh, false), bytes.NewReader(prefs), trollShellTimeout)
 	return err
 }
 
-// trollLog 服务最近的日志,启动失败时附在错误后面
-func trollLog(sh shell) string {
-	out, _ := sh.run("tail -n 6 /tmp/trollvnc-stderr.log 2>/dev/null", nil, 10*time.Second)
+// trollLog 服务最近的日志,启动失败时附在错误后面。rootless 越狱上日志也在 /var/jb 底下
+func trollLog(sh shell, l trollLayout) string {
+	out, _ := sh.run("tail -n 6 "+adbx.Quote(l.prefix+"/tmp/trollvnc-stderr.log")+" 2>/dev/null", nil, 10*time.Second)
 	return strings.TrimSpace(out)
 }
 
@@ -413,7 +418,8 @@ func installTroll(sh shell, pkgPath string) (*TrollInstall, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := stopTroll(sh, l); err != nil {
+	// 这里要让 cfprefsd 重读:包的安装脚本会马上按设置把服务拉起来
+	if err := stopTroll(sh, l, true); err != nil {
 		return nil, fmt.Errorf("装之前写设置失败: %w", err)
 	}
 	daemon := adbx.Quote(l.prefix + "/Library/LaunchDaemons/" + trollPackage + ".plist")

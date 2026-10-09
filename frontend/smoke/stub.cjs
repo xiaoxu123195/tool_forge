@@ -505,21 +505,54 @@ const special = {
     last.iosStops = [...(last.iosStops || []), id]
     return Promise.resolve()
   },
+  // 窗口藏起来时界面说暂停,回来问这一路还在不在。probe 把 last.iosGone 设成 true 就是「暂停太久被收掉了」
+  PauseIOSMirror: (id) => {
+    last.iosPauses = [...(last.iosPauses || []), id]
+    return Promise.resolve()
+  },
+  ResumeIOSMirror: (id) => {
+    last.iosResumes = [...(last.iosResumes || []), id]
+    return Promise.resolve(!last.iosGone)
+  },
+  // 拖文件:推的时候报一句进度,过一会儿回结果 —— 一张照片、一个有 3 个文件的文件夹
+  IOSMirrorDrop: (id, paths) => {
+    last.iosDrop = { id, paths }
+    for (const cb of listeners.get('mirror:ios-transfer') || []) cb('正在推送 照片.jpg 50%')
+    const dir = '/var/mobile/Containers/Shared/AppGroup/X/File Provider Storage/Downloads/'
+    return new Promise((resolve) =>
+      setTimeout(
+        () =>
+          resolve([
+            { name: '照片.jpg', kind: 'push', ok: true, remote: dir + '照片.jpg' },
+            { name: '资料', kind: 'folder', ok: true, remote: dir + '资料', files: 3 },
+          ]),
+        30,
+      ),
+    )
+  },
   SaveMirrorShot: (dir, label, b64) => {
     last.iosShot = { dir, label, b64 }
     return Promise.resolve({ path: dir + '/' + label + '_截图_20261009_153012.png', width: 1244, height: 2212, bytes: 4 })
   },
   BeginMirrorRecording: (dir, label, ext) => {
     last.iosRec = { dir, label, ext, chunks: 0 }
+    last.iosRecParts = 1
     return Promise.resolve(['rec-1', dir + '/' + label + '_录屏_20261009_153012' + ext])
   },
   AppendMirrorRecording: () => {
     if (last.iosRec) last.iosRec.chunks++
     return Promise.resolve()
   },
+  // 转屏换下一个文件:后端那头记着一共几个
+  NextMirrorRecordingPart: () => {
+    last.iosRecParts = (last.iosRecParts || 1) + 1
+    return Promise.resolve('D:/导出/iPhone 8 Plus_录屏_20261009_153012_' + last.iosRecParts + '.mp4')
+  },
   EndMirrorRecording: (id, ms) => {
     last.iosRecEnd = { id, ms }
-    return Promise.resolve({ files: ['D:/导出/iPhone 8 Plus_录屏_20261009_153012.mp4'], durationMs: 12000, bytes: 100 })
+    const n = last.iosRecParts || 1
+    const files = Array.from({ length: n }, (_, i) => 'D:/导出/iPhone 8 Plus_录屏_20261009_153012' + (i ? '_' + (i + 1) : '') + '.mp4')
+    return Promise.resolve({ files, durationMs: 12000, bytes: 100 })
   },
   PickDirectory: () => Promise.resolve('D:/导出'),
 

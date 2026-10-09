@@ -39,16 +39,20 @@ import { keyAction, pinchFactor, pinchFingers, typeable } from './mirror-input'
 import {
   ClipboardCard,
   DEFAULT_ASPECT,
+  DropOverlay,
   HintBar,
   KeyboardCatcher,
   RAIL,
   RailButton,
   RecordIcon,
   ToastBar,
+  TransferBar,
   WarningBar,
   displaySize,
   fmtDuration,
   preview,
+  recordedToast,
+  summarizeDrop,
   useCaptureDir,
   useDevicePixelRatio,
   useElementSize,
@@ -184,16 +188,7 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
 
   const onRecorded = (files: string[], ms: number, error: string) => {
     setRecording(null)
-    if (files.length === 0) {
-      setToast({ text: error || '没录到画面：还没等到第一帧就停了', error: true })
-      return
-    }
-    const parts = files.length > 1 ? `，中间转过屏，分成了 ${files.length} 个文件` : ''
-    setToast({
-      text: `录屏已保存（${fmtDuration(ms)}${parts}）${error ? '。中途出错：' + error : ''}`,
-      path: files[0],
-      error: !!error,
-    })
+    setToast(recordedToast(files, ms, error, '没录到画面：还没等到第一帧就停了'))
   }
   // 连接上的回调在开连接时就定下了,经 ref 转一道,用的永远是最新的那份
   const onClipboardRef = useRef(onClipboard)
@@ -587,7 +582,7 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
     setDropping(true)
     setTransfer('正在准备…')
     try {
-      setToast(summarizeDrop((await MirrorDrop(id, paths)) ?? []))
+      setToast(summarizeDrop((await MirrorDrop(id, paths)) ?? [], '手机的 Download 文件夹'))
     } catch (e) {
       setToast({ text: e instanceof Error ? e.message : String(e), error: true })
     } finally {
@@ -694,21 +689,15 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
         </div>
 
         <div className="pointer-events-none absolute inset-x-2 bottom-2 flex flex-col gap-1.5">
-          {transfer && (
-            <div className="flex items-center gap-1.5 rounded-md bg-black/70 px-2 py-1.5 text-[11px] text-white/90">
-              <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
-              <span className="min-w-0 flex-1 break-words">{transfer}</span>
-            </div>
-          )}
+          <TransferBar text={transfer} />
           <ToastBar toast={toast} onChange={setToast} onFailed={failed} onPickDir={() => void pickDir()} />
         </div>
 
-        {/* 拖着文件经过时 Wails 会给拖放区加上 wails-drop-target-active 这个类 */}
-        <div className="pointer-events-none absolute inset-0 hidden items-center justify-center bg-black/60 p-6 text-center text-xs leading-6 text-white group-[.wails-drop-target-active]/drop:flex">
+        <DropOverlay>
           松手：APK 安装到手机
           <br />
           其它文件推到手机的 Download 文件夹
-        </div>
+        </DropOverlay>
       </div>
 
       <div
@@ -824,17 +813,3 @@ export function MirrorPanel({ serial, adbPath, active, onClose }: Props) {
 }
 
 const sizeOf = (s: { w: number; h: number }) => ({ w: s.w, h: s.h })
-
-function summarizeDrop(items: mirror.DropItem[]): Toast {
-  const ok = items.filter((i) => i.ok)
-  const bad = items.filter((i) => !i.ok)
-  const installed = ok.filter((i) => i.kind === 'install').length
-  const pushed = ok.filter((i) => i.kind !== 'install').reduce((n, i) => n + (i.kind === 'folder' ? (i.files ?? 0) : 1), 0)
-  const done: string[] = []
-  if (installed) done.push(`装好了 ${installed} 个应用`)
-  if (pushed) done.push(`推了 ${pushed} 个文件到手机的 Download 文件夹`)
-  const lines = [done.join('，') || '一个都没成功']
-  for (const i of bad.slice(0, 3)) lines.push(`${i.name}：${i.error ?? '失败了'}`)
-  if (bad.length > 3) lines.push(`还有 ${bad.length - 3} 项没成功`)
-  return { text: lines.join('\n'), error: bad.length > 0 }
-}

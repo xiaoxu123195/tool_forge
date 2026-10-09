@@ -21,35 +21,44 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { useNativeFileDrop } from '@/lib/useNativeFileDrop'
 import { useDeviceBrowserStore } from '@/stores/device-browser'
 import {
   AppendMirrorRecording,
   BeginMirrorRecording,
   EndMirrorRecording,
+  IOSMirrorDrop,
   InstallTrollVNC,
+  NextMirrorRecordingPart,
+  PauseIOSMirror,
   PickTrollVNCPackage,
+  ResumeIOSMirror,
   SaveMirrorShot,
   StartIOSMirror,
   StopIOSMirror,
   TrollVNCStatus,
 } from '../../../wailsjs/go/main/App'
 import type { mirror } from '../../../wailsjs/go/models'
-import { ClipboardGetText, ClipboardSetText } from '../../../wailsjs/runtime/runtime'
+import { ClipboardGetText, ClipboardSetText, EventsOn } from '../../../wailsjs/runtime/runtime'
 import { typeable } from './mirror-input'
 import { iosKeyAction, textKeys, XK } from './ios-input'
-import { BUTTON, CanvasRecorder, VncLink, supportsRecording } from './vnc-link'
+import { BUTTON, SplitRecorder, VncLink, recordingType, supportsRecording } from './vnc-link'
 import {
   ClipboardCard,
   DEFAULT_ASPECT,
+  DropOverlay,
   HintBar,
   KeyboardCatcher,
   RAIL,
   RailButton,
   RecordIcon,
   ToastBar,
+  TransferBar,
   displaySize,
   fmtDuration,
   preview,
+  recordedToast,
+  summarizeDrop,
   useCaptureDir,
   useDevicePixelRatio,
   useElementSize,
@@ -67,12 +76,16 @@ const QUALITIES = [
 ] as const
 type QualityId = (typeof QUALITIES)[number]['id']
 
-type Phase = 'checking' | 'missing' | 'installing' | 'starting' | 'live' | 'ended' | 'error'
+type Phase = 'checking' | 'missing' | 'installing' | 'starting' | 'resuming' | 'live' | 'ended' | 'error'
 
 /** 往手机剪贴板里放了字以后,等多久再按 Command+V:手机那头写剪贴板是排着队做的 */
 const PASTE_DELAY = 200
 /** 按了 Ctrl+C 以后多久内回来的剪贴板内容算是这次复制的 */
 const COPY_WAIT = 3000
+/** 拖文件的进度从这个事件来,和后端 mirror.EventIOSTransfer 一致 */
+const IOS_TRANSFER_EVENT = 'mirror:ios-transfer'
+/** 拖进来的文件推到了手机上的哪儿 */
+const IOS_DROP_WHERE = '手机「文件」App › 我的 iPhone › Downloads'
 
 const HELP = [
   '左键：点按、拖动，和手指一样（只能单指，没有双指缩放）',
@@ -82,12 +95,13 @@ const HELP = [
   'Ctrl+C / Ctrl+X：手机上选中的字复制到电脑',
   'Ctrl+V：电脑剪贴板里的字粘到手机上',
   'Alt+按键：等于 iPhone 外接键盘上的 Command+按键',
+  '把文件拖到画面上：推到手机「文件」App › 我的 iPhone › Downloads',
 ].join('\n')
 
 interface Props {
   /** 真机浏览那条连接:开关手机上的 TrollVNC 都经它的 SSH */
   deviceSession: string
-  /** 真机浏览这一页是不是正在显示。切走就停,切回来自动重连(录着屏时除外) */
+  /** 真机浏览这一页是不是正在显示。切走时断开画面,切回来马上接上(录着屏时一直连着) */
   active: boolean
   onClose: () => void
 }
@@ -97,6 +111,9 @@ interface Props {
  *
  * 手机上跑的是 TrollVNC:开面板时工具箱经 SSH 按这一次的设置把它启动起来
  * (只走 USB、这次专用的随机密码),关面板就停掉。电脑这头是 noVNC。
+ *
+ * 手机上的服务和电脑上的画面分开管:窗口藏起来、切到别的工具时只断开画面,服务留着,
+ * 回来直接接上 —— 重启服务要经 SSH 改设置、等它起来,慢。关面板、换保持亮屏、点重新连接才真的停。
  * 手机上没装 TrollVNC 时,面板里教人怎么拿到安装包,再经 SSH 装上去
  */
 export function IosMirrorPanel({ deviceSession, active, onClose }: Props) {
@@ -115,6 +132,8 @@ export function IosMirrorPanel({ deviceSession, active, onClose }: Props) {
   const [toast, setToast] = useState<Toast | null>(null)
   const [recording, setRecording] = useState<{ since: number } | null>(null)
   const [shooting, setShooting] = useState(false)
+  const [dropping, setDropping] = useState(false)
+  const [transfer, setTransfer] = useState('')
   // 手机剪贴板:连上以后手机上最近一次复制的东西。iOS 读不到连上之前复制的
   const [clip, setClip] = useState<{ open: boolean; text: string | null }>({ open: false, text: null })
   const [kbdFocus, setKbdFocus] = useState(false)
@@ -124,10 +143,12 @@ export function IosMirrorPanel({ deviceSession, active, onClose }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<HTMLCanvasElement>(null)
   const kbdRef = useRef<HTMLTextAreaElement>(null)
+  // 手机上开着的那一路服务,和接在它上面的画面
+  const sessRef = useRef<mirror.IOSSession | null>(null)
   const linkRef = useRef<VncLink | null>(null)
   // 截图、录屏文件名里的机型
   const labelRef = useRef('iPhone')
-  const recRef = useRef<{ id: string; recorder: CanvasRecorder; since: number } | null>(null)
+  const recRef = useRef<{ id: string; recorder: SplitRecorder; since: number } | null>(null)
   const pendingCopy = useRef(0)
   const pastedOnce = useRef(false)
   // 发给手机的键盘操作排成一队:中文粘贴要等一下,后面打的英文不能插到它前面去
@@ -154,16 +175,6 @@ export function IosMirrorPanel({ deviceSession, active, onClose }: Props) {
   const onClipboardRef = useRef(onClipboard)
   onClipboardRef.current = onClipboard
 
-  const onRecorded = (r: mirror.Recording, error: string) => {
-    const files = r.files ?? []
-    if (files.length === 0) {
-      setToast({ text: error || r.error || '没录到画面', error: true })
-      return
-    }
-    const err = error || r.error || ''
-    setToast({ text: `录屏已保存（${fmtDuration(r.durationMs)}）${err ? '。' + err : ''}`, path: files[0], error: !!err })
-  }
-
   /** 停录屏、把文件收好。投屏断了、面板关了也走这里 */
   const stopRecording = async () => {
     const r = recRef.current
@@ -176,7 +187,8 @@ export function IosMirrorPanel({ deviceSession, active, onClose }: Props) {
       error = '有一段没写进文件：' + errText(e)
     }
     try {
-      onRecorded(await EndMirrorRecording(r.id, Date.now() - r.since), error)
+      const res = await EndMirrorRecording(r.id, Date.now() - r.since)
+      setToast(recordedToast(res.files ?? [], res.durationMs, error || res.error || '', '没录到画面'))
     } catch (e) {
       failed(e)
     } finally {
@@ -195,42 +207,70 @@ export function IosMirrorPanel({ deviceSession, active, onClose }: Props) {
     linkRef.current?.setQuality(q.level)
   }, [q.level])
 
-  // ---- 开一路:查 TrollVNC → 按这次的设置启动 → noVNC 连上去 ----
+  // ---- 手机上的服务:关面板、换保持亮屏、点重新连接时停掉(下面开画面时会按新的再开) ----
+  useEffect(
+    () => () => {
+      const s = sessRef.current
+      sessRef.current = null
+      if (s) void StopIOSMirror(s.id).catch(() => {})
+    },
+    [deviceSession, keepAwake, attempt],
+  )
+
+  // ---- 画面:看得见时接上(服务还没开就先开),窗口藏起来、切到别的工具时只断开画面 ----
   useEffect(() => {
-    if (!running) return
+    if (!running) {
+      const s = sessRef.current
+      if (s) void PauseIOSMirror(s.id).catch(() => {})
+      return
+    }
     let cancelled = false
     let link: VncLink | null = null
-    let sessionId = ''
-    setPhase('checking')
     setMessage('')
-    setScreen(null)
     void (async () => {
       try {
-        const st = await TrollVNCStatus(deviceSession)
-        if (cancelled) return
-        setStatus(st)
-        if (st.unsupported) {
-          setPhase('error')
-          setMessage(st.unsupported)
-          return
+        let s = sessRef.current
+        if (s) {
+          setPhase('resuming')
+          // 暂停太久被收掉了,或者手机拔过:重开一路
+          if (!(await ResumeIOSMirror(s.id).catch(() => false))) {
+            sessRef.current = null
+            s = null
+          }
+          if (cancelled) return
         }
-        if (!st.installed) {
-          setPhase('missing')
-          return
+        if (!s) {
+          setPhase('checking')
+          setScreen(null)
+          const st = await TrollVNCStatus(deviceSession)
+          if (cancelled) return
+          setStatus(st)
+          if (st.unsupported) {
+            setPhase('error')
+            setMessage(st.unsupported)
+            return
+          }
+          if (!st.installed) {
+            setPhase('missing')
+            return
+          }
+          setPhase('starting')
+          const started = await StartIOSMirror(deviceSession, { keepAwake } as mirror.IOSOptions)
+          if (cancelled) {
+            void StopIOSMirror(started.id).catch(() => {})
+            return
+          }
+          s = started
+          sessRef.current = started
+          labelRef.current = started.deviceName || 'iPhone'
+          pastedOnce.current = false
         }
-        setPhase('starting')
-        const s = await StartIOSMirror(deviceSession, { keepAwake } as mirror.IOSOptions)
-        sessionId = s.id
         const host = hostRef.current
         const view = viewRef.current
-        if (cancelled || !host || !view) {
-          void StopIOSMirror(s.id).catch(() => {})
-          return
-        }
-        labelRef.current = s.deviceName || 'iPhone'
-        pastedOnce.current = false
-        link = await VncLink.open(s.id, s.url, s.password, host, view, levelRef.current, {
+        if (!host || !view) return
+        link = await VncLink.open(s.url, s.password, host, view, levelRef.current, {
           onSize: (w, h) => setScreen({ w, h }),
+          onFrame: (src) => recRef.current?.recorder.frame(src),
           onLive: () => setPhase('live'),
           onClipboard: (text) => onClipboardRef.current(text),
           onEnded: (reason) => {
@@ -253,8 +293,7 @@ export function IosMirrorPanel({ deviceSession, active, onClose }: Props) {
     return () => {
       cancelled = true
       linkRef.current = null
-      if (link) link.close()
-      else if (sessionId) void StopIOSMirror(sessionId).catch(() => {})
+      link?.close()
     }
   }, [deviceSession, keepAwake, attempt, running])
 
@@ -375,14 +414,51 @@ export function IosMirrorPanel({ deviceSession, active, onClose }: Props) {
     const dir = await ensureDir()
     if (!dir) return
     try {
-      const recorder = new CanvasRecorder(src)
-      const [id] = await BeginMirrorRecording(dir, labelRef.current, recorder.ext)
-      recorder.start((b64) => AppendMirrorRecording(id, b64))
+      const type = recordingType()
+      const [id] = await BeginMirrorRecording(dir, labelRef.current, type.ext)
+      const recorder = new SplitRecorder(type.mime, {
+        append: (b64) => AppendMirrorRecording(id, b64),
+        nextPart: async () => {
+          await NextMirrorRecordingPart(id)
+        },
+      })
       const since = Date.now()
       recRef.current = { id, recorder, since }
+      // 画面不动也先录上眼下这一帧
+      recorder.frame(src)
       setRecording({ since })
     } catch (e) {
       failed(e)
+    }
+  }
+
+  // ---- 拖文件进来:推到「文件」App 的「我的 iPhone › Downloads」 ----
+  const dropRef = useNativeFileDrop<HTMLDivElement>((paths) => {
+    void dropFiles(paths)
+  })
+  const dropFiles = async (paths: string[]) => {
+    if (phase !== 'live') {
+      setToast({ text: '投屏连上之后才能拖文件进来', error: true })
+      return
+    }
+    if (dropping) {
+      setToast({ text: '上一批文件还没处理完，等它弄完再拖', error: true })
+      return
+    }
+    setDropping(true)
+    setTransfer('正在准备…')
+    const off = EventsOn(IOS_TRANSFER_EVENT, (text: string) => setTransfer(text))
+    try {
+      const items = (await IOSMirrorDrop(deviceSession, paths)) ?? []
+      setToast(summarizeDrop(items, IOS_DROP_WHERE))
+      const tips = dropTips(items)
+      if (tips) setHint(tips)
+    } catch (e) {
+      setToast({ text: errText(e), error: true })
+    } finally {
+      off()
+      setDropping(false)
+      setTransfer('')
     }
   }
 
@@ -427,12 +503,17 @@ export function IosMirrorPanel({ deviceSession, active, onClose }: Props) {
 
   return (
     <div
+      ref={dropRef}
       data-mirror-panel=""
       className={cn(
-        'flex min-h-0 overflow-hidden',
+        'group/drop flex min-h-0 overflow-hidden',
         fullscreen ? 'fixed inset-0 z-[300] bg-black' : 'shrink-0 rounded-lg border border-border bg-black',
       )}
-      style={fullscreen ? undefined : { width: Math.max(240, display.width) + RAIL + 2 }}
+      // 停靠时的宽度 = 画面宽 + 按钮栏 + 两条边框
+      style={{
+        ...(fullscreen ? {} : { width: Math.max(240, display.width) + RAIL + 2 }),
+        ['--wails-drop-target' as never]: 'drop',
+      }}
     >
       <div ref={areaRef} className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center">
         <div
@@ -460,6 +541,12 @@ export function IosMirrorPanel({ deviceSession, active, onClose }: Props) {
               <>
                 <Loader2 className="h-5 w-5 animate-spin" />
                 <span>正在把 TrollVNC 装到手机上…装完自动重新投屏</span>
+              </>
+            )}
+            {phase === 'resuming' && (
+              <>
+                <Loader2 className="h-5 w-5 animate-spin" />
+                <span>正在接回画面…</span>
               </>
             )}
             {(phase === 'checking' || phase === 'starting') && (
@@ -517,8 +604,15 @@ export function IosMirrorPanel({ deviceSession, active, onClose }: Props) {
         </div>
 
         <div className="pointer-events-none absolute inset-x-2 bottom-2 flex flex-col gap-1.5">
+          <TransferBar text={transfer} />
           <ToastBar toast={toast} onChange={setToast} onFailed={failed} onPickDir={() => void pickDir()} />
         </div>
+
+        <DropOverlay>
+          松手：推到{IOS_DROP_WHERE}
+          <br />
+          照片、视频推过去以后，在「文件」里点开存到相册
+        </DropOverlay>
       </div>
 
       <div
@@ -626,6 +720,19 @@ export function IosMirrorPanel({ deviceSession, active, onClose }: Props) {
       </div>
     </div>
   )
+}
+
+/** 推上去的有照片视频、IPA 的话,提醒一句接下来在手机上怎么做 */
+function dropTips(items: mirror.DropItem[]): string {
+  const names = items.filter((i) => i.ok && i.kind === 'push').map((i) => i.name.toLowerCase())
+  const tips: string[] = []
+  if (names.some((n) => /\.(jpe?g|png|heic|heif|gif|webp|bmp|mov|mp4|m4v)$/.test(n))) {
+    tips.push('照片、视频要进相册：在「文件」里点开它 › 共享 › 存储图像（视频）')
+  }
+  if (names.some((n) => n.endsWith('.ipa') || n.endsWith('.tipa'))) {
+    tips.push('IPA 要装的话：在「文件」里点它，用 TrollStore 打开')
+  }
+  return tips.join('\n')
 }
 
 /** 手机上没装 TrollVNC:说清楚去哪儿拿安装包,选好了经 SSH 装上去 */

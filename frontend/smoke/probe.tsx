@@ -848,8 +848,9 @@ async function main() {
         // 投的是真机浏览连着的那一条会话;默认保持亮屏
         if (start.id !== inst.id || start.opt.keepAwake !== true) throw new Error('开投屏的参数不对: ' + JSON.stringify(start))
 
-        const rfb = vncInstances[vncInstances.length - 1]
-        const ws = fake.sockets[fake.sockets.length - 1]
+        // 窗口藏起来再回来会换一条新的连接,后面的用例跟着换
+        let rfb = vncInstances[vncInstances.length - 1]
+        let ws = fake.sockets[fake.sockets.length - 1]
         if (!rfb || !ws?.url.includes('/vnc/')) {
           throw new Error(
             `没去连 VNC(noVNC 实例 ${vncInstances.length} 个,连接 ${fake.sockets.map((s) => s.url).join()}):` +
@@ -869,6 +870,58 @@ async function main() {
         // 带省略号的是启动中的那一屏;装好时的提示条里也有「正在启动投屏」几个字
         if (txt().includes('正在启动投屏…')) throw new Error('连上了还挂着「启动中」')
         if (fake.draws === 0) throw new Error('画面没画到显示用的画布上')
+
+        // ---- 窗口藏起来:只断开画面,手机上的服务留着;回来直接接上,不重开服务 ----
+        // (重开要经 SSH 改设置、让 cfprefsd 重读,紧挨着重开在手机上要卡二十秒)
+        const hideShow = async () => {
+          Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+          try {
+            await act(async () => {
+              document.dispatchEvent(new window.Event('visibilitychange'))
+              await sleep(30)
+            })
+          } finally {
+            delete (document as unknown as Record<string, unknown>).visibilityState
+          }
+          await act(async () => {
+            document.dispatchEvent(new window.Event('visibilitychange'))
+            await sleep(60)
+          })
+        }
+        const sessionNow = 'i' + String(__last.iosStarts)
+        const startsBeforeHide = __last.iosStarts as number
+        const stopsBeforeHide = ((__last.iosStops as string[] | undefined) ?? []).length
+        await hideShow()
+        if (!rfb.disconnected) throw new Error('窗口藏起来该断开画面')
+        if (!(__last.iosPauses as string[] | undefined)?.includes(sessionNow)) throw new Error('藏起来没告诉后端把服务留着')
+        if (((__last.iosStops as string[] | undefined) ?? []).length !== stopsBeforeHide) throw new Error('藏起来不该停手机上的服务')
+        if ((__last.iosStarts as number) !== startsBeforeHide) throw new Error('回来不该重开服务')
+        if (!(__last.iosResumes as string[] | undefined)?.includes(sessionNow)) throw new Error('回来没问后端这一路还在不在')
+        const resumed = vncInstances[vncInstances.length - 1]
+        if (resumed === rfb || resumed.options.credentials?.password !== 'Ab3dEf7h') {
+          throw new Error('回来该用原来的地址和密码重新接上画面')
+        }
+        rfb = resumed
+        ws = fake.sockets[fake.sockets.length - 1]
+        await act(async () => {
+          rfb.connect(1244, 2212)
+          await sleep(30)
+        })
+        if (txt().includes('正在接回画面')) throw new Error('接上了还挂着「接回画面」')
+        // 藏太久,后端已经把服务收掉了:回来要重开一路
+        __last.iosGone = true
+        try {
+          await hideShow()
+        } finally {
+          __last.iosGone = false
+        }
+        if ((__last.iosStarts as number) !== startsBeforeHide + 1) throw new Error('后端已经收掉了,回来该重开一路')
+        rfb = vncInstances[vncInstances.length - 1]
+        ws = fake.sockets[fake.sockets.length - 1]
+        await act(async () => {
+          rfb.connect(1244, 2212)
+          await sleep(30)
+        })
 
         // ---- 键盘:点过画面,键盘就归手机 ----
         const host = document.querySelector('[data-vnc-host]') as HTMLElement
@@ -985,10 +1038,39 @@ async function main() {
         const rec = __last.iosRec as { ext: string; chunks: number } | undefined
         if (rec?.ext !== '.mp4' || rec.chunks < 1) throw new Error('录屏没开起来,或者没交数据: ' + JSON.stringify(rec))
         if (!titled('保持亮屏：录屏中不能改')) throw new Error('录屏中保持亮屏该锁住')
+        // 录着的时候转屏:noVNC 的画布换了尺寸。一个 MP4 只能有一种尺寸,得收掉这一段、另起一个文件
+        await act(async () => {
+          rfb.canvas.width = 2212
+          rfb.canvas.height = 1244
+          ws.emit(new ArrayBuffer(4))
+          await sleep(80)
+        })
+        if ((__last.iosRecParts as number) !== 2) throw new Error('转屏后录屏没换到下一个文件: ' + __last.iosRecParts)
+        if (!btn('横屏了，全屏看更大')) throw new Error('横过来了没给全屏的入口')
         await clickTitled('停止录屏')
         await wait(50)
         if (!__last.iosRecEnd || rec.chunks < 2) throw new Error('录屏没停干净: ' + JSON.stringify(rec))
-        if (!txt().includes('录屏已保存（12 秒）')) throw new Error('录屏存好了没说: ' + txt())
+        if (!txt().includes('录屏已保存（12 秒，中间转过屏，分成了 2 个文件）')) throw new Error('录屏存好了没说清楚: ' + txt())
+
+        // ---- 拖文件进来:推到「文件」App 的「我的 iPhone › Downloads」 ----
+        const dropFn = __last.fileDrop as ((x: number, y: number, paths: string[]) => void) | null
+        if (!dropFn) throw new Error('iOS 投屏面板没接上原生拖放')
+        const keepPoint = document.elementFromPoint
+        document.elementFromPoint = () => host
+        try {
+          await act(async () => {
+            dropFn(10, 10, ['D:/数据/照片.jpg', 'D:/数据/资料'])
+            await sleep(5)
+          })
+          if (!txt().includes('正在推送 照片.jpg 50%')) throw new Error('推送进度没显示')
+          await wait(60)
+        } finally {
+          document.elementFromPoint = keepPoint
+        }
+        const dropReq = __last.iosDrop as { id: string; paths: string[] } | undefined
+        if (dropReq?.id !== inst.id || dropReq.paths.length !== 2) throw new Error('拖进来的文件没交给后端: ' + JSON.stringify(dropReq))
+        if (!txt().includes('推了 4 个文件到手机「文件」App › 我的 iPhone › Downloads')) throw new Error('拖放结果没说清楚: ' + txt())
+        if (!txt().includes('存储图像')) throw new Error('推了照片该提醒怎么存进相册')
 
         // ---- 断了:说原因,能重新连接 ----
         await act(async () => {

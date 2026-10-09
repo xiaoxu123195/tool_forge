@@ -51,8 +51,11 @@ const iosDialWait = 3 * time.Second
 var (
 	// iosAttachWait 开好之后界面多久内得接上来。VNC 客户端是用到时才加载的,第一次慢一点
 	iosAttachWait = 30 * time.Second
-	// iosDetachGrace 界面断开后再留多久。切页面、React 开发模式挂两次,都是先断后连
+	// iosDetachGrace 界面断开后再留多久。React 开发模式挂两次、界面刷新,都是先断后连
 	iosDetachGrace = 5 * time.Second
+	// iosPauseKeep 界面说了「暂停」(窗口藏起来)之后服务留多久。没客户端连着时 TrollVNC 不截屏,
+	// 留着几乎不费电;再久没回来就收掉,回来时重开一路
+	iosPauseKeep = 15 * time.Minute
 )
 
 // dialPhone 经 usbmuxd 连手机上的一个端口。按 UDID 找设备:拔插一次,usbmuxd 给的编号就变了
@@ -64,11 +67,25 @@ func dialPhone(udid string, port int) (net.Conn, error) {
 	return iosmux.Dial(dev.ID, port)
 }
 
+// prefsCooldown cfprefsd 被杀之后,新起来的那个得活够这么久再杀,launchd 才会马上重启它。
+// 不到时间就杀,launchd 要推迟十秒,这期间读设置的程序(包括 TrollVNC)全卡着 —— 实测过:
+// 停了马上再开,服务要二十秒才开始听端口
+var prefsCooldown = 11 * time.Second
+
 // iosPhone 一台手机。开、关它上面的服务排着队来:
 // 换选项重开时,旧的那一路关服务不能插到新的一路开服务后面
 type iosPhone struct {
 	mu      sync.Mutex
 	current *iosSession // 手机上的服务现在归谁
+	// refreshed 上一次让 cfprefsd 重读设置的时候
+	refreshed time.Time
+}
+
+// waitPrefs 离上一次让 cfprefsd 重读不够久的话先等着,再让它重读。调用方拿着 p.mu
+func (p *iosPhone) waitPrefs() {
+	if wait := prefsCooldown - time.Since(p.refreshed); wait > 0 {
+		time.Sleep(wait)
+	}
 }
 
 func (s *Service) phone(udid string) *iosPhone {
@@ -114,6 +131,8 @@ func (s *Service) installIOS(sh shell, udid, pkgPath string) (*TrollInstall, err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.waitPrefs()
+	defer func() { p.refreshed = time.Now() }()
 	return installTroll(sh, pkgPath)
 }
 
@@ -160,14 +179,17 @@ func (s *Service) startIOS(sh shell, udid, owner string, o IOSOptions) (*IOSSess
 		dial:     func() (net.Conn, error) { return s.iosDial(udid, trollPort) },
 		closed:   make(chan struct{}),
 	}
-	if err := startTroll(sh, l, sess.password, o.KeepAwake); err != nil {
-		_ = stopTroll(sh, l)
+	p.waitPrefs()
+	err = startTroll(sh, l, sess.password, o.KeepAwake)
+	p.refreshed = time.Now()
+	if err != nil {
+		_ = stopTroll(sh, l, false)
 		return nil, err
 	}
 	if err := waitVNC(sess.dial, trollReadyTimeout); err != nil {
 		// 没起来,或者起来了却不要密码:都不能让它开着
-		_ = stopTroll(sh, l)
-		if log := trollLog(sh); log != "" && !errors.Is(err, errVNCNoAuth) {
+		_ = stopTroll(sh, l, false)
+		if log := trollLog(sh, l); log != "" && !errors.Is(err, errVNCNoAuth) {
 			return nil, fmt.Errorf("%w\n手机上的日志:\n%s", err, log)
 		}
 		return nil, err
@@ -188,6 +210,27 @@ func (s *Service) StopIOS(id string) {
 	if sess := s.getIOS(id); sess != nil {
 		s.closeIOS(sess)
 	}
+}
+
+// PauseIOS 窗口藏起来、切到别的工具:界面断开画面,手机上的服务留着 —— 回来直接接上,
+// 不用重启服务。留太久没回来(iosPauseKeep)才收掉
+func (s *Service) PauseIOS(id string) {
+	sess := s.getIOS(id)
+	if sess == nil {
+		return
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.paused = true
+	if sess.ws == nil && !sess.isClosed() {
+		sess.armGrace(iosPauseKeep)
+	}
+}
+
+// ResumeIOS 界面回来了:这一路还在的话照旧接上,不在了(暂停太久被收掉、手机拔过)就得重开
+func (s *Service) ResumeIOS(id string) bool {
+	sess := s.getIOS(id)
+	return sess != nil && !sess.isClosed()
 }
 
 // StopIOSOwnedBy 真机浏览那条连接要断开了:先把它名下的投屏收掉,关服务还要用这条连接
@@ -235,7 +278,7 @@ func (s *Service) closeIOS(sess *iosSession) {
 		return // 已经被新开的一路接手了,服务归它管
 	}
 	p.current = nil
-	_ = stopTroll(sess.sh, sess.layout)
+	_ = stopTroll(sess.sh, sess.layout, false)
 }
 
 // ---- 一路 iOS 投屏 ----
@@ -252,10 +295,12 @@ type iosSession struct {
 	// idle 界面一直没接上来,或者断开后没再回来:收掉这一路
 	idle func()
 
-	mu     sync.Mutex
-	ws     *websocket.Conn // 当前接着的界面,可能没有
-	conn   net.Conn        // 和它配对的那条到手机 VNC 端口的连接
-	grace  *time.Timer
+	mu    sync.Mutex
+	ws    *websocket.Conn // 当前接着的界面,可能没有
+	conn  net.Conn        // 和它配对的那条到手机 VNC 端口的连接
+	grace *time.Timer
+	// paused 界面暂停了(窗口藏起来):断开后留得久一些,等它回来
+	paused bool
 	closed chan struct{}
 	once   sync.Once
 }
@@ -281,6 +326,7 @@ func (s *iosSession) attach(ws *websocket.Conn) {
 	}
 	oldWS, oldConn := s.ws, s.conn
 	s.ws, s.conn = ws, conn
+	s.paused = false
 	if s.grace != nil {
 		s.grace.Stop()
 		s.grace = nil
@@ -357,7 +403,11 @@ func (s *iosSession) detach(ws *websocket.Conn, conn net.Conn) {
 	}
 	s.ws, s.conn = nil, nil
 	if !s.isClosed() {
-		s.armGrace(iosDetachGrace)
+		if s.paused {
+			s.armGrace(iosPauseKeep)
+		} else {
+			s.armGrace(iosDetachGrace)
+		}
 	}
 }
 

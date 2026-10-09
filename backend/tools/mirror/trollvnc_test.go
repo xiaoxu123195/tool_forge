@@ -57,7 +57,7 @@ func TestTrollPrefs(t *testing.T) {
 }
 
 func TestApplyScriptWithoutDaemon(t *testing.T) {
-	s := applyScript(parseLayout("prefix=\narch=iphoneos-arm\n"), true)
+	s := applyScript(parseLayout("prefix=\narch=iphoneos-arm\n"), true, true)
 	if strings.Contains(s, "launchctl") {
 		t.Fatalf("还没装的时候不该碰 launchctl:\n%s", s)
 	}

@@ -33,13 +33,56 @@ func (s *Service) SaveShot(dir, label string, data []byte) (*Shot, error) {
 	return &Shot{Path: path, Width: cfg.Width, Height: cfg.Height, Bytes: len(data)}, nil
 }
 
-// upload 界面录着的屏,一段一段传过来往文件里追加
+// upload 界面录着的屏,一段一段传过来往文件里追加。
+// 手机转了屏就另起一个文件接着录:一个 MP4 只能有一种画面尺寸。和安卓录屏一样,后面的文件加 _2、_3
 type upload struct {
-	mu    sync.Mutex
+	mu sync.Mutex
+	// base 第一个文件的路径,不带扩展名
+	base  string
+	ext   string
+	parts int // 开过几个文件,空的也算
 	f     *os.File
-	path  string
+	path  string // 正在写的这个文件
+	size  int64  // 正在写的这个文件写了多少
+	files []string
 	bytes int64
-	err   error
+	// err 写盘出错:之后不再写。warn 某个文件补时长失败:文件能播,接着录
+	err, warn error
+}
+
+// open 开下一个文件
+func (u *upload) open() error {
+	path := u.base + u.ext
+	if u.parts > 0 {
+		path = freeBase(fmt.Sprintf("%s_%d", u.base, u.parts+1), u.ext) + u.ext
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("建不了录像文件: %w", err)
+	}
+	u.parts++
+	u.f, u.path, u.size = f, path, 0
+	return nil
+}
+
+// closePart 收掉正在写的文件:一段都没传过来的删掉(留个空文件只会让人以为录到了东西),有内容的补好时长
+func (u *upload) closePart() {
+	if u.f == nil {
+		return
+	}
+	err := u.f.Close()
+	u.f = nil
+	if err != nil && u.err == nil {
+		u.err = fmt.Errorf("录像写文件出错: %w", err)
+	}
+	if u.size == 0 {
+		_ = os.Remove(u.path)
+		return
+	}
+	u.files = append(u.files, u.path)
+	if err := finishRecording(u.path); err != nil && u.warn == nil {
+		u.warn = err
+	}
 }
 
 // uploads 正在录的几路。录屏 id 和投屏 id 不是一回事:投屏断了重连,录像还接着往同一个文件里写
@@ -57,12 +100,10 @@ func (s *Service) BeginUpload(dir, label, ext string) (id, path string, err erro
 	if err := checkDir(dir); err != nil {
 		return "", "", err
 	}
-	path = freeBase(filepath.Join(dir, captureName(label, "录屏", time.Now())), ext) + ext
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil {
-		return "", "", fmt.Errorf("建不了录像文件: %w", err)
+	u := &upload{base: freeBase(filepath.Join(dir, captureName(label, "录屏", time.Now())), ext), ext: ext}
+	if err := u.open(); err != nil {
+		return "", "", err
 	}
-	u := &upload{f: f, path: path}
 	s.up.mu.Lock()
 	if s.up.m == nil {
 		s.up.m = map[string]*upload{}
@@ -71,10 +112,10 @@ func (s *Service) BeginUpload(dir, label, ext string) (id, path string, err erro
 	id = fmt.Sprintf("rec-%d", s.up.seq)
 	s.up.m[id] = u
 	s.up.mu.Unlock()
-	return id, path, nil
+	return id, u.path, nil
 }
 
-// AppendUpload 往录像文件后面接一段。写盘出过错之后不再写,结束时一并报
+// AppendUpload 往正在写的录像文件后面接一段。写盘出过错之后不再写,结束时一并报
 func (s *Service) AppendUpload(id string, chunk []byte) error {
 	u := s.upload(id)
 	if u == nil {
@@ -86,11 +127,31 @@ func (s *Service) AppendUpload(id string, chunk []byte) error {
 		return u.err
 	}
 	n, err := u.f.Write(chunk)
+	u.size += int64(n)
 	u.bytes += int64(n)
 	if err != nil {
 		u.err = fmt.Errorf("录像写文件出错: %w", err)
 	}
 	return u.err
+}
+
+// NextUpload 手机转了屏:正在写的文件收尾,接着往下一个文件里录。返回新文件的路径
+func (s *Service) NextUpload(id string) (string, error) {
+	u := s.upload(id)
+	if u == nil {
+		return "", errors.New("录屏已经结束了")
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.err != nil {
+		return "", u.err
+	}
+	u.closePart()
+	if err := u.open(); err != nil {
+		u.err = err
+		return "", err
+	}
+	return u.path, nil
 }
 
 // EndUpload 录完了:关文件、补好时长。ms 是界面那头量的录了多久
@@ -104,20 +165,13 @@ func (s *Service) EndUpload(id string, ms int64) (*Recording, error) {
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if err := u.f.Close(); err != nil && u.err == nil {
-		u.err = fmt.Errorf("录像写文件出错: %w", err)
-	}
-	if u.bytes == 0 {
-		// 一段都没传过来:留个空文件只会让人以为录到了东西
-		_ = os.Remove(u.path)
+	u.closePart()
+	if len(u.files) == 0 {
 		return &Recording{Error: "没录到画面"}, nil
 	}
-	res := &Recording{Files: []string{u.path}, DurationMs: ms, Bytes: u.bytes}
-	if u.err == nil {
-		u.err = finishRecording(u.path)
-	}
-	if u.err != nil {
-		res.Error = u.err.Error()
+	res := &Recording{Files: u.files, DurationMs: ms, Bytes: u.bytes}
+	if err := errors.Join(u.err, u.warn); err != nil {
+		res.Error = err.Error()
 	}
 	return res, nil
 }
