@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   CornerLeftUp,
   Download,
@@ -10,6 +10,7 @@ import {
   HardDriveDownload,
   Link2,
   RefreshCw,
+  ScreenShare,
   Search,
   Unplug,
   X,
@@ -34,6 +35,7 @@ import { meta } from './meta'
 import { ConnectPanel } from './ConnectPanel'
 import { Breadcrumbs } from './Breadcrumbs'
 import { PreviewPane, fmtSize } from './PreviewPane'
+import { MirrorPanel } from './MirrorPanel'
 import { presetsFor } from './presets'
 import { jumpTo } from '@/lib/jump'
 import {
@@ -62,6 +64,8 @@ export default function DeviceBrowser() {
   const startPath = useDeviceBrowserStore((s) => s.startPath)
   const user = useDeviceBrowserStore((s) => s.user)
   const deviceId = useDeviceBrowserStore((s) => s.deviceId)
+  const serial = useDeviceBrowserStore((s) => s.serial)
+  const model = useDeviceBrowserStore((s) => s.model)
   const setSession = useDeviceBrowserStore((s) => s.setSession)
   const clearSession = useDeviceBrowserStore((s) => s.clearSession)
   const setCwd = useDeviceBrowserStore((s) => s.setCwd)
@@ -83,7 +87,10 @@ export default function DeviceBrowser() {
   const [exporting, setExporting] = useState(false)
   const [exportedTo, setExportedTo] = useState('')
 
-  const [deviceLabel, setDeviceLabel] = useState('')
+  // 从 store 里取:原来是组件自己的状态,切到别的工具再切回来就没了
+  const deviceLabel = [model, serial].filter(Boolean).join(' · ')
+  // 投屏面板开着没有。只有安卓能投:iOS 不让电脑模拟触摸
+  const [mirrorOpen, setMirrorOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<devicefs.SearchResult | null>(null)
   const [searching, setSearching] = useState(false)
@@ -104,6 +111,8 @@ export default function DeviceBrowser() {
   const cwdRef = useRef(cwd)
   cwdRef.current = cwd
   const navigate = useNavigate()
+  // 工具页切走时不卸载、只是藏起来:投屏要据此停下,切回来再接上
+  const visible = useLocation().pathname === meta.path
 
   const load = useCallback(
     async (dir: string) => {
@@ -217,8 +226,7 @@ export default function DeviceBrowser() {
         adbPath,
         remotePort: 0,
       } as devicefs.ConnectOptions)
-      setSession(s.id, s.startPath, s.rooted)
-      setDeviceLabel([s.model, s.deviceId].filter(Boolean).join(' · '))
+      setSession(s.id, s.startPath, s.rooted, s.deviceId, s.model ?? '')
       setListing(null)
     } catch (e) {
       setConnectError(String(e))
@@ -230,6 +238,7 @@ export default function DeviceBrowser() {
   const disconnect = async () => {
     if (sessionId) await DisconnectDevice(sessionId).catch(() => {})
     clearSession()
+    setMirrorOpen(false)
     setListing(null)
     setPreview(null)
     setSelected('')
@@ -370,6 +379,20 @@ export default function DeviceBrowser() {
             )}
             {deviceLabel && <span className="max-w-[180px] truncate">{deviceLabel}</span>}
           </span>
+          <Button
+            variant={mirrorOpen ? 'secondary' : 'ghost'}
+            size="sm"
+            onClick={() => setMirrorOpen((v) => !v)}
+            disabled={platform !== 'android'}
+            title={
+              platform === 'android'
+                ? '在右边投屏这台手机，可以直接用鼠标操作'
+                : 'iOS 投不了屏：苹果不允许电脑模拟触摸'
+            }
+          >
+            <ScreenShare className="h-3.5 w-3.5" />
+            投屏
+          </Button>
           <Button variant="ghost" size="sm" onClick={() => load(cwd)} disabled={listLoading}>
             <RefreshCw className={cn('h-3.5 w-3.5', listLoading && 'animate-spin')} />
             刷新
@@ -522,7 +545,15 @@ export default function DeviceBrowser() {
           </div>
         )}
 
-        <div className="grid min-h-0 flex-1 grid-cols-[minmax(280px,2fr)_3fr] gap-2">
+        <div
+          className={cn(
+            'grid min-h-0 flex-1 gap-2',
+            // 投屏面板的宽度由画面比例决定,预览区让出地方
+            mirrorOpen && platform === 'android'
+              ? 'grid-cols-[minmax(240px,2fr)_minmax(0,3fr)_auto]'
+              : 'grid-cols-[minmax(280px,2fr)_3fr]'
+          )}
+        >
           <div className="min-h-0 overflow-auto rounded-lg border border-border bg-card">
             {hits ? (
               <SearchResults
@@ -560,6 +591,14 @@ export default function DeviceBrowser() {
               exportedTo={exportedTo}
             />
           </div>
+          {mirrorOpen && platform === 'android' && (
+            <MirrorPanel
+              serial={serial}
+              adbPath={adbPath}
+              active={visible}
+              onClose={() => setMirrorOpen(false)}
+            />
+          )}
         </div>
       </div>
     </ToolShell>

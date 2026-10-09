@@ -424,6 +424,17 @@ const special = {
       String(p).endsWith('.plist') ? fx.devicePreviewPlist : fx.devicePreviewEmptyMmkv,
     ),
   ExportDeviceFile: () => Promise.resolve('D:/导出/com.apple.springboard.plist'),
+  // 投屏:每开一路给一个新 id;停掉的记下来,用来核对「关掉面板时停的是不是正在投的那一路」
+  StartMirror: (req) => {
+    last.mirrorStart = req
+    last.mirrorStarts = (last.mirrorStarts || 0) + 1
+    const id = 'm' + last.mirrorStarts
+    return Promise.resolve({ id, deviceName: '22041216C', url: 'ws://127.0.0.1:1/mirror/' + id + '?t=x' })
+  },
+  StopMirror: (id) => {
+    last.mirrorStops = [...(last.mirrorStops || []), id]
+    return Promise.resolve()
+  },
   PickDirectory: () => Promise.resolve('D:/导出'),
 
   // ---- SQLite ----

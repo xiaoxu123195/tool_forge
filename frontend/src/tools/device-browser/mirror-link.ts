@@ -1,0 +1,174 @@
+import { StopMirror } from '../../../wailsjs/go/main/App'
+import { codecFromConfig, concatBytes, parsePacket, type ControlEvent } from './mirror-video'
+
+export interface MirrorCallbacks {
+  /** 画面尺寸变了(开始投屏、手机转屏) */
+  onSize: (w: number, h: number) => void
+  /** 第一帧画出来了 */
+  onLive: () => void
+  /** 手机端的提醒,会话照常 */
+  onNotice: (text: string) => void
+  /** 会话结束了,不会再有画面 */
+  onEnded: (reason: string) => void
+}
+
+/** 浏览器有没有 WebCodecs。没有就解不了视频,投屏无从谈起 */
+export function supportsDecoding(): boolean {
+  return typeof VideoDecoder !== 'undefined' && typeof EncodedVideoChunk !== 'undefined'
+}
+
+/**
+ * 一路投屏在界面这一侧的全部:一条 WebSocket、一个解码器、一块画布。
+ *
+ * 后端把手机发来的包原样转过来(一个包一条二进制消息),这里解析、解码、画出来;
+ * 鼠标操作编成 JSON 从同一条连接发回去
+ */
+export class MirrorLink {
+  private ws: WebSocket
+  private decoder: VideoDecoder | null = null
+  private ctx: CanvasRenderingContext2D | null = null
+  /** 最近一个配置包:每个关键帧前面都垫上它,解码器才不挑 */
+  private config: Uint8Array | null = null
+  /** 新一段编码开始了,下一个配置包到了要重建解码器 */
+  private fresh = true
+  /** 解码器要从关键帧开始,在那之前的帧都得丢掉 */
+  private waitKey = true
+  private width = 0
+  private height = 0
+  private live = false
+  private ended = false
+  private failures = 0
+
+  constructor(
+    private readonly sessionId: string,
+    url: string,
+    private readonly canvas: HTMLCanvasElement,
+    private readonly cb: MirrorCallbacks,
+  ) {
+    this.ws = new WebSocket(url)
+    this.ws.binaryType = 'arraybuffer'
+    this.ws.onmessage = (ev) => this.onMessage(ev)
+    this.ws.onclose = () => this.end('投屏断开了')
+  }
+
+  send(e: ControlEvent) {
+    if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(e))
+  }
+
+  /** 主动收掉(关面板、换画质、组件卸载):不回调,顺带让后端停掉手机端程序 */
+  close() {
+    if (!this.ended) {
+      this.ended = true
+      this.ws.onclose = null
+      this.ws.close()
+      this.closeDecoder()
+    }
+    void StopMirror(this.sessionId).catch(() => {})
+  }
+
+  private onMessage(ev: MessageEvent) {
+    if (typeof ev.data === 'string') {
+      let n: { type?: string; text?: string }
+      try {
+        n = JSON.parse(ev.data)
+      } catch {
+        return
+      }
+      if (n.type === 'ended') this.end(n.text || '投屏断开了')
+      else if (n.type === 'notice' && n.text) this.cb.onNotice(n.text)
+      return
+    }
+    const p = parsePacket(new Uint8Array(ev.data as ArrayBuffer))
+    if (!p) return
+    switch (p.kind) {
+      case 'session':
+        this.width = p.width
+        this.height = p.height
+        this.canvas.width = p.width
+        this.canvas.height = p.height
+        this.fresh = true
+        this.cb.onSize(p.width, p.height)
+        return
+      case 'config': {
+        this.config = p.data.slice()
+        const codec = codecFromConfig(p.data)
+        if (!codec) return
+        if (this.fresh || !this.decoder || this.decoder.state === 'closed') this.configure(codec)
+        this.fresh = false
+        this.waitKey = true
+        return
+      }
+      case 'frame':
+        this.decode(p.key, p.pts, p.data)
+    }
+  }
+
+  private configure(codec: string) {
+    this.closeDecoder()
+    const decoder = new VideoDecoder({
+      output: (frame) => this.draw(frame),
+      error: (e) => this.onDecodeError(e),
+    })
+    try {
+      decoder.configure({ codec, optimizeForLatency: true })
+    } catch (e) {
+      this.end(`这台电脑解不了手机发来的视频（${codec}）：${e instanceof Error ? e.message : String(e)}`)
+      return
+    }
+    this.decoder = decoder
+  }
+
+  private decode(key: boolean, pts: number, data: Uint8Array) {
+    const d = this.decoder
+    if (!d || d.state !== 'configured') return
+    if (this.waitKey && !key) return
+    // 解不过来了(电脑太忙):积压的全丢掉,要一个新的关键帧从头来,
+    // 不然延迟会越积越大,点下去半天才有反应
+    if (d.decodeQueueSize > 30) {
+      this.waitKey = true
+      this.send({ t: 'reset' })
+      return
+    }
+    const chunk = key && this.config ? concatBytes(this.config, data) : data
+    d.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: pts, data: chunk }))
+    if (key) this.waitKey = false
+  }
+
+  private draw(frame: VideoFrame) {
+    this.ctx ??= this.canvas.getContext('2d')
+    this.ctx?.drawImage(frame, 0, 0, this.width || frame.displayWidth, this.height || frame.displayHeight)
+    frame.close()
+    if (!this.live) {
+      this.live = true
+      this.failures = 0
+      this.cb.onLive()
+    }
+  }
+
+  // 解码器出错后就关掉了:换一个新的,让手机端从关键帧重来。连着错几次就别硬撑了
+  private onDecodeError(e: DOMException) {
+    if (this.ended) return
+    this.failures++
+    if (this.failures > 3) {
+      this.end('画面解码一直出错：' + e.message)
+      return
+    }
+    this.decoder = null
+    this.fresh = true
+    this.send({ t: 'reset' })
+  }
+
+  private end(reason: string) {
+    if (this.ended) return
+    this.ended = true
+    this.ws.onclose = null
+    this.ws.close()
+    this.closeDecoder()
+    this.cb.onEnded(reason)
+  }
+
+  private closeDecoder() {
+    if (this.decoder && this.decoder.state !== 'closed') this.decoder.close()
+    this.decoder = null
+  }
+}

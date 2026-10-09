@@ -8,7 +8,7 @@
  * 数据来自 fixtures.cjs 的固定样本;新坑修掉后往 fixtures 里补对应形状。
  */
 import { StrictMode } from 'react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useNavigate } from 'react-router-dom'
 import { createRoot } from 'react-dom/client'
 import { act } from 'react'
 import { ChatPane } from '../src/tools/ai-chat/ChatPane'
@@ -239,6 +239,117 @@ const confirmIn = async (label: string) => {
 /** 按 data-* 属性的值找元素。值里有反斜杠的路径,写进 CSS 选择器要转义得眼花 */
 const byData = (attr: string, value: string) =>
   (Array.from(document.querySelectorAll(`[${attr}]`)) as HTMLElement[]).find((e) => e.getAttribute(attr) === value)
+
+// ---- 投屏用的假货:手机端发来的包、解码器、WebSocket、画布 ----
+
+/** 帧头第一个 u32 里的标志位:配置包、关键帧 */
+const MIRROR_CONFIG = 0x40000000
+const MIRROR_KEY = 0x20000000
+
+/** 会话包:12 字节,最高位是 1,后面是宽、高 */
+const mirrorSession = (w: number, h: number) => {
+  const b = new Uint8Array(12)
+  const dv = new DataView(b.buffer)
+  dv.setUint32(0, 0x80000000)
+  dv.setUint32(4, w)
+  dv.setUint32(8, h)
+  return b.buffer
+}
+
+/** 帧包:标志和时间戳(这里只用低 32 位)、负载长度,再跟负载 */
+const mirrorMedia = (flags: number, pts: number, payload: number[]) => {
+  const b = new Uint8Array(12 + payload.length)
+  const dv = new DataView(b.buffer)
+  dv.setUint32(0, flags)
+  dv.setUint32(4, pts)
+  dv.setUint32(8, payload.length)
+  b.set(payload, 12)
+  return b.buffer
+}
+
+interface FakeSocket {
+  url: string
+  sent: string[]
+  emit: (data: unknown) => void
+}
+interface FakeDecoder {
+  configs: { codec: string }[]
+  chunks: { type: string; size: number }[]
+}
+
+/**
+ * 换上假的 WebCodecs、WebSocket 和画布上下文。jsdom 这三样都没有(或者是真的网络连接),
+ * 换掉之后投屏面板的整条前端链路就能在这里跑。用完必须 restore,别漏给后面的用例
+ */
+function installMirrorFakes() {
+  const g = globalThis as unknown as Record<string, unknown>
+  const saved = { VideoDecoder: g.VideoDecoder, EncodedVideoChunk: g.EncodedVideoChunk, WebSocket: g.WebSocket }
+  const proto = window.HTMLCanvasElement.prototype
+  const savedGetContext = proto.getContext
+  const state = {
+    sockets: [] as FakeSocket[],
+    decoders: [] as FakeDecoder[],
+    draws: 0,
+    restore() {
+      Object.assign(g, saved)
+      proto.getContext = savedGetContext
+    },
+  }
+  g.WebSocket = class {
+    static OPEN = 1
+    readyState = 1
+    binaryType = ''
+    sent: string[] = []
+    onmessage: ((ev: { data: unknown }) => void) | null = null
+    onclose: (() => void) | null = null
+    constructor(public url: string) {
+      state.sockets.push(this)
+    }
+    send(s: string) {
+      this.sent.push(s)
+    }
+    close() {
+      this.readyState = 3
+    }
+    emit(data: unknown) {
+      this.onmessage?.({ data })
+    }
+  }
+  g.VideoDecoder = class {
+    state = 'unconfigured'
+    decodeQueueSize = 0
+    configs: { codec: string }[] = []
+    chunks: { type: string; size: number }[] = []
+    constructor(private init: { output: (f: unknown) => void }) {
+      state.decoders.push(this)
+    }
+    configure(c: { codec: string }) {
+      this.configs.push(c)
+      this.state = 'configured'
+    }
+    decode(chunk: { type: string; byteLength: number }) {
+      this.chunks.push({ type: chunk.type, size: chunk.byteLength })
+      this.init.output({ displayWidth: 540, displayHeight: 1200, close() {} })
+    }
+    close() {
+      this.state = 'closed'
+    }
+  }
+  g.EncodedVideoChunk = class {
+    type: string
+    timestamp: number
+    byteLength: number
+    constructor(o: { type: string; timestamp: number; data: Uint8Array }) {
+      this.type = o.type
+      this.timestamp = o.timestamp
+      this.byteLength = o.data.byteLength
+    }
+  }
+  proto.getContext = function () {
+    return { drawImage: () => state.draws++ }
+  } as unknown as typeof proto.getContext
+  return state
+}
 
 /** 点一个必须存在的按钮;找不到就是回归 —— 静悄悄跳过等于这条用例白测 */
 const mustClick = async (label: string) => {
@@ -722,6 +833,130 @@ async function main() {
     await mustClick('停止监视')
     if (t2().includes('监视中')) throw new Error('停止后面板还在')
   })
+
+  // 真机浏览 · 投屏(接着上一条留下的安卓会话)。
+  // jsdom 里没有 WebCodecs:先验证用不了时说清楚、不去启动手机端程序;
+  // 再换上假的解码器、WebSocket 和画布,把「收包 → 解码 → 画出来 → 鼠标变成操作」走一遍
+  // 页面是不是正在显示,看的是路由:挂在真机浏览自己的地址上,并且留一个能切走的把手
+  let go: ((path: string) => void) | null = null
+  const NavHandle = () => {
+    go = useNavigate()
+    return null
+  }
+  await mount(
+    '真机浏览 · 投屏',
+    <MemoryRouter initialEntries={['/tools/device-browser']}>
+      <NavHandle />
+      <DeviceBrowser />
+    </MemoryRouter>,
+    async () => {
+      const txt = () => document.body.textContent || ''
+      delete __calls.StartMirror
+      await mustClick('投屏')
+      if (!txt().includes('不支持视频解码')) throw new Error('没有 WebCodecs 时该说清楚投屏用不了')
+      if (__calls.StartMirror) throw new Error('解不了视频还去启动手机端程序')
+      await mustClick('关闭投屏')
+
+      const fake = installMirrorFakes()
+      try {
+        await mustClick('投屏')
+        await act(async () => {
+          await sleep(30)
+        })
+        const req = __last.mirrorStart as { serial: string } | undefined
+        // 投的必须是连着的那一台:连接时序列号留空(= 第一台)也一样,不能再按「第一台」猜一次
+        if (req?.serial !== 'Y9U469XKRK6XNFGY') throw new Error('没投连着的那一台: ' + JSON.stringify(req))
+        const ws = fake.sockets[fake.sockets.length - 1]
+        if (!ws?.url.includes('/mirror/')) throw new Error('没去连视频通道')
+
+        await act(async () => {
+          ws.emit(mirrorSession(540, 1200))
+          ws.emit(mirrorMedia(MIRROR_CONFIG, 0, [0, 0, 0, 1, 0x67, 0x64, 0x00, 0x20, 0xac, 0, 0, 0, 1, 0x68, 0xee]))
+          ws.emit(mirrorMedia(MIRROR_KEY, 1000, [0, 0, 0, 1, 0x65, 0x88]))
+        })
+        const dec = fake.decoders[fake.decoders.length - 1]
+        if (dec?.configs[0]?.codec !== 'avc1.640020') throw new Error('编码串没从 SPS 里拼对: ' + JSON.stringify(dec?.configs))
+        // 关键帧前面要垫上配置包(15 字节),解码器才认
+        if (dec.chunks[0]?.type !== 'key' || dec.chunks[0].size !== 15 + 6) {
+          throw new Error('关键帧没带上配置包: ' + JSON.stringify(dec.chunks))
+        }
+        if (fake.draws === 0) throw new Error('解出来的画面没画到画布上')
+        if (txt().includes('正在启动投屏')) throw new Error('出画面了还挂着「启动中」')
+
+        // 鼠标 → 触摸:画面显示成 270x600,点正中间 = 视频里的 (270, 600)
+        const canvas = document.querySelector('[data-mirror-canvas]') as HTMLCanvasElement
+        canvas.getBoundingClientRect = () =>
+          ({ left: 0, top: 0, width: 270, height: 600, right: 270, bottom: 600, x: 0, y: 0, toJSON() {} }) as DOMRect
+        const pointer = async (type: string, button: number, x: number, y: number) => {
+          await act(async () => {
+            canvas.dispatchEvent(new window.MouseEvent(type, { bubbles: true, cancelable: true, button, clientX: x, clientY: y }))
+          })
+        }
+        const sent = () => ws.sent.map((s) => JSON.parse(s) as Record<string, number | string>)
+        await pointer('pointerdown', 0, 135, 300)
+        await pointer('pointerup', 0, 135, 300)
+        const touches = sent().filter((e) => e.t === 'touch')
+        if (touches.length !== 2 || touches[0].a !== 0 || touches[1].a !== 1 || touches[0].x !== 270 || touches[0].y !== 600 || touches[0].w !== 540) {
+          throw new Error('点击没变成正确的触摸: ' + JSON.stringify(touches))
+        }
+        // 右键 = 返回
+        await pointer('pointerdown', 2, 10, 10)
+        await pointer('pointerup', 2, 10, 10)
+        if (sent().filter((e) => e.t === 'back').length !== 2) throw new Error('右键没变成返回')
+        await mustClick('最近任务')
+        if (!sent().some((e) => e.t === 'key' && e.k === 187 && e.a === 1)) throw new Error('最近任务键没发出去')
+        // 滚轮往下一格 = 安卓里往下滑,值是负的
+        await act(async () => {
+          canvas.dispatchEvent(new window.WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 100, clientX: 135, clientY: 300 }))
+          await sleep(20)
+        })
+        const scroll = sent().find((e) => e.t === 'scroll')
+        if (scroll?.vs !== -1) throw new Error('滚轮没变成滑动: ' + JSON.stringify(scroll))
+
+        // 小米一类不让模拟点击:手机端的提醒要摆出来
+        await act(async () => {
+          ws.emit(JSON.stringify({ type: 'notice', code: 'inject-denied', text: '手机拒绝了模拟点击……「USB 调试（安全设置）」' }))
+        })
+        if (!txt().includes('USB 调试（安全设置）')) throw new Error('提醒没显示出来')
+
+        // 手机拔了:说清楚为什么,给一个重新连接
+        await act(async () => {
+          ws.emit(JSON.stringify({ type: 'ended', text: '投屏断开了:手机拔掉了' }))
+        })
+        if (!txt().includes('手机拔掉了')) throw new Error('断开的原因没显示')
+        const before = __last.mirrorStarts as number
+        await mustClick('重新连接')
+        await act(async () => {
+          await sleep(30)
+        })
+        if ((__last.mirrorStarts as number) <= before) throw new Error('点了重新连接没有重开一路')
+
+        // 切到别的工具:这一页只是藏起来,投屏得停,不然手机在后台一直编码;切回来自动接上
+        const running = 'm' + String(__last.mirrorStarts)
+        await act(async () => {
+          go?.('/tools/sqlite-search')
+        })
+        if (!(__last.mirrorStops as string[] | undefined)?.includes(running)) {
+          throw new Error('切走之后投屏还在后台跑')
+        }
+        const beforeBack = __last.mirrorStarts as number
+        await act(async () => {
+          go?.('/tools/device-browser')
+          await sleep(30)
+        })
+        if ((__last.mirrorStarts as number) <= beforeBack) throw new Error('切回来没有自动接上')
+
+        // 关掉面板:正在投的那一路要在后端停掉,手机端程序才会退出
+        await mustClick('关闭投屏')
+        const current = 'm' + String(__last.mirrorStarts)
+        if (!(__last.mirrorStops as string[] | undefined)?.includes(current)) {
+          throw new Error('关掉面板没停掉正在投的那一路: ' + JSON.stringify(__last.mirrorStops))
+        }
+      } finally {
+        fake.restore()
+      }
+    },
+  )
 
   // 工具间跳转:真机浏览翻到的目径直接填进移动取证;取证的输出目录直接填进 SQLite 搜索。
   // 路由是 keep-alive 的,参数走 location.state,目标工具在 key 变化时接

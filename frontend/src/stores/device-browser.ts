@@ -25,8 +25,14 @@ interface DeviceBrowserState {
   adbPath: string
   /** 上次连上的设备信息,断开后界面上还要用来说明刚才连的是什么 */
   rooted: boolean
+  /**
+   * 实际连上的那台的序列号和型号。上面的 deviceId 是用户填的,留空表示「第一台」——
+   * 投屏要的是确切的那一台,不能再按「第一台」去猜一次
+   */
+  serial: string
+  model: string
 
-  setSession: (id: string, startPath: string, rooted: boolean) => void
+  setSession: (id: string, startPath: string, rooted: boolean, serial: string, model: string) => void
   clearSession: () => void
   setCwd: (p: string) => void
   setUser: (u: string) => void
@@ -49,14 +55,16 @@ export const useDeviceBrowserStore = create<DeviceBrowserState>()(
       deviceId: '',
       adbPath: '',
       rooted: false,
+      serial: '',
+      model: '',
 
-      setSession: (id, startPath, rooted) =>
+      setSession: (id, startPath, rooted, serial, model) =>
         // startPath 单独留一份:cwd 会随着翻目录一直变,
         // 而「回到起点」要的是连上时那个位置(安卓 /data/data、iOS mobile 的 Library),
         // 比回到 / 有用得多 —— / 底下全是系统目录,翻不到应用数据
-        set({ sessionId: id, cwd: startPath, startPath, rooted }),
+        set({ sessionId: id, cwd: startPath, startPath, rooted, serial, model }),
       // 断开时不清 recent:下次连上还想回到上次翻的地方
-      clearSession: () => set({ sessionId: '', cwd: '', startPath: '' }),
+      clearSession: () => set({ sessionId: '', cwd: '', startPath: '', serial: '', model: '' }),
       setCwd: (p) =>
         set((s) => ({
           cwd: p,

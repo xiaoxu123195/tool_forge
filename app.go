@@ -35,6 +35,7 @@ import (
 	"tool_forge/backend/tools/httptest"
 	"tool_forge/backend/tools/llmproxy"
 	"tool_forge/backend/tools/mcp"
+	"tool_forge/backend/tools/mirror"
 	"tool_forge/backend/tools/mmkv"
 	"tool_forge/backend/tools/netenvcheck"
 	"tool_forge/backend/tools/netscan"
@@ -78,8 +79,9 @@ type App struct {
 	apiTools  *apitool.Service
 	// mcpWB 工作台自己的一套连接,和上面那批给 AI 用的常驻连接分开:
 	// 工作台上试一个服务器不该影响正在对话的那条
-	mcpWB *mcp.Workbench
-	disk  *diskclean.Service
+	mcpWB  *mcp.Workbench
+	disk   *diskclean.Service
+	mirror *mirror.Service
 
 	// windowShown:启动时窗口 StartHidden;首帧后由前端 ShowWindow 显示,后端 5s 兜底显示。
 	// 两者用这个原子标记去重,保证只有一方真正执行,避免重复显示/抢焦点。
@@ -188,6 +190,7 @@ func NewApp() *App {
 		mcpWB:     mcp.NewWorkbench(),
 		apiTools:  apiTools,
 		disk:      diskclean.New(),
+		mirror:    mirror.New(),
 	}
 }
 
@@ -296,6 +299,10 @@ func (a *App) shutdown(ctx context.Context) {
 	// 一直占着设备的通道,下次连接直接失败
 	if a.devicefs != nil {
 		a.devicefs.CloseAll()
+	}
+	// 投屏的手机端程序要等通道关掉才退出,不收的话它会一直跑到手机拔线
+	if a.mirror != nil {
+		a.mirror.CloseAll()
 	}
 }
 
@@ -647,6 +654,17 @@ func deviceCacheDir() string {
 		return os.TempDir()
 	}
 	return filepath.Join(base, "device-cache")
+}
+
+// StartMirror 开始投屏真机浏览里连着的那台安卓手机。
+// 视频和鼠标操作不走这里,走返回的那条本机 WebSocket
+func (a *App) StartMirror(req mirror.StartRequest) (*mirror.Session, error) {
+	return a.mirror.Start(req)
+}
+
+// StopMirror 结束一路投屏
+func (a *App) StopMirror(id string) {
+	a.mirror.Stop(id)
 }
 
 // ================ MMKV / plist 解析 ================

@@ -6,7 +6,7 @@ export const meta: ToolMeta = {
   path: '/tools/device-browser',
   title: '真机数据浏览器',
   sidebarTitle: '真机浏览',
-  description: '直接翻连着的手机:列目录、按名字搜、点开就按类型解析',
+  description: '直接翻连着的手机:列目录、按名字搜、点开就按类型解析;安卓还能投屏,用鼠标直接操作',
   icon: FolderTree,
   category: 'forensic',
   order: 15,
