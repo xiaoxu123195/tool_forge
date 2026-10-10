@@ -10,5 +10,6 @@ export const meta: ToolMeta = {
   icon: KeyRound,
   category: 'account',
   order: 18,
-  defaultVisible: true,
+  // 默认关闭,想用就在首页「管理」里打开
+  defaultVisible: false,
 }

@@ -9,5 +9,6 @@ export const meta: ToolMeta = {
   icon: Radar,
   category: 'system',
   order: 30,
-  defaultVisible: true,
+  // 默认关闭,想用就在首页「管理」里打开
+  defaultVisible: false,
 }
