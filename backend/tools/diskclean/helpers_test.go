@@ -38,6 +38,17 @@ func age(t *testing.T, p string, d time.Duration) {
 	}
 }
 
+// realTempDir 解到底的临时目录。GitHub 的 Windows 机器上临时目录是 8.3 短文件名
+// (C:\Users\RUNNER~1\…),而快捷方式里记的、系统转出来的路径都是长名:拿短名去比永远对不上
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	d := t.TempDir()
+	if p, err := finalPath(d); err == nil {
+		return p
+	}
+	return d
+}
+
 func exists(p string) bool {
 	_, err := os.Lstat(p)
 	return err == nil

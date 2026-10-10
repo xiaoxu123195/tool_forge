@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
 
 // makeShortcuts 用系统自己的接口建快捷方式 —— 拿真实的文件测,而不是只测自己拼的
@@ -38,8 +40,14 @@ func freeDrive() string {
 }
 
 func TestJudgeRealShortcuts(t *testing.T) {
-	dir := t.TempDir()
-	alive := writeN(t, filepath.Join(dir, "工具", "应用.exe"), 10)
+	dir := realTempDir(t)
+	// 中文名要在中文系统上才建得出快捷方式:WScript.Shell 按系统代码页处理路径,
+	// 英文系统上(比如 CI 的机器)中文变成问号,建出来的是个没有目标的空快捷方式
+	name := filepath.Join("工具", "应用.exe")
+	if windows.GetACP() != 936 {
+		name = filepath.Join("tools", "app.exe")
+	}
+	alive := writeN(t, filepath.Join(dir, name), 10)
 	gone := writeN(t, filepath.Join(dir, "gone.exe"), 10)
 	pairs := map[string]string{
 		filepath.Join(dir, "alive.lnk"): alive,
@@ -87,7 +95,7 @@ func TestJudgeRealShortcuts(t *testing.T) {
 // 相对路径是按原来的位置算的,拿它去拼就指到一个根本不存在的地方 —— 好好的快捷方式被报成无效。
 // 这里用系统建的快捷方式里的项目标识列表,拼一个同样形状的出来
 func TestJudgeUsesIDListNotRelativePath(t *testing.T) {
-	dir := t.TempDir()
+	dir := realTempDir(t)
 	target := writeN(t, filepath.Join(dir, "app", "real.exe"), 10)
 	src := filepath.Join(dir, "src.lnk")
 	makeShortcuts(t, map[string]string{src: target})

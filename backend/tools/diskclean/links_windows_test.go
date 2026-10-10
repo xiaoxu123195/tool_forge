@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 // mklinkJ 建一个目录联接。联接不需要管理员权限,符号链接才要
@@ -84,6 +86,42 @@ func TestCheckFinalSeesThroughJunctions(t *testing.T) {
 	if res.Deleted != 0 || !exists(sys) {
 		t.Fatal("通过联接删到了受保护的文件")
 	}
+}
+
+// 规则里的路径可能是 8.3 短文件名(从环境变量来,GitHub 的 Windows 机器上临时目录就是),
+// 要删的路径却是长名,或者穿过联接解到底才是长名 —— 两种写法都得拦住
+func TestGuardKnowsShortNames(t *testing.T) {
+	base := realTempDir(t)
+	long := filepath.Join(base, "protected long name")
+	sys := writeN(t, filepath.Join(long, "sys.dll"), 10)
+	g := newGuard(guardSpec{trees: []treeSpec{{root: shortPath(t, long), reason: "测试用的受保护目录"}}})
+	if v := g.Check(sys); !v.Blocked {
+		t.Fatalf("规则里写的是短名,长名的路径也该拦住:%+v", v)
+	}
+	link := filepath.Join(base, "innocent")
+	mklinkJ(t, link, long)
+	if v := g.CheckFinal(filepath.Join(link, "sys.dll")); !v.Blocked {
+		t.Fatalf("穿过联接解到底是长名,也该拦住:%+v", v)
+	}
+}
+
+// shortPath 一个路径的 8.3 短文件名。这块盘关掉了短文件名的话跳过
+func shortPath(t *testing.T, p string) string {
+	t.Helper()
+	u, err := windows.UTF16PtrFromString(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]uint16, 1024)
+	n, err := windows.GetShortPathName(u, &buf[0], uint32(len(buf)))
+	if err != nil || n == 0 || int(n) >= len(buf) {
+		t.Skipf("取不到短文件名:%v", err)
+	}
+	s := windows.UTF16ToString(buf[:n])
+	if strings.EqualFold(s, p) {
+		t.Skip("这块盘没开 8.3 短文件名")
+	}
+	return s
 }
 
 func TestCleanSkipsLockedFiles(t *testing.T) {

@@ -79,16 +79,22 @@ func newGuard(spec guardSpec) *Guard {
 		}
 		open := make([]string, 0, len(t.open))
 		for _, o := range t.open {
-			open = append(open, norm(o))
+			open = append(open, spellings(o)...)
 		}
-		g.trees = append(g.trees, treeSpec{root: norm(t.root), reason: t.reason, open: open})
+		for _, root := range spellings(t.root) {
+			g.trees = append(g.trees, treeSpec{root: root, reason: t.reason, open: open})
+		}
 	}
 	sort.SliceStable(g.trees, func(i, j int) bool { return len(g.trees[i].root) > len(g.trees[j].root) })
 	for p, r := range spec.files {
-		g.files[norm(p)] = r
+		for _, s := range spellings(p) {
+			g.files[s] = r
+		}
 	}
 	for _, p := range spec.allowFiles {
-		g.allowFiles[norm(p)] = true
+		for _, s := range spellings(p) {
+			g.allowFiles[s] = true
+		}
 	}
 	for n, r := range spec.rootNames {
 		g.rootNames[strings.ToLower(n)] = r
@@ -98,15 +104,32 @@ func newGuard(spec guardSpec) *Guard {
 	}
 	for _, p := range spec.noWipe {
 		if p != "" {
-			g.noWipe[norm(p)] = true
+			for _, s := range spellings(p) {
+				g.noWipe[s] = true
+			}
 		}
 	}
 	for _, p := range spec.noWipeParents {
 		if p != "" {
-			g.noWipeParents[norm(p)] = true
+			for _, s := range spellings(p) {
+				g.noWipeParents[s] = true
+			}
 		}
 	}
 	return g
+}
+
+// spellings 一个路径在规则里要记的几种写法:原样的,和解到底的(链接、目录联接、8.3 短文件名都解开)。
+//
+// 规则里的路径来自环境变量,可能是短文件名 —— GitHub 的 Windows 机器上临时目录就是
+// C:\Users\RUNNER~1\…,而 CheckFinal 拿来比的是解到底的长名。只记一种写法的话,
+// 换一种写法就绕过去了。路径不存在时解不了,只记原样的
+func spellings(p string) []string {
+	out := []string{norm(p)}
+	if real, err := finalPath(p); err == nil && norm(real) != out[0] {
+		out = append(out, norm(real))
+	}
+	return out
 }
 
 // Check 能不能删 path 这个条目本身
