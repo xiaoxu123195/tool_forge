@@ -25,6 +25,8 @@ import (
 type Decoded struct {
 	Type    string `json:"type"`
 	Display string `json:"display"`
+	// Used 硬读的时候只用上了开头多少字节,见 looseReadings。读通了的不填
+	Used int `json:"used,omitempty"`
 }
 
 // Value 一个值的全貌:原始十六进制 + 所有解得通的类型
@@ -34,6 +36,9 @@ type Value struct {
 	// Best 最可能的类型。判断依据见 pickBest —— 它是启发式的,不是真相
 	Best    string    `json:"best"`
 	Decoded []Decoded `json:"decoded"`
+	// Loose 读不通、但只用开头一部分字节硬读也能读出东西的类型。
+	// 只给桌面页:人点着一种种类型看时想见到个结果;猜类型、MCP 都只认读得通的
+	Loose []Decoded `json:"loose,omitempty"`
 }
 
 // 类型名。和前端那份保持一致,两边说的是同一件事
@@ -111,6 +116,53 @@ func describeValue(v []byte, hexLimit int) Value {
 	}
 
 	out.Best = pickBest(v, out.Decoded)
+	return out
+}
+
+// looseReadings 读不通的类型里,只用开头一部分字节硬读也能读出东西的:
+// 整数读开头的 varint,float / double 读开头 4 / 8 字节,bool 看第一个字节,
+// string / bytes 按开头的长度取内容 —— 后面剩下的字节都不管。
+//
+// 剩下的可能是别的东西(比如开了键过期时末尾那 4 字节过期时间),也可能说明这根本不是这个类型,
+// 所以每条都带上用了几个字节,界面上标清楚,不和读通的混在一起。读通了的类型不再重复给
+func looseReadings(v []byte, hexLimit int, strict []Decoded) []Decoded {
+	have := make(map[string]bool, len(strict))
+	for _, d := range strict {
+		have[d.Type] = true
+	}
+	var out []Decoded
+	add := func(t, display string, used int) {
+		if !have[t] && used < len(v) {
+			out = append(out, Decoded{Type: t, Display: display, Used: used})
+		}
+	}
+	if n, read, err := readVarintU32(v, 0); err == nil {
+		// 长度是 0 的不算:任何以 0 开头的字节都能读出一个空字符串
+		if end := read + int(n); n > 0 && end < len(v) {
+			b := v[read:end]
+			if utf8.Valid(b) {
+				add(TypeString, string(b), end)
+			}
+			add(TypeBytes, hexPreview(b, hexLimit), end)
+		}
+		add(TypeInt32, strconv.FormatInt(int64(int32(n)), 10), read)
+		add(TypeUint32, strconv.FormatUint(uint64(n), 10), read)
+	}
+	if n, read, err := readVarintU64(v, 0); err == nil {
+		add(TypeInt64, strconv.FormatInt(int64(n), 10), read)
+		add(TypeUint64, strconv.FormatUint(n, 10), read)
+	}
+	if len(v) > 4 {
+		f := math.Float32frombits(binary.LittleEndian.Uint32(v))
+		add(TypeFloat32, strconv.FormatFloat(float64(f), 'g', -1, 32), 4)
+	}
+	if len(v) > 8 {
+		f := math.Float64frombits(binary.LittleEndian.Uint64(v))
+		add(TypeFloat64, strconv.FormatFloat(f, 'g', -1, 64), 8)
+	}
+	if len(v) > 1 && v[0] <= 1 {
+		add(TypeBool, strconv.FormatBool(v[0] == 1), 1)
+	}
 	return out
 }
 

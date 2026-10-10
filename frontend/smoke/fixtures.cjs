@@ -350,6 +350,13 @@ const mmkvFile = {
             { type: 'string', display: '张三' },
             { type: 'bytes', display: 'e5bca0e4b889' },
           ],
+          // 读不通、只用开头的 varint 硬读出来的:桌面页点着切类型时才看
+          loose: [
+            { type: 'int32', display: '6', used: 1 },
+            { type: 'int64', display: '6', used: 1 },
+            { type: 'uint32', display: '6', used: 1 },
+            { type: 'uint64', display: '6', used: 1 },
+          ],
         },
       ],
     },
@@ -404,6 +411,14 @@ const mmkvFile = {
                 '{"key":"searchHistoryKey","modification_time":9007199254740993,' +
                 '"value":{"__class":"EBSearchHistory","json":"[\\"茅台\\"]","tags":[]}}',
             },
+          ],
+          // 开头的 'b'(0x62)硬读成整数是 98;当成长度的话 bytes 用掉 99 字节
+          loose: [
+            { type: 'int32', display: '98', used: 1 },
+            { type: 'int64', display: '98', used: 1 },
+            { type: 'uint32', display: '98', used: 1 },
+            { type: 'uint64', display: '98', used: 1 },
+            { type: 'bytes', display: '706c6973743030d4', used: 99 },
           ],
         },
       ],

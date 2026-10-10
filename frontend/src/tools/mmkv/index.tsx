@@ -13,7 +13,7 @@ import {
 } from '../../../wailsjs/go/main/App'
 import type { mmkv } from '../../../wailsjs/go/models'
 import { meta } from './meta'
-import { defaultTypeOf, displayOf, nextTypeOf } from './valueTypes'
+import { defaultTypeOf, nextTypeOf, readingOf } from './valueTypes'
 import { ValueCell } from './components/ValueCell'
 import { DetailModal, type DetailContext } from './components/DetailModal'
 import { DecryptPanel } from './components/DecryptPanel'
@@ -97,7 +97,7 @@ export default function MmkvTool() {
     typesByKey[key]?.[index] ?? defaultTypeOf(value)
 
   const cycleType = (key: string, index: number, value: mmkv.Value) => {
-    cycleTypeAction(key, index, nextTypeOf(value, getType(key, index, value)))
+    cycleTypeAction(key, index, nextTypeOf(getType(key, index, value)))
   }
 
   const exportJson = () => {
@@ -106,7 +106,11 @@ export default function MmkvTool() {
     for (const entry of entries) {
       out[entry.key] = entry.values.map((v, i) => {
         const t = getType(entry.key, i, v)
-        return { type: t, value: displayOf(v, t) }
+        const r = readingOf(v, t)
+        // 读不通的给 null;硬读的带上用了几个字节,别让导出来的看着和读通的一样
+        if (r.kind === 'none') return { type: t, value: null }
+        if (r.kind === 'loose') return { type: t, value: r.text, usedBytes: r.used }
+        return { type: t, value: r.text }
       })
     }
     downloadText(
@@ -341,9 +345,13 @@ function EmptyState({ onPick, error }: { onPick: () => void; error: string }) {
           <div className="font-medium text-foreground/80">基本使用</div>
           <div>· 支持未加密的 MMKV 文件（拖放 / 点击「打开」）</div>
           <div>· 同一个 key 的历史值会各自一行展示</div>
-          <div>· 每个值默认按最可能的类型显示，点类型徽章可在解得通的类型间循环</div>
+          <div>· 每个值打开时按自动识别出的类型显示（标着「自动」）</div>
+          <div>
+            · 点类型徽章换成下一种类型看，全部类型轮一遍；读不通的显示 N/A，只用开头几个字节硬读出来的标着「只用前 N 字节」
+          </div>
           <div>· iOS 上存的对象（NSKeyedArchiver 归档）会自动拆开，按 plist 显示</div>
-          <div>· 点击右侧 expand 图标弹出详情，会列出这串字节所有说得通的读法</div>
+          <div>· raw 是原样字节按文字显示，认不出的字节写成 \xNN</div>
+          <div>· 点击右侧 expand 图标弹出详情，所有类型的读法一次列全</div>
           <div>· 拖动 Key / Values 列之间的分隔线可调整列宽</div>
           <div>· 切换到别的工具再回来，文件不会丢（刷新页面会丢）</div>
 

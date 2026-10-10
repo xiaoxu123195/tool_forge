@@ -85,17 +85,23 @@ func readVarintU64(b []byte, off int) (val uint64, n int, err error) {
 	return 0, n, errors.New("varint 读到文件尾")
 }
 
-// Parse 解析一个(已解密的)MMKV 文件。
+// Parse 解析一个(已解密的)MMKV 文件,给 MCP 用。
 //
 // 整个循环对损坏数据的态度是"读到哪算哪":任何一步解不动就 break,
 // 把已经读出来的返回。取证场景里半个文件也是线索,直接报错等于把线索也丢了。
 func Parse(data []byte) (*ParseResult, error) {
-	return ParseWithHexLimit(data, mcpHexLimit)
+	return parse(data, view{hexLimit: mcpHexLimit})
 }
 
-// ParseWithHexLimit 同 Parse,但由调用方决定十六进制预览的长度。
-// 桌面页给的比 MCP 大 —— 理由见 decode.go 里那两个常量
-func ParseWithHexLimit(data []byte, hexLimit int) (*ParseResult, error) {
+// view 解析结果给谁看。agent 和人看同一个值,要的不一样:
+// 桌面页的十六进制给得长一些(理由见 decode.go 里那两个常量),
+// 还附上硬读出来的类型,人点着一种种类型看时每种都有个结果
+type view struct {
+	hexLimit int
+	loose    bool
+}
+
+func parse(data []byte, vw view) (*ParseResult, error) {
 	scan, err := scanEntries(data)
 	if err != nil {
 		return nil, err
@@ -103,11 +109,15 @@ func ParseWithHexLimit(data []byte, hexLimit int) (*ParseResult, error) {
 	entries := make([]Entry, 0, len(scan.order))
 	for _, k := range scan.order {
 		vals := scan.byKey[k]
-		views := make([]Value, 0, len(vals))
+		described := make([]Value, 0, len(vals))
 		for _, v := range vals {
-			views = append(views, describeValue(v, hexLimit))
+			d := describeValue(v, vw.hexLimit)
+			if vw.loose {
+				d.Loose = looseReadings(v, vw.hexLimit, d.Decoded)
+			}
+			described = append(described, d)
 		}
-		entries = append(entries, Entry{Key: k, Values: views})
+		entries = append(entries, Entry{Key: k, Values: described})
 	}
 	return &ParseResult{
 		Entries:      entries,

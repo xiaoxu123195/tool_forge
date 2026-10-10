@@ -19,6 +19,7 @@ import (
 //     没必要为了让 Go 读个文件先在 JS 里把它读一遍
 //   - 不做 maxEntries 截断:人是要在表格里翻的,少给一条都是漏
 //   - 十六进制预览给得比 MCP 长(见 decode.go)
+//   - 读不通的类型也附上硬读的结果(looseReadings):人是点着一种种类型看的,每种都想见到个结果
 
 // FileResult 桌面页需要的全部信息
 type FileResult struct {
@@ -63,7 +64,7 @@ func ParseFile(path, crcPath, keyHex string) (*FileResult, error) {
 	}
 	encrypted := keyHex != ""
 
-	res, err := ParseWithHexLimit(data, desktopHexLimit)
+	res, err := parse(data, view{hexLimit: desktopHexLimit, loose: true})
 	if err != nil {
 		return nil, err
 	}

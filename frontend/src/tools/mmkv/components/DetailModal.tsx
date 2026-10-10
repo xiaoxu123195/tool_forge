@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Check, Copy, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { mmkv } from '../../../../wailsjs/go/models'
-import { HEX_TYPE, bgOf, detailOf, displayOf, labelOf, optionsOf } from '../valueTypes'
+import { HEX_TYPE, TYPE_ORDER, bgOf, detailOf, labelOf, looseNote, readingOf } from '../valueTypes'
 
 interface DetailContext {
   key: string
@@ -28,10 +28,14 @@ export function DetailModal({ ctx, onClose }: Props) {
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
+  // 回后端读来的完整十六进制。读到了,原始字节的两种看法(hexstring、raw)都换成完整的
+  const [full, setFull] = useState('')
   const label = ctx.total > 1 ? `历史 ${ctx.index === 0 ? '最新' : ctx.index}` : '当前'
-  // 后端一次就把所有解得通的读法都算好了,索性全列出来 ——
-  // 以前要一个个点着循环才能看到别的类型长什么样
-  const others = optionsOf(ctx.value).filter((t) => t !== ctx.type && t !== HEX_TYPE)
+  const current = readingOf(ctx.value, ctx.type)
+  // 每种类型的读法一次全列出来,不用在表格里一个个点着看;读不通的只报个名字
+  const others = TYPE_ORDER.filter((t) => t !== ctx.type && t !== HEX_TYPE)
+  const readable = others.filter((t) => readingOf(ctx.value, t).kind !== 'none')
+  const unreadable = others.filter((t) => readingOf(ctx.value, t).kind === 'none')
 
   return (
     <div
@@ -70,43 +74,69 @@ export function DetailModal({ ctx, onClose }: Props) {
 
         <div className="flex-1 space-y-4 overflow-auto p-4">
           {/* 主展示：当前类型的完整解码值 */}
-          <Section
-            title={`${labelOf(ctx.type)} 解码`}
-            text={detailOf(ctx.value, ctx.type)}
-            className={bgOf(ctx.type)}
-          />
+          {current.kind === 'none' ? (
+            <section>
+              <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                {labelOf(ctx.type)} 解码
+              </div>
+              <div className="rounded-md border border-border bg-muted/30 p-3 text-[12.5px] text-muted-foreground">
+                按 {labelOf(ctx.type)} 读不通
+              </div>
+            </section>
+          ) : (
+            <Section
+              title={`${labelOf(ctx.type)} 解码`}
+              note={current.kind === 'loose' ? looseNote(ctx.value, current) : ''}
+              text={detailOf(ctx.value, ctx.type, full)}
+              className={bgOf(ctx.type)}
+            />
+          )}
 
-          {/* 其它读法：MMKV 的值不带类型标记,同一串字节读成什么全看写入方,
-              所以别的解释也一并摆出来,由人判断哪个才是原意 */}
+          {/* 其它类型：MMKV 的值不带类型标记,同一串字节读成什么全看写入方,
+              所以别的读法也一并摆出来,由人判断哪个才是原意 */}
           {others.length > 0 && (
             <section>
               <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                其它可能的读法
+                其它类型的读法
               </div>
               <div className="space-y-1.5">
-                {others.map((t) => (
-                  <div
-                    key={t}
-                    className={cn(
-                      'flex items-start gap-2 rounded-md border border-border px-3 py-2 font-mono text-[12px]',
-                      bgOf(t)
-                    )}
-                  >
-                    <span className="shrink-0 text-[11px] text-orange-600 dark:text-orange-400">
-                      ({labelOf(t)})
-                    </span>
-                    <span className="min-w-0 flex-1 break-all">
-                      {displayOf(ctx.value, t)}
-                    </span>
-                    <CopyButton getText={() => displayOf(ctx.value, t)} />
+                {readable.map((t) => {
+                  const r = readingOf(ctx.value, t)
+                  const text = detailOf(ctx.value, t, full)
+                  return (
+                    <div
+                      key={t}
+                      className={cn(
+                        'flex items-start gap-2 rounded-md border border-border px-3 py-2 font-mono text-[12px]',
+                        bgOf(t)
+                      )}
+                    >
+                      <span className="shrink-0 text-[11px] text-orange-600 dark:text-orange-400">
+                        ({labelOf(t)})
+                      </span>
+                      <span className="min-w-0 flex-1 whitespace-pre-wrap break-all">
+                        {r.kind === 'loose' && (
+                          <span className="mb-0.5 block font-sans text-[11px] text-amber-700 dark:text-amber-400">
+                            {looseNote(ctx.value, r)}
+                          </span>
+                        )}
+                        {text}
+                      </span>
+                      <CopyButton getText={() => text} />
+                    </div>
+                  )
+                })}
+                {unreadable.length > 0 && (
+                  <div className="px-1 text-[11px] text-muted-foreground">
+                    读不通：{unreadable.map(labelOf).join('、')}
                   </div>
-                ))}
+                )}
               </div>
             </section>
           )}
 
           {/* 辅展示：原始字节 hex */}
-          <HexSection ctx={ctx} />
+          <HexSection ctx={ctx} full={full} onFull={setFull} />
         </div>
       </div>
     </div>
@@ -118,8 +148,15 @@ export function DetailModal({ ctx, onClose }: Props) {
  * 十六进制的话传过桥的数据能比文件本身还大。所以这里默认显示截断的那份,
  * 想要完整的按一下,再回后端读一次。
  */
-function HexSection({ ctx }: { ctx: DetailContext }) {
-  const [full, setFull] = useState('')
+function HexSection({
+  ctx,
+  full,
+  onFull,
+}: {
+  ctx: DetailContext
+  full: string
+  onFull: (hex: string) => void
+}) {
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
   // 后端在截断处会加一句"还有 N 字节",没有这句就说明本来就是完整的
@@ -129,7 +166,7 @@ function HexSection({ ctx }: { ctx: DetailContext }) {
     setLoading(true)
     setErr('')
     try {
-      setFull(await ctx.fullHex())
+      onFull(await ctx.fullHex())
     } catch (e) {
       setErr(String(e))
     } finally {
@@ -170,10 +207,13 @@ function HexSection({ ctx }: { ctx: DetailContext }) {
 
 function Section({
   title,
+  note,
   text,
   className,
 }: {
   title: string
+  /** 硬读出来的要先说清只用了几个字节 */
+  note?: string
   text: string
   className?: string
 }) {
@@ -185,6 +225,7 @@ function Section({
         </div>
         {!!text && <CopyButton getText={() => text} />}
       </div>
+      {note && <div className="mb-1.5 text-[11px] text-amber-700 dark:text-amber-400">{note}</div>}
       <div
         className={cn(
           'whitespace-pre-wrap break-all rounded-md border border-border p-3 font-mono text-[12.5px] leading-relaxed',

@@ -629,15 +629,24 @@ async function main() {
     if (!txt().includes('2 个历史值')) throw new Error('历史值条数没显示')
     if (!txt().includes('1 个删除标记')) throw new Error('删除标记数没显示')
 
-    // 点类型徽章循环:只在解得通的类型之间转。
-    // user_name 能读成 hexstring / string / bytes,从 string 点一下应该到 bytes
-    if (txt().includes('(bytes)')) throw new Error('初始就有 bytes,这条断言失去意义')
-    await mustClick('(string)')
-    if (!txt().includes('(bytes)')) {
-      throw new Error('点徽章没有切到下一个解得通的类型')
-    }
-    // 只有一种读法的值,徽章不该能点出别的来
+    // 打开时按自动识别出的类型显示,标着「自动」
+    const row = (key: string) =>
+      (Array.from(document.querySelectorAll('tr')) as HTMLElement[])
+        .find((tr) => tr.querySelector('td')?.textContent?.startsWith(key))
+        ?.textContent || ''
+    if (!row('user_name').includes('自动')) throw new Error('没标出自动识别的类型')
     if (!txt().includes('(bool)')) throw new Error('单一读法的值没按 best 显示')
+    // 点徽章按固定顺序把全部类型轮一遍:string 的下一个是 int32。
+    // 按 int32 读不通(后面还剩字节),硬读出来的要标明只用了几个字节
+    await mustClick('(string)')
+    const u = row('user_name')
+    if (!u.includes('(int32)') || !u.includes('只用前 1 字节') || u.includes('自动')) {
+      throw new Error('点徽章没换到 int32,或者硬读的没标出来: ' + u)
+    }
+    // 读不通的照样轮得到,显示 N/A:bool 的下一个是 Set<String>
+    await mustClick('(bool)')
+    const e = row('enabled')
+    if (!e.includes('(Set<String>)') || !e.includes('N/A')) throw new Error('读不通的类型没显示 N/A: ' + e)
   })
 
   // 12) MMKV 详情弹窗:后端一次给全所有读法,这里要都列出来
@@ -654,7 +663,10 @@ async function main() {
       await sleep(60)
     })
     const txt = document.body.textContent || ''
-    if (!txt.includes('其它可能的读法')) throw new Error('详情里没列出别的读法')
+    if (!txt.includes('其它类型的读法')) throw new Error('详情里没列出别的类型')
+    // 全部类型一次列全:硬读的带说明,读不通的报个名字
+    if (!txt.includes('只用上了开头 1 字节')) throw new Error('详情里硬读的没说明只用了几个字节')
+    if (!txt.includes('读不通：') || !txt.includes('plist')) throw new Error('详情里没列出读不通的类型')
     if (!txt.includes('原始字节')) throw new Error('详情里没有原始字节')
   })
 
@@ -689,12 +701,27 @@ async function main() {
   await mount('MMKV · iOS 归档对象', <MmkvTool />, async () => {
     await mustClick('打开')
     const txt = () => document.body.textContent || ''
-    if (!txt().includes('(plist)') || !txt().includes('"key":"searchHistoryKey"')) {
-      throw new Error('归档对象没按拆好的 plist 显示')
+    const tr = () =>
+      (Array.from(document.querySelectorAll('tr')) as HTMLElement[]).find((r) =>
+        r.querySelector('td')?.textContent?.startsWith('searchHistoryKey'),
+      )
+    const row = () => tr()?.textContent || ''
+    if (!row().includes('(plist)') || !row().includes('"key":"searchHistoryKey"') || !row().includes('自动')) {
+      throw new Error('归档对象没按拆好的 plist 显示: ' + row())
     }
     if (txt().includes('62706c69737430')) throw new Error('默认显示成了原始十六进制,没用 best')
-    await mustClick('(plist)')
-    if (!txt().includes('62706c69737430')) throw new Error('点徽章没切到原始字节')
+    // 往后点着看别的读法:bytes 是硬读的(开头的 b 被当成长度),raw 原样按文字,再到 hexstring
+    const next = async () => {
+      await act(async () => {
+        ;(tr()?.querySelector('button') as HTMLElement).click()
+      })
+    }
+    await next()
+    if (!row().includes('(bytes)') || !row().includes('只用前 99 字节')) throw new Error('bytes 没标出是硬读的: ' + row())
+    await next()
+    if (!row().includes('(raw)') || !row().includes('bplist00\\xd4\\x01')) throw new Error('raw 没把原样字节按文字显示: ' + row())
+    await next()
+    if (!row().includes('(hexstring)') || !row().includes('62706c69737430')) throw new Error('没轮到原始十六进制: ' + row())
     // 重新打开一次,每个值回到默认的类型,详情里看的就是 plist
     await mustClick('打开')
     const expands = Array.from(document.querySelectorAll('button[title="展开查看完整值"]')) as HTMLElement[]

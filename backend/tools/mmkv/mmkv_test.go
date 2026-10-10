@@ -254,6 +254,55 @@ func TestPayloadMustReachTheEnd(t *testing.T) {
 	}
 }
 
+// 桌面页是点着一种种类型看的:读不通的类型也要有个硬读的结果,并标明只用了几个字节。
+// MCP 那头只给读得通的,硬读的结果对 agent 是噪音
+func TestLooseReadingsOnlyOnDesktop(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sample")
+	data := buildMMKV([][2][]byte{
+		kv("obj", archived(t)),
+		// 开了键过期的整数:varint 后面跟 4 字节过期时间,按整数读不通,硬读才看得到 30
+		kv("age", append(appendVarint(nil, 30), 0x10, 0x20, 0x30, 0x40)),
+	})
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := ParseFile(path, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj := res.Entries[0].Values[0]
+	// 开头的 'b' 硬读成整数就是 98,只用了 1 字节;当成长度的话 bytes 用了 99 字节
+	if d := looseOf(obj, TypeInt32); d == nil || d.Display != "98" || d.Used != 1 {
+		t.Errorf("归档对象硬读成 int32 应该是 98、用了 1 字节: %+v", d)
+	}
+	if d := looseOf(obj, TypeBytes); d == nil || d.Used != 99 {
+		t.Errorf("归档对象硬读成 bytes 应该用了 99 字节: %+v", d)
+	}
+	if looseOf(obj, TypePlist) != nil || looseOf(obj, TypeStringSet) != nil {
+		t.Errorf("读通了的、硬读也没意义的类型不该出现在硬读结果里: %+v", obj.Loose)
+	}
+	if d := looseOf(res.Entries[1].Values[0], TypeInt32); d == nil || d.Display != "30" || d.Used != 1 {
+		t.Errorf("带过期时间的整数硬读应该是 30: %+v", d)
+	}
+
+	mcp, err := Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mcp.Entries[0].Values[0].Loose != nil {
+		t.Errorf("MCP 那头不该带硬读的结果: %+v", mcp.Entries[0].Values[0].Loose)
+	}
+}
+
+func looseOf(v Value, t string) *Decoded {
+	for i := range v.Loose {
+		if v.Loose[i].Type == t {
+			return &v.Loose[i]
+		}
+	}
+	return nil
+}
+
 // 超长的值只给前面一段十六进制 —— 一个值可能是几百 KB 的图片,
 // 全展开会把 agent 的上下文占满
 func TestHexPreviewTruncates(t *testing.T) {
