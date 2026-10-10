@@ -10,7 +10,7 @@
     <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-green?style=flat-square" /></a>
     <a href="https://github.com/xiaoxu123195/tool_forge/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/xiaoxu123195/tool_forge?style=flat-square&color=yellow" /></a>
     <img alt="Wails" src="https://img.shields.io/badge/Wails-v2-DF0067?style=flat-square" />
-    <img alt="Go" src="https://img.shields.io/badge/Go-1.24-00ADD8?style=flat-square&logo=go&logoColor=white" />
+    <img alt="Go" src="https://img.shields.io/badge/Go-1.25-00ADD8?style=flat-square&logo=go&logoColor=white" />
     <img alt="React" src="https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=white" />
     <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5-3178C6?style=flat-square&logo=typescript&logoColor=white" />
   </p>
@@ -34,21 +34,22 @@
 - 🤖 **完整的 AI 工作流**：内置 AI Chat（多轮对话、视觉、文件附件、思考折叠）+ AI 翻译，支持 OpenAI / Anthropic / Gemini / OpenAI 兼容 4 套协议
 - 📊 **AI 用量看板**：自动记录每次调用的 token / 时长，提供仪表盘、堆叠柱状图、模型/供应商占比
 - 🧭 **本机 AI 配置总览**：一处看全 Claude Code / Codex / Gemini CLI / Cline / Continue / Trae 等各家的 MCP、skills 与插件，每条都标着出自哪个文件——同名多处重复、插件启用了却没装、skills 软链指向共享池，这些分开看时发现不了的状态一眼可见
-- ⚡ **轻量启动快**：Wails 打包产物 ~20MB，常驻内存 < 150MB，远低于 Electron 同类
+- 🔌 **MCP 工作台**：连上任意 MCP 服务器，按 schema 自动生成参数表单直接调工具，原始 JSON-RPC 来回都看得到；OpenAPI 文档里勾几个接口，就能包成 AI 能调用的工具
+- 📱 **真机投屏**：安卓手机（scrcpy-server）和越狱 iPhone（TrollVNC）的画面停靠在真机浏览旁边，鼠标键盘直接操作，能打中文、截图录屏、往手机里拖文件，边操作手机边看文件变化
+- 🧹 **磁盘清理**：缓存、大文件、重复文件、空文件夹、无效快捷方式，还能按目录一路点到是谁占的空间；删什么由写死的守卫把关，用户文件默认进回收站
+- ⚡ **轻量启动快**：Windows 版就一个不到 40MB 的 exe（adb 和投屏组件都已内置），常驻内存 < 150MB，远低于 Electron 同类
 - 🎨 **统一的设计语言**：所有工具共用一套 UI 壳，操作习惯零迁移成本
 - 🧩 **可扩展架构**：新增一个工具 = 一个独立前端路由 + 可选的 Go 后端处理器，互不干扰
 - 🌗 **暗色 / 亮色双主题**，全局快捷键，剪贴板历史，自动更新
 
 ## 🧰 工具一览
 
-> 当前内置 **44** 个工具，按 12 个分类组织。
+> 当前内置 **46** 个工具，按 12 个分类组织。
 
 | 分类 | 工具 |
 | --- | --- |
-| 🤖 **AI 工具** | AI 问答 · 翻译 · Provider 切换 · AI 监控 · Claude 洞察 · Codex 洞察 · LLM 代理日志 · 本机 AI 配置 |
+| 🤖 **AI 工具** | AI 问答 · 翻译 · Provider 切换 · AI 监控 · Claude 洞察 · Codex 洞察 · LLM 代理日志 · 本机 AI 配置 · MCP 工作台 |
 | 🧪 **取证** | 移动取证 · 真机数据浏览器 · SQLite 搜索 · MMKV 解析器 · 包名搜索 |
-
-> 移动取证两个平台的提取都是**内置直连**（Android 走 adb 协议、iOS 走 usbmuxd + SSH），设备上打包成一条流、边收边解，不逐个文件拉。实测 iOS 闲鱼（1598 个文件 / 92 MB）内置引擎比 go-forensic 快三倍多——后者逐文件走 SSH，每个文件一次协议往返。go-forensic 仍可作为备选引擎在取证页「配置」里启用，默认关闭。
 | 🗂 **数据处理** | JSON 编辑器 · XML 编辑器 · Plist 解析器 · JSON 转 Go |
 | 🔣 **编解码** | Base64 文本 · Base64 图片 · URL 编解码 · Unicode 转义 · Protobuf 编解码 |
 | 🔐 **加密哈希** | 加密/解密 · 文件哈希 · JWT 解析 |
@@ -58,7 +59,11 @@
 | ⏱ **时间** | 时间戳转换 · Cron 表达式 |
 | 💻 **开发辅助** | Hex 编辑器 · 进制转换 · 颜色转换 · Charles 激活码 |
 | 👤 **账号管理** | Outlook 邮箱管理 · ChatGPT 凭据转换 |
-| 🖥 **系统** | 剪贴板 · 开发环境 |
+| 🖥 **系统** | 剪贴板 · 磁盘清理 · 开发环境 |
+
+> 移动取证两个平台的提取都是**内置直连**（Android 走 adb 协议、iOS 走 usbmuxd + SSH），设备上打包成一条流、边收边解，不逐个文件拉。实测 iOS 闲鱼（1598 个文件 / 92 MB）内置引擎比 go-forensic 快三倍多——后者逐文件走 SSH，每个文件一次协议往返。go-forensic 仍可作为备选引擎在取证页「配置」里启用，默认关闭。
+
+Base64、时间戳换算这类一次性的小工具，以及 Provider 切换、AI 监控、LLM 代理日志、ChatGPT 凭据转换、网络探测、开发环境，一共 20 个默认不在侧边栏显示，在首页「管理」里打开即可，`Ctrl+K` 也能直接搜到。
 
 完整列表与每个工具的能力说明见应用内"工具总览"页。
 
@@ -100,8 +105,8 @@
 
 到 [Releases](https://github.com/xiaoxu123195/tool_forge/releases) 下载对应平台的安装包：
 
-- **Windows**：`Tool-Forge-Setup-x.y.z.exe`（NSIS 安装器，自带自动更新）
-- **macOS**：`Tool-Forge-x.y.z.dmg`（Universal，Apple Silicon + Intel）
+- **Windows**：`ToolForge-x.y.z-windows-amd64.exe`，单个文件，下载后直接运行，自带自动更新
+- **macOS**：`ToolForge-x.y.z-darwin-universal.zip`（Universal，Apple Silicon + Intel），解压得到 `.app`。macOS 版没有内置 adb，连安卓手机要先自己装好 [Platform-Tools](https://developer.android.com/tools/releases/platform-tools)
 
 ### 自行构建
 
@@ -113,9 +118,9 @@
 
 | 组件 | 版本 |
 | --- | --- |
-| Go | 1.24+ |
+| Go | 1.25+ |
 | Node.js | 18+ |
-| Wails CLI | v2.11+ |
+| Wails CLI | v2.12+ |
 
 安装 Wails CLI：
 
@@ -156,13 +161,14 @@ wails build -platform darwin/universal
 | 层 | 选型 |
 | --- | --- |
 | 桌面框架 | [Wails v2](https://wails.io) |
-| 后端 | Go 1.24 |
+| 后端 | Go 1.25 |
 | 前端 | React 18 + TypeScript 5 + Vite |
 | UI | Tailwind CSS + shadcn/ui 风格组件 |
 | 状态 | Zustand（带 persist） |
 | 路由 | React Router v6 |
 | 编辑器 | CodeMirror 6 |
 | 图标 | lucide-react |
+| 投屏 | 安卓 scrcpy-server · iOS noVNC（连手机上的 TrollVNC） |
 
 选型理由与架构细节见 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)。
 

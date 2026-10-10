@@ -19,8 +19,8 @@ Tool Forge 是基于 Wails v2 的跨平台桌面工具箱。核心原则三条�
 
 | 层 | 选型 | 备注 |
 | --- | --- | --- |
-| 桌面框架 | Wails v2.11 | Go ↔ JS 双向 RPC + 事件总线 |
-| 后端 | Go 1.24 | 模块名 `tool_forge` |
+| 桌面框架 | Wails v2.12 | Go ↔ JS 双向 RPC + 事件总线 |
+| 后端 | Go 1.25 | 模块名 `tool_forge` |
 | 前端 | React 18 + TypeScript 5 + Vite 5 | |
 | UI | Tailwind CSS + shadcn/ui 风格 | 组件 copy-in，可改源码 |
 | 状态 | Zustand 4 + `persist` | 配置类 store 持久化到 localStorage / Keychain |

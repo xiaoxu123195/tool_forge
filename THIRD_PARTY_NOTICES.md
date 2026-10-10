@@ -20,4 +20,14 @@ Tool Forge 本身以 GPL-3.0 发布（见 `LICENSE`）。下面是随程序一�
 - 版权：Copyright (C) 2022 The noVNC authors
 - 项目主页：https://github.com/novnc/noVNC
 
+## adb（Android SDK Platform-Tools）
+
+- 用途：连安卓手机。「移动取证」「真机浏览」和安卓投屏都经 adb 服务和手机通信
+- 位置：`backend/tools/adbx/bundled/platform-tools.tar.gz`，构建时打进可执行文件，第一次连设备时解到 `~/.toolforge/platform-tools/`。只带 Windows 用的 `adb.exe`、`AdbWinApi.dll`、`AdbWinUsbApi.dll` 三个文件；macOS 上用系统里装的 adb
+- 版本：Platform-Tools 37.0.1（adb 1.0.41），取自官方 Platform-Tools 包，只取了上面三个文件，未做任何修改
+- 许可：Apache License 2.0，和 scrcpy-server 是同一份许可，全文见 `backend/tools/mirror/bundled/LICENSE`
+- 版权：Copyright (C) The Android Open Source Project
+- 项目主页：https://developer.android.com/tools/releases/platform-tools
+- 源码：https://android.googlesource.com/platform/packages/modules/adb
+
 TrollVNC（iPhone 上的 VNC 服务端）不随程序分发：由用户自己编译、经工具箱装到手机上。
