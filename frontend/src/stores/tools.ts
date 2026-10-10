@@ -51,6 +51,8 @@ interface ToolsState {
   order: string[]
   toggleVisibility: (id: string) => void
   setVisibility: (id: string, value: boolean) => void
+  /** 清掉所有开关记录:每个工具回到自己的默认显示 */
+  resetVisibility: () => void
   setOrder: (order: string[]) => void
   resetOrder: () => void
 }
@@ -66,6 +68,7 @@ export const useToolsStore = create<ToolsState>()(
         })),
       setVisibility: (id, value) =>
         set((s) => ({ visibility: { ...s.visibility, [id]: value } })),
+      resetVisibility: () => set({ visibility: {} }),
       setOrder: (order) => set({ order }),
       resetOrder: () => set({ order: [] }),
     }),
@@ -79,6 +82,14 @@ export function isVisible(
   defaultVisible: boolean | undefined
 ): boolean {
   return visibility[id] ?? defaultVisible ?? true
+}
+
+/** 开关和默认不一样的工具有几个:默认关着、被打开的,加上默认开着、被关掉的 */
+export function countCustomized(visibility: Record<string, boolean>): number {
+  return toolRegistry.filter((t) => {
+    const v = visibility[t.id]
+    return v !== undefined && v !== (t.defaultVisible ?? true)
+  }).length
 }
 
 /**

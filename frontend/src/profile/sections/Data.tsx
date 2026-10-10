@@ -30,7 +30,7 @@ import { Button } from '@/components/ui/button'
 import { useConfirm } from '@/components/ui/confirm'
 import { usePinnedToolsStore } from '@/stores/pinnedTools'
 import { useRecentToolsStore } from '@/stores/recentTools'
-import { useToolsStore } from '@/stores/tools'
+import { countCustomized, useToolsStore } from '@/stores/tools'
 import { cn } from '@/lib/utils'
 
 type Stats = system.DataStats
@@ -97,7 +97,7 @@ export function DataSection() {
   const visibility = useToolsStore((s) => s.visibility)
   const order = useToolsStore((s) => s.order)
   const resetOrder = useToolsStore((s) => s.resetOrder)
-  const setVisibility = useToolsStore((s) => s.setVisibility)
+  const resetVisibility = useToolsStore((s) => s.resetVisibility)
   const recentIds = useRecentToolsStore((s) => s.ids)
   const recentCounts = useRecentToolsStore((s) => s.counts)
   const clearRecents = useRecentToolsStore((s) => s.clear)
@@ -221,9 +221,8 @@ export function DataSection() {
     })
     if (!ok) return
     resetOrder()
-    for (const id of Object.keys(visibility)) {
-      setVisibility(id, true)
-    }
+    // 清掉开关记录,不是一律设成显示:有的工具默认就是关着的
+    resetVisibility()
     flashMsg('已重置工具偏好')
   }
 
@@ -260,7 +259,7 @@ export function DataSection() {
   const pinnedCount = pinnedIds.length
   const recentCount = recentIds.length
   const totalLaunches = Object.values(recentCounts).reduce((a, b) => a + b, 0)
-  const customizedTools = Object.values(visibility).filter((v) => v === false).length
+  const customizedTools = countCustomized(visibility)
   const hasOrder = order.length > 0
 
   return (
@@ -375,7 +374,7 @@ export function DataSection() {
             label="重置工具偏好"
             hint={
               hasOrder || customizedTools > 0
-                ? `顺序 ${hasOrder ? '已改' : '默认'} · 隐藏 ${customizedTools} 个`
+                ? `顺序 ${hasOrder ? '已改' : '默认'} · 开关改过 ${customizedTools} 个`
                 : '当前为默认'
             }
             disabled={!hasOrder && customizedTools === 0}

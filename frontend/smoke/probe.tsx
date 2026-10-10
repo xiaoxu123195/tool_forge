@@ -37,6 +37,7 @@ import DiskClean from '../src/tools/disk-clean/index'
 import { ConfirmProvider } from '../src/components/ui/confirm'
 import { LocalAPISection } from '../src/profile/sections/LocalAPI'
 import { useForensicStore } from '../src/stores/forensic'
+import { getToolById, isVisible, useToolsStore } from '../src/stores/tools'
 import { conversations } from './fixtures.cjs'
 // 直接引桩本体拿事件把手。build.cjs 只把含 "wailsjs" 的路径重定向到这里,
 // 相对路径原样解析 —— CJS 缓存保证跟组件用的是同一个模块实例
@@ -1834,6 +1835,38 @@ async function main() {
     await mustClick('MCP 服务器')
     if (!txt().includes('添加服务器')) {
       throw new Error('点了「MCP 服务器」但内容没出来 —— 多半是渲染分支没接上')
+    }
+  })
+
+  // 重置工具偏好:回到每个工具自己的默认,不是一律显示。
+  // 默认关着、被打开的也算改过 —— 只数被关掉的,只打开过默认关着的工具时重置按钮是灰的,点不了
+  await mount('设置页 · 重置工具偏好回到默认', <MemoryRouter><Profile /></MemoryRouter>, async () => {
+    // LLM 代理默认关、被打开了;真机浏览默认开、被关掉了;AI 问答本来就开着,不算改过
+    useToolsStore.setState({ visibility: { 'llm-proxy': true, 'device-browser': false, 'ai-chat': true }, order: [] })
+    try {
+      await mustClick('数据')
+      const row = () => {
+        const label = (Array.from(document.querySelectorAll('div')) as HTMLElement[]).find(
+          (d) => d.textContent === '重置工具偏好',
+        )
+        return label?.parentElement?.parentElement ?? null
+      }
+      if (!row()?.textContent?.includes('开关改过 2 个')) throw new Error('改过几个没数对: ' + row()?.textContent)
+      const reset = row()?.querySelector('button') as HTMLButtonElement | null
+      if (!reset || reset.disabled) throw new Error('改过开关,重置按钮却点不了')
+      await act(async () => {
+        reset.click()
+      })
+      await confirmIn('确定')
+      const { visibility } = useToolsStore.getState()
+      if (Object.keys(visibility).length) throw new Error('重置后还留着开关记录: ' + JSON.stringify(visibility))
+      // 回到默认:真机浏览第一次用就在侧边栏里,LLM 代理这些默认收起来
+      for (const [id, want] of [['device-browser', true], ['llm-proxy', false], ['ai-chat', true]] as const) {
+        if (isVisible(id, visibility, getToolById(id)?.defaultVisible) !== want) throw new Error(`重置后「${id}」不是默认的样子`)
+      }
+      if (!row()?.textContent?.includes('当前为默认')) throw new Error('重置完没显示「当前为默认」: ' + row()?.textContent)
+    } finally {
+      useToolsStore.setState({ visibility: {}, order: [] })
     }
   })
 
