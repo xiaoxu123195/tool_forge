@@ -22,6 +22,7 @@ const TYPE_ORDER = [
   'float64',
   'bool',
   'stringSet',
+  'plist',
   'bytes',
 ]
 
@@ -37,6 +38,7 @@ export const TYPE_LABELS: Record<string, string> = {
   bool: 'bool',
   bytes: 'bytes',
   stringSet: 'Set<String>',
+  plist: 'plist',
 }
 
 /** 每种类型的背景色（light / dark 自适应） */
@@ -51,6 +53,7 @@ export const TYPE_BG: Record<string, string> = {
   float64: 'bg-amber-300/60 dark:bg-amber-800/40',
   bool: 'bg-rose-200/60 dark:bg-rose-900/30',
   stringSet: 'bg-cyan-200/60 dark:bg-cyan-900/30',
+  plist: 'bg-violet-200/60 dark:bg-violet-900/30',
   bytes: 'bg-slate-200/60 dark:bg-slate-800/40',
 }
 
@@ -84,4 +87,68 @@ export function nextTypeOf(v: mmkv.Value, current: string): string {
 export function displayOf(v: mmkv.Value, type: string): string {
   if (type === HEX_TYPE) return v.hex
   return (v.decoded ?? []).find((d) => d.type === type)?.display ?? ''
+}
+
+/** 详情里看的文本:plist 是一行 JSON,排成缩进的多行 */
+export function detailOf(v: mmkv.Value, type: string): string {
+  const text = displayOf(v, type)
+  return type === 'plist' ? indentJson(text) : text
+}
+
+/**
+ * 把一行 JSON 排成缩进的多行。只动字符串外面的标点,不经过 JSON.parse:
+ * 归档里超过 2^53 的整数(ID、时间戳)在 JS 里一转成数字就会差几位
+ */
+export function indentJson(text: string): string {
+  let out = ''
+  let depth = 0
+  let inString = false
+  const newline = () => '\n' + '  '.repeat(depth)
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (inString) {
+      out += c
+      if (c === '\\') out += text[++i] ?? ''
+      else if (c === '"') inString = false
+      continue
+    }
+    switch (c) {
+      case '"':
+        inString = true
+        out += c
+        break
+      case '{':
+      case '[': {
+        // 空的 {} [] 不拆行
+        const close = c === '{' ? '}' : ']'
+        if (text[i + 1] === close) {
+          out += c + close
+          i++
+        } else {
+          depth++
+          out += c + newline()
+        }
+        break
+      }
+      case '}':
+      case ']':
+        depth--
+        out += newline() + c
+        break
+      case ',':
+        out += c + newline()
+        break
+      case ':':
+        out += ': '
+        break
+      case ' ':
+      case '\n':
+      case '\r':
+      case '\t':
+        break
+      default:
+        out += c
+    }
+  }
+  return out
 }

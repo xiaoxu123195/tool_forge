@@ -20,7 +20,8 @@ func NewHandler() *Handler { return &Handler{} }
 func (h *Handler) Name() string  { return "mmkv-parse" }
 func (h *Handler) Title() string { return "MMKV 解析" }
 func (h *Handler) Description() string {
-	return "解析腾讯 MMKV 文件,列出键和值;值不带类型标记,所以每个值会给出所有解得通的类型和一个最可能的判断。加密文件需要同时给 .crc 路径和 AES key"
+	return "解析腾讯 MMKV 文件,列出键和值;值不带类型标记,所以每个值会给出所有解得通的类型和一个最可能的判断。" +
+		"iOS 上存的对象(NSKeyedArchiver 归档的 bplist)会拆成 JSON,类型是 plist。加密文件需要同时给 .crc 路径和 AES key"
 }
 func (h *Handler) Methods() []string { return []string{http.MethodPost} }
 

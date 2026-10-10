@@ -342,6 +342,7 @@ function EmptyState({ onPick, error }: { onPick: () => void; error: string }) {
           <div>· 支持未加密的 MMKV 文件（拖放 / 点击「打开」）</div>
           <div>· 同一个 key 的历史值会各自一行展示</div>
           <div>· 每个值默认按最可能的类型显示，点类型徽章可在解得通的类型间循环</div>
+          <div>· iOS 上存的对象（NSKeyedArchiver 归档）会自动拆开，按 plist 显示</div>
           <div>· 点击右侧 expand 图标弹出详情，会列出这串字节所有说得通的读法</div>
           <div>· 拖动 Key / Values 列之间的分隔线可调整列宽</div>
           <div>· 切换到别的工具再回来，文件不会丢（刷新页面会丢）</div>

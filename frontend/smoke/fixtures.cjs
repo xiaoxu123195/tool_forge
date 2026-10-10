@@ -388,6 +388,26 @@ const mmkvFile = {
       key: 'enabled',
       values: [{ hex: '01', size: 1, best: 'bool', decoded: [{ type: 'bool', display: 'true' }] }],
     },
+    {
+      // iOS 上存的对象:NSKeyedArchiver 归档原样落盘,后端拆成一行 JSON。
+      // 时间戳故意超过 2^53:详情里排版时经过一次 JS 数字就会差一位
+      key: 'searchHistoryKey',
+      values: [
+        {
+          hex: '62706c6973743030d401020304050607',
+          size: 721,
+          best: 'plist',
+          decoded: [
+            {
+              type: 'plist',
+              display:
+                '{"key":"searchHistoryKey","modification_time":9007199254740993,' +
+                '"value":{"__class":"EBSearchHistory","json":"[\\"茅台\\"]","tags":[]}}',
+            },
+          ],
+        },
+      ],
+    },
   ],
 }
 

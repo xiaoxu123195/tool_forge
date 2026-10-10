@@ -1,6 +1,7 @@
 package mmkv
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"tool_forge/backend/tools/plist"
 )
 
 // MMKV 的值不带类型标记 —— 存 int 和存 string 落到磁盘上都只是一串字节,
@@ -45,7 +48,12 @@ const (
 	TypeBool      = "bool"
 	TypeBytes     = "bytes"
 	TypeStringSet = "stringSet"
+	// TypePlist 二进制 plist,按 JSON 显示;NSKeyedArchiver 归档已经拆成对象树
+	TypePlist = "plist"
 )
+
+// expireSuffix 开了键过期(enableAutoKeyExpire)的 MMKV,每个值后面都多 4 字节过期时间
+const expireSuffix = 4
 
 // describeValue 把一个原始值摊开成"所有可能的读法"。
 //
@@ -66,6 +74,9 @@ func describeValue(v []byte, hexLimit int) Value {
 		}
 	}
 
+	if p, ok := asPlist(v); ok {
+		add(TypePlist, p, true)
+	}
 	s, ok := asString(v)
 	add(TypeString, s, ok)
 	if set, ok := asStringSet(v); ok {
@@ -106,11 +117,12 @@ func describeValue(v []byte, hexLimit int) Value {
 // pickBest 猜这个值最可能是什么类型。
 //
 // 顺序是按"猜错的代价"排的,不是按常见程度:
-//  1. 可读字符串排第一 —— 它最可能是真的(随机字节几乎不可能凑出一段可打印文本),
+//  1. plist 排第一 —— 要开头对得上 bplist、整份还得解得通,随机字节凑不出来
+//  2. 可读字符串 —— 它最可能是真的(随机字节几乎不可能凑出一段可打印文本),
 //     而且猜错了人一眼就看得出来
-//  2. 字符串集合次之,它的结构约束比字符串更强
-//  3. 单字节的 0/1 认成 bool
-//  4. 整数垫底 —— 任何一串字节都能被当成 varint 读出个数来,信息量最低
+//  3. 字符串集合次之,它的结构约束比字符串更强
+//  4. 单字节的 0/1 认成 bool
+//  5. 整数垫底 —— 任何一串字节都能被当成 varint 读出个数来,信息量最低
 //
 // 返回的是猜测,所以完整候选清单照样给出去:agent 拿不准时可以自己换一个看。
 func pickBest(raw []byte, cands []Decoded) string {
@@ -121,6 +133,9 @@ func pickBest(raw []byte, cands []Decoded) string {
 			}
 		}
 		return ""
+	}
+	if has(TypePlist) != "" {
+		return TypePlist
 	}
 	if s := has(TypeString); s != "" && isMostlyPrintable(s) {
 		return TypeString
@@ -158,14 +173,27 @@ func isMostlyPrintable(s string) bool {
 	return total > 0 && printable*10 >= total*9 // 九成以上可打印
 }
 
+// payload 取 [varint 长度][内容] 里的内容。
+//
+// 长度必须正好盖到值的末尾,或者只剩 4 字节过期时间。只要求「够长」的话,
+// 任何一串字节都能把开头读成长度、截一段出来冒充内容 ——
+// iOS 上原样存的归档对象就被这样读成过「bytes」:开头的 'b' 当成长度 98,截出半截
+func payload(v []byte) ([]byte, bool) {
+	n, read, err := readVarintU32(v, 0)
+	if err != nil {
+		return nil, false
+	}
+	switch len(v) - read - int(n) {
+	case 0, expireSuffix:
+		return v[read : read+int(n)], true
+	}
+	return nil, false
+}
+
 // asString MMKV 的字符串是 [varint 长度][utf8 内容]
 func asString(v []byte) (string, bool) {
-	n, read, err := readVarintU32(v, 0)
-	if err != nil || read+int(n) > len(v) {
-		return "", false
-	}
-	b := v[read : read+int(n)]
-	if !utf8.Valid(b) {
+	b, ok := payload(v)
+	if !ok || !utf8.Valid(b) {
 		return "", false
 	}
 	return string(b), true
@@ -173,11 +201,48 @@ func asString(v []byte) (string, bool) {
 
 // asBytes 和字符串同构,只是内容不要求是合法 UTF-8
 func asBytes(v []byte, hexLimit int) (string, bool) {
-	n, read, err := readVarintU32(v, 0)
-	if err != nil || read+int(n) > len(v) {
+	b, ok := payload(v)
+	if !ok {
 		return "", false
 	}
-	return hexPreview(v[read:read+int(n)], hexLimit), true
+	return hexPreview(b, hexLimit), true
+}
+
+// bplistMagic 二进制 plist 的开头
+var bplistMagic = []byte("bplist")
+
+// asPlist 值是二进制 plist 时解开,给出 JSON;NSKeyedArchiver 归档顺带拆成对象树。
+//
+// iOS 上的 MMKV 存 NSString、NSData、NSDate 以外的对象(数组、字典、自定义类)时,
+// 存的是 NSKeyedArchiver 归档的原样字节,前面不带长度,开头就是 bplist00;
+// 开了键过期的话末尾还多 4 字节,而 bplist 的索引表就在最末尾,得先去掉。
+// 存进去的 NSData 本身是个 plist 时则带长度。三种都试
+func asPlist(v []byte) (string, bool) {
+	cands := [][]byte{v}
+	if len(v) > expireSuffix {
+		cands = append(cands, v[:len(v)-expireSuffix])
+	}
+	if b, ok := payload(v); ok {
+		cands = append(cands, b)
+	}
+	for _, c := range cands {
+		if !bytes.HasPrefix(c, bplistMagic) {
+			continue
+		}
+		res, err := plist.Parse(c, plist.DefaultOptions())
+		if err != nil {
+			continue
+		}
+		// 不转义 <>&:这是给人和 agent 读的,不是往网页里塞的,转义成一串码反而认不出来
+		var out bytes.Buffer
+		enc := json.NewEncoder(&out)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(res.Value); err != nil {
+			continue
+		}
+		return strings.TrimSuffix(out.String(), "\n"), true
+	}
+	return "", false
 }
 
 func asBool(v []byte) (bool, bool) {
@@ -223,26 +288,21 @@ func asInt(v []byte, bits int, signed bool) (string, bool) {
 
 // asStringSet MMKV 的 Set<String>:[varint 总长][ [varint 元素长][utf8] ... ]
 func asStringSet(v []byte) ([]string, bool) {
-	total, read, err := readVarintU32(v, 0)
-	if err != nil {
-		return nil, false
-	}
-	pos := read
-	end := pos + int(total)
-	if end > len(v) {
+	body, ok := payload(v)
+	if !ok {
 		return nil, false
 	}
 	out := []string{}
-	for pos < end {
-		n, b, err := readVarintU32(v, pos)
+	for pos := 0; pos < len(body); {
+		n, b, err := readVarintU32(body, pos)
 		if err != nil {
 			return nil, false
 		}
 		pos += b
-		if pos+int(n) > end {
+		if pos+int(n) > len(body) {
 			return nil, false
 		}
-		item := v[pos : pos+int(n)]
+		item := body[pos : pos+int(n)]
 		if !utf8.Valid(item) {
 			return nil, false
 		}

@@ -684,6 +684,36 @@ async function main() {
     }
   })
 
+  // 12c) iOS 上存的对象:默认就显示拆好的内容,还能切回原始字节;
+  // 详情里排成多行,超过 2^53 的整数一位不差
+  await mount('MMKV · iOS 归档对象', <MmkvTool />, async () => {
+    await mustClick('打开')
+    const txt = () => document.body.textContent || ''
+    if (!txt().includes('(plist)') || !txt().includes('"key":"searchHistoryKey"')) {
+      throw new Error('归档对象没按拆好的 plist 显示')
+    }
+    if (txt().includes('62706c69737430')) throw new Error('默认显示成了原始十六进制,没用 best')
+    await mustClick('(plist)')
+    if (!txt().includes('62706c69737430')) throw new Error('点徽章没切到原始字节')
+    // 重新打开一次,每个值回到默认的类型,详情里看的就是 plist
+    await mustClick('打开')
+    const expands = Array.from(document.querySelectorAll('button[title="展开查看完整值"]')) as HTMLElement[]
+    await act(async () => {
+      expands[expands.length - 1].click()
+    })
+    await act(async () => {
+      await sleep(60)
+    })
+    for (const want of [
+      '"modification_time": 9007199254740993',
+      '\n  "value": {\n    "__class": "EBSearchHistory"',
+      '"json": "[\\"茅台\\"]"',
+      '"tags": []',
+    ]) {
+      if (!txt().includes(want)) throw new Error('详情里的 plist 没排好: 缺 ' + JSON.stringify(want))
+    }
+  })
+
   // 13) plist 工具页:状态栏按后端给的 format 显示,
   // notes 里的提醒(循环引用之类)不能吞掉
   await mount('plist 页', <PlistTool />, async () => {

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	hplist "howett.net/plist"
 )
 
 // buildMMKV 按 MMKV 的落盘格式造一个文件。
@@ -175,6 +177,80 @@ func TestStringSet(t *testing.T) {
 	}
 	if d := displayOf(v, TypeStringSet); !strings.Contains(d, `"a"`) || !strings.Contains(d, `"bb"`) {
 		t.Errorf("集合内容不对: %s", d)
+	}
+}
+
+// archived iOS 上 MMKV 存对象时落盘的样子:NSKeyedArchiver 归档的原样字节,前面不带长度。
+// 归档的是一个 NSDictionary,形状照真机上见过的:键名、修改时间、真正的值。
+// 修改时间故意给一个超过 2^53 的数:过一道浮点就会差一位
+func archived(t *testing.T) []byte {
+	t.Helper()
+	b, err := hplist.Marshal(map[string]any{
+		"$archiver": "NSKeyedArchiver",
+		"$version":  uint64(100000),
+		"$top":      map[string]any{"root": hplist.UID(1)},
+		"$objects": []any{
+			"$null", // 0
+			map[string]any{ // 1 root NSDictionary
+				"$class":     hplist.UID(8),
+				"NS.keys":    []any{hplist.UID(2), hplist.UID(3), hplist.UID(4)},
+				"NS.objects": []any{hplist.UID(5), hplist.UID(6), hplist.UID(7)},
+			},
+			"key", "modification_time", "value", // 2 3 4
+			"searchHistoryKey", uint64(9007199254740993), "[\"茅台\"]", // 5 6 7
+			map[string]any{"$classname": "NSDictionary", "$classes": []any{"NSDictionary", "NSObject"}}, // 8
+		},
+	}, hplist.BinaryFormat)
+	if err != nil {
+		t.Fatalf("造归档失败: %v", err)
+	}
+	return b
+}
+
+// iOS 上存的对象要拆成能读的结构。以前开头的 'b'(0x62)被当成长度 98,
+// 读出来的「bytes」是截掉一个字节的半截归档,看着像对的
+func TestArchivedObjectIsPlist(t *testing.T) {
+	v := describeValue(archived(t), desktopHexLimit)
+	if v.Best != TypePlist {
+		t.Fatalf("归档对象应该判成 plist,得到 %q;候选 %+v", v.Best, v.Decoded)
+	}
+	d := displayOf(v, TypePlist)
+	for _, want := range []string{`"key":"searchHistoryKey"`, `"modification_time":9007199254740993`, `茅台`} {
+		if !strings.Contains(d, want) {
+			t.Errorf("拆出来的内容里没有 %s: %s", want, d)
+		}
+	}
+	if hasType(v.Decoded, TypeBytes) || hasType(v.Decoded, TypeString) {
+		t.Errorf("开头的 'b' 不该被当成长度读出 bytes / string: %+v", v.Decoded)
+	}
+}
+
+// 开了键过期的 MMKV,值后面多 4 字节过期时间;bplist 的索引表在最末尾,不去掉就解不开
+func TestArchivedObjectWithExpireTime(t *testing.T) {
+	v := describeValue(append(archived(t), 0, 0, 0, 0), desktopHexLimit)
+	if v.Best != TypePlist {
+		t.Errorf("带过期时间的归档也该认成 plist,得到 %q", v.Best)
+	}
+}
+
+// 存进去的 NSData 本身是个 plist 时带长度:plist 和 bytes 两种读法都该有
+func TestDataHoldingPlist(t *testing.T) {
+	inner := archived(t)
+	v := describeValue(append(appendVarint(nil, uint64(len(inner))), inner...), desktopHexLimit)
+	if v.Best != TypePlist || !hasType(v.Decoded, TypeBytes) {
+		t.Errorf("带长度的 plist 应该判成 plist,也能按 bytes 看: best %q,候选 %+v", v.Best, v.Decoded)
+	}
+}
+
+// 「长度 + 内容」的长度要正好盖到末尾,或者只剩 4 字节过期时间;
+// 剩别的数目说明开头那个数根本不是长度
+func TestPayloadMustReachTheEnd(t *testing.T) {
+	if s := describeValue(append(mmkvString("abc"), 1, 2, 3, 4), desktopHexLimit); displayOf(s, TypeString) != "abc" {
+		t.Errorf("带 4 字节过期时间的字符串应该还读得出来: %+v", s.Decoded)
+	}
+	odd := describeValue(append(mmkvString("abc"), 1, 2, 3), desktopHexLimit)
+	if hasType(odd.Decoded, TypeString) || hasType(odd.Decoded, TypeBytes) {
+		t.Errorf("后面多出 3 个字节,不该还当成字符串 / bytes: %+v", odd.Decoded)
 	}
 }
 

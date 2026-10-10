@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Check, Copy, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { mmkv } from '../../../../wailsjs/go/models'
-import { HEX_TYPE, bgOf, displayOf, labelOf, optionsOf } from '../valueTypes'
+import { HEX_TYPE, bgOf, detailOf, displayOf, labelOf, optionsOf } from '../valueTypes'
 
 interface DetailContext {
   key: string
@@ -72,7 +72,7 @@ export function DetailModal({ ctx, onClose }: Props) {
           {/* 主展示：当前类型的完整解码值 */}
           <Section
             title={`${labelOf(ctx.type)} 解码`}
-            text={displayOf(ctx.value, ctx.type)}
+            text={detailOf(ctx.value, ctx.type)}
             className={bgOf(ctx.type)}
           />
 
