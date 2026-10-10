@@ -16,6 +16,12 @@ export interface VncCallbacks {
 /** VNC 协议里的鼠标按键:TrollVNC 把右键当 Home、中键当电源键 */
 export const BUTTON = { HOME: 4, POWER: 2 } as const
 
+/** VNC 扩展剪贴板(传得了 UTF-8 的那种)里的两个标志:文字格式、「直接给你」 */
+const CLIP_TEXT = 1
+const CLIP_PROVIDE = 1 << 28
+/** 手机那头一条剪贴板最多收 1 MB,超了会直接断开连接。留一点给压缩后多出来的包头 */
+const CLIP_MAX = (1 << 20) - 1024
+
 /**
  * 一路 iOS 投屏在界面这一侧的画面:noVNC 的 VNC 客户端,外加一块显示用的画布。
  * 只管画面和输入;手机上的服务什么时候开、什么时候停,归面板管
@@ -101,9 +107,41 @@ export class VncLink {
     for (const k of [...keys].reverse()) r.sendKey(k, null, false)
   }
 
-  /** 往手机剪贴板里放字:TrollVNC 收到就写进 iPhone 的剪贴板 */
-  setClipboard(text: string) {
-    if (!this.ended) this.rfb?.clipboardPasteFrom(text)
+  /**
+   * 往手机剪贴板里放字:TrollVNC 收到就写进 iPhone 的剪贴板。
+   *
+   * 中文要走扩展剪贴板(UTF-8)。noVNC 自己发的时候只会先「通知」、等对方来要,
+   * 而 TrollVNC 用的 libvncserver 不理这个通知,noVNC 就退回老格式 Latin-1,汉字全成了「?」。
+   * 所以绕开它,自己发一条「直接给你」的消息 —— libvncserver 收这个
+   */
+  async setClipboard(text: string): Promise<void> {
+    const r = this.rfb
+    const ws = this.ws
+    if (!r || !ws || this.ended || !text) return
+    if (!this.takesUtf8()) {
+      // 对方没开扩展剪贴板,只能走老格式:西文字母还行,中文发不过去
+      if ([...text].some((c) => c.codePointAt(0)! > 0xff)) {
+        throw new Error('手机上的 TrollVNC 没开 UTF-8 剪贴板，中文发不过去：点重新连接再试')
+      }
+      r.clipboardPasteFrom(text)
+      return
+    }
+    const msg = await provideMessage(text)
+    if (!this.ended && ws.readyState === WebSocket.OPEN) ws.send(msg)
+  }
+
+  /**
+   * 对方收不收扩展剪贴板里的文字:连上时它报过自己能做什么,noVNC 记在这两个内部字段里
+   * (noVNC 钉死在 1.7.0)。读不到就当不收:对方没开扩展剪贴板时收到这种消息,会把连接断掉
+   */
+  private takesUtf8(): boolean {
+    const caps = this.rfb as unknown as {
+      _clipboardServerCapabilitiesFormats?: Record<number, boolean>
+      _clipboardServerCapabilitiesActions?: Record<number, boolean>
+    }
+    return !!(
+      caps._clipboardServerCapabilitiesFormats?.[CLIP_TEXT] && caps._clipboardServerCapabilitiesActions?.[CLIP_PROVIDE]
+    )
   }
 
   /**
@@ -367,6 +405,40 @@ class PartRecorder {
     this.canvas.remove()
     if (this.failed) throw this.failed
   }
+}
+
+/**
+ * 扩展剪贴板里「直接给你」的那条消息:类型 6、空三个字节、长度(取负数,表示扩展格式)、标志,
+ * 后面跟 zlib 压过的「4 字节长度 + UTF-8 文字」。有两处和协议写的不一样,都是照手机那头来的:
+ * - 文字末尾不补 0:TrollVNC 按长度原样收,补的 0 会跟着进 iPhone 剪贴板,粘出来多一个看不见的字符
+ * - 换行统一成 \n:协议上写的是 \r\n,可手机那头原样放进剪贴板,而 iOS 用的是 \n
+ *
+ * text 不能是空的:不补 0 的话,空文字 libvncserver 解不开,会把连接断掉
+ */
+async function provideMessage(text: string): Promise<Uint8Array> {
+  let utf8 = new TextEncoder().encode(text.replace(/\r\n?/g, '\n'))
+  // 太长就截掉后面的(安卓也是这样),截在一个字的边上
+  if (utf8.length > CLIP_MAX) {
+    let n = CLIP_MAX
+    while (n > 0 && (utf8[n] & 0xc0) === 0x80) n--
+    utf8 = utf8.subarray(0, n)
+  }
+  const plain = new Uint8Array(4 + utf8.length)
+  new DataView(plain.buffer).setUint32(0, utf8.length)
+  plain.set(utf8, 4)
+  const packed = await zlib(plain)
+  const msg = new Uint8Array(12 + packed.length)
+  const dv = new DataView(msg.buffer)
+  dv.setUint8(0, 6)
+  dv.setInt32(4, -(4 + packed.length))
+  dv.setUint32(8, CLIP_PROVIDE | CLIP_TEXT)
+  msg.set(packed, 12)
+  return msg
+}
+
+async function zlib(data: Uint8Array<ArrayBuffer>): Promise<Uint8Array> {
+  const packed = new Blob([data]).stream().pipeThrough(new CompressionStream('deflate'))
+  return new Uint8Array(await new Response(packed).arrayBuffer())
 }
 
 function blobBase64(b: Blob): Promise<string> {

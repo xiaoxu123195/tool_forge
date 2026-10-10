@@ -80,6 +80,13 @@ type Phase = 'checking' | 'missing' | 'installing' | 'starting' | 'resuming' | '
 
 /** 往手机剪贴板里放了字以后,等多久再按 Command+V:手机那头写剪贴板是排着队做的 */
 const PASTE_DELAY = 200
+/**
+ * 第一次粘贴时提醒。iOS 16 起,App 粘贴别的程序放进剪贴板的东西要先问一句,只有亲手按的粘贴不问;
+ * TrollVNC 模拟出来的 Command+V,iOS 不认作亲手按的
+ */
+const PASTE_HINT =
+  '中文是经手机剪贴板粘贴的：手机剪贴板里原来的内容会被替换（iOS 读不到连上之前复制的东西）\n' +
+  '手机问「允许粘贴」时点允许；不想每次都问，在手机「设置」里找到那个 App，把「从其他 App 粘贴」改成「允许」'
 /** 按了 Ctrl+C 以后多久内回来的剪贴板内容算是这次复制的 */
 const COPY_WAIT = 3000
 /** 拖文件的进度从这个事件来,和后端 mirror.EventIOSTransfer 一致 */
@@ -92,6 +99,7 @@ const HELP = [
   '右键：主页　　中键：锁屏 / 亮屏',
   '滚轮：上下滑',
   '点一下画面就能用键盘打字，中文经手机剪贴板粘贴过去',
+  '手机问「允许粘贴」：点允许；不想每次都问，手机「设置」› 那个 App › 从其他 App 粘贴，选「允许」',
   'Ctrl+C / Ctrl+X：手机上选中的字复制到电脑',
   'Ctrl+V：电脑剪贴板里的字粘到手机上',
   'Alt+按键：等于 iPhone 外接键盘上的 Command+按键',
@@ -322,12 +330,17 @@ export function IosMirrorPanel({ deviceSession, active, onClose }: Props) {
   const paste = (s: string) => {
     if (!pastedOnce.current) {
       pastedOnce.current = true
-      setHint('中文是经手机剪贴板粘贴的：手机剪贴板里原来的内容会被替换（iOS 读不到连上之前复制的东西）')
+      setHint(PASTE_HINT)
     }
     enqueue(async () => {
       const link = linkRef.current
       if (!link) return
-      link.setClipboard(s)
+      try {
+        await link.setClipboard(s)
+      } catch (e) {
+        setToast({ text: errText(e), error: true })
+        return
+      }
       await sleep(PASTE_DELAY)
       link.press([XK.Command, 0x76])
     })

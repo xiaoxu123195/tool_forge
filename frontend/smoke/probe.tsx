@@ -7,6 +7,7 @@
  *
  * 数据来自 fixtures.cjs 的固定样本;新坑修掉后往 fixtures 里补对应形状。
  */
+import { inflateSync } from 'node:zlib'
 import { StrictMode } from 'react'
 import { MemoryRouter, useNavigate } from 'react-router-dom'
 import { createRoot } from 'react-dom/client'
@@ -944,6 +945,21 @@ async function main() {
           })
         }
         const keys = () => rfb.keys.map(([k, d]: [number, boolean]) => (d ? '+' : '-') + k.toString(16)).join(' ')
+        // 放进手机剪贴板的字:面板自己发的扩展剪贴板消息(类型 6,长度取负),解开 zlib 取出 UTF-8
+        const clipsSent = () =>
+          (ws.sent as unknown as unknown[])
+            .filter((m): m is Uint8Array => m instanceof Uint8Array && m[0] === 6)
+            .map((m) => {
+              const dv = new DataView(m.buffer, m.byteOffset, m.byteLength)
+              if (dv.getInt32(4) !== -(m.length - 8) || dv.getUint32(8) !== 0x10000001) {
+                throw new Error('剪贴板消息的头不对: ' + Array.from(m.subarray(0, 12)).join(','))
+              }
+              const plain = inflateSync(m.subarray(12))
+              if (plain.length !== 4 + plain.readUInt32BE(0)) throw new Error('剪贴板消息里的长度不对')
+              // 末尾不补 0:TrollVNC 按长度原样收,补了会跟着进 iPhone 剪贴板
+              if (plain[plain.length - 1] === 0) throw new Error('剪贴板消息末尾不该有 0')
+              return plain.subarray(4).toString('utf8')
+            })
         // 大写字母要自己按住 Shift:手机那头不替我们补
         rfb.keys.length = 0
         await typeIn('a')
@@ -958,23 +974,27 @@ async function main() {
           kbd.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true }))
         })
         await typeIn('ni')
-        if (rfb.clipboard.length) throw new Error('拼音还没上屏就发出去了')
+        if (clipsSent().length || rfb.clipboard.length) throw new Error('拼音还没上屏就发出去了')
         await act(async () => {
           kbd.value = '你好'
           kbd.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true, data: '你好' }))
         })
-        if (rfb.clipboard.join() !== '你好') throw new Error('中文没放进手机剪贴板: ' + rfb.clipboard.join())
+        await wait(50)
+        // 走扩展剪贴板(UTF-8);noVNC 自己的 clipboardPasteFrom 碰上 TrollVNC 会把汉字变成「?」
+        if (clipsSent().join() !== '你好') throw new Error('中文没按 UTF-8 放进手机剪贴板: ' + clipsSent().join())
+        if (rfb.clipboard.length) throw new Error('中文不该走 noVNC 的老格式: ' + rfb.clipboard.join())
         if (keys()) throw new Error('剪贴板还没写好就按了粘贴')
         // 中文后面紧跟着打的英文,得排在粘贴后面
         await typeIn('x')
         await wait(300)
         if (keys() !== '+ffeb +76 -76 -ffeb +78 -78') throw new Error('粘贴或者排队的顺序不对: ' + keys())
         if (!txt().includes('手机剪贴板里原来的内容会被替换')) throw new Error('没提醒剪贴板会被替换')
-        // Ctrl+V:电脑剪贴板粘到手机
-        __last.pcClipboard = '电脑上复制的'
+        if (!txt().includes('从其他 App 粘贴')) throw new Error('没说手机问「允许粘贴」时怎么办')
+        // Ctrl+V:电脑剪贴板粘到手机。Windows 的换行是 \r\n,到 iPhone 上统一成 \n
+        __last.pcClipboard = '电脑上\r\n复制的'
         await keydown('v', { ctrlKey: true })
         await wait(300)
-        if (rfb.clipboard[rfb.clipboard.length - 1] !== '电脑上复制的') throw new Error('Ctrl+V 没把电脑剪贴板粘过去')
+        if (clipsSent().pop() !== '电脑上\n复制的') throw new Error('Ctrl+V 没把电脑剪贴板粘过去: ' + clipsSent().pop())
         // Ctrl+C:手机上按 Command+C,手机推回来的内容进电脑剪贴板
         rfb.keys.length = 0
         await keydown('c', { ctrlKey: true })
@@ -996,6 +1016,20 @@ async function main() {
         await keydown('k', { ctrlKey: true })
         await wait(20)
         if (keys()) throw new Error('Ctrl+K 不该发给手机')
+        // 对方没报扩展剪贴板:中文报错、不按粘贴(按了也只是一串「?」);西文还能走老格式
+        const caps = rfb._clipboardServerCapabilitiesActions
+        rfb._clipboardServerCapabilitiesActions = {}
+        const clipsBefore = clipsSent().length
+        await typeIn('中文')
+        await wait(300)
+        if (keys() || clipsSent().length !== clipsBefore || !txt().includes('没开 UTF-8 剪贴板')) {
+          throw new Error('对方收不了 UTF-8 时该报错、不按粘贴: ' + keys())
+        }
+        __last.pcClipboard = 'café'
+        await keydown('v', { ctrlKey: true })
+        await wait(300)
+        if (rfb.clipboard.pop() !== 'café' || keys() !== '+ffeb +76 -76 -ffeb') throw new Error('西文该走老格式粘过去: ' + keys())
+        rfb._clipboardServerCapabilitiesActions = caps
 
         // ---- 手机剪贴板:连上以后复制过的 ----
         await clickTitled('手机剪贴板')
@@ -1007,7 +1041,7 @@ async function main() {
         // ---- 按钮:Home、锁屏是 VNC 的鼠标消息,音量是媒体键 ----
         const pointerMsgs = () =>
           (ws.sent as unknown as unknown[])
-            .filter((m): m is Uint8Array => m instanceof Uint8Array)
+            .filter((m): m is Uint8Array => m instanceof Uint8Array && m[0] === 5)
             .map((m) => Array.from(m).slice(0, 2).join(','))
             .join(' ')
         await clickTitled('主页')

@@ -16,6 +16,9 @@ class FakeRFB extends EventTarget {
     this.focusOnClick = true
     this.background = ''
     this.disconnected = false
+    // 对方报过来的剪贴板能力,和真的 noVNC 同名:连上以后才有
+    this._clipboardServerCapabilitiesFormats = {}
+    this._clipboardServerCapabilitiesActions = {}
     const screen = document.createElement('div')
     this.canvas = document.createElement('canvas')
     this.canvas.width = 0
@@ -45,10 +48,16 @@ class FakeRFB extends EventTarget {
 
   // ---- 给 probe 用的 ----
 
-  /** 握手完成:画布有了手机的尺寸 */
+  /**
+   * 握手完成:画布有了手机的尺寸。剪贴板能力照 TrollVNC(libvncserver)真报的来:
+   * 收文字,能问、能看、能「直接给」,唯独没有「通知」
+   */
   connect(w, h) {
     this.canvas.width = w
     this.canvas.height = h
+    this._clipboardServerCapabilitiesFormats = { 1: true }
+    this._clipboardServerCapabilitiesActions = {}
+    for (let i = 24; i <= 31; i++) this._clipboardServerCapabilitiesActions[1 << i] = !!(0x17000000 & (1 << i))
     this.dispatchEvent(new Event('connect'))
   }
 
